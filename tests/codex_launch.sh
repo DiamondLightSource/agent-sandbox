@@ -83,6 +83,15 @@ for args in 'agents --help' 'agents --remote=unix:///explicit' 'exec agents' '--
     assert_not_contains passthrough "$(cat "$MOCK_DIR/args")" app-server
 done
 
+# Native startup bypasses the shared daemon, whose executable the sandbox hides.
+for args in '' 'resume --last' '--no-daemon' '--remote=unix:///explicit'; do
+    : >"$MOCK_DIR/args"
+    # shellcheck disable=SC2086
+    run_launch $args
+    case "$args" in --remote*) want=0 ;; *) want=1 ;; esac
+    assert_eq "no-daemon[$args]" "$want" "$(grep -cx -- '--no-daemon' "$MOCK_DIR/args")"
+done
+
 : >"$MOCK_DIR/args"
 MOCK_FAIL=1 run_launch agents >"$MOCK_DIR/failure" 2>&1
 assert_eq startup-failure 1 "$?"

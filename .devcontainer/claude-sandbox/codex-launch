@@ -7,26 +7,34 @@ codex_launch() {
     local binary="$1"; shift
     local -a original=( "$@" ) server_options=()
     local agents=0 server_cwd="$PWD"
+    # Codex >= 0.158 routes interactive sessions through a shared daemon under
+    # CODEX_HOME/packages, which the sandbox hides. Run those in-process.
+    local -a native=( "$binary" --no-daemon "${original[@]}" )
+    local arg
+    for arg in "${original[@]}"; do
+        case "$arg" in
+            --no-daemon|--remote|--remote=*) native=( "$binary" "${original[@]}" ); break ;;
+        esac
+    done
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -h|--help|--remote|--remote=*|--remote-auth-token-env|--remote-auth-token-env=*)
-                exec "$binary" "${original[@]}" ;;
+                exec "${native[@]}" ;;
             -c|--config|--enable|--disable)
-                [ "$#" -ge 2 ] || exec "$binary" "${original[@]}"
+                [ "$#" -ge 2 ] || exec "${native[@]}"
                 server_options+=( "$1" "$2" ); shift 2 ;;
             --config=*|--enable=*|--disable=*)
                 server_options+=( "$1" ); shift ;;
             -C|--cd)
-                [ "$#" -ge 2 ] || exec "$binary" "${original[@]}"
+                [ "$#" -ge 2 ] || exec "${native[@]}"
                 server_cwd="$2"; shift 2 ;;
             --cd=*) server_cwd="${1#--cd=}"; shift ;;
             --no-alt-screen) shift ;;
             agents)
-                [ "$agents" = 0 ] || exec "$binary" "${original[@]}"
+                [ "$agents" = 0 ] || exec "${native[@]}"
                 agents=1; shift ;;
             *)
                 if [ "$agents" = 1 ] || [[ "$1" == -* ]]; then
-                    local arg
                     for arg in "${original[@]}"; do
                         if [ "$arg" = agents ]; then
                             printf 'claude-sandbox: unsupported agents option %q; using native Codex startup, which may fail with sandbox procfs.\n' "$1" >&2
@@ -34,10 +42,10 @@ codex_launch() {
                         fi
                     done
                 fi
-                exec "$binary" "${original[@]}" ;;
+                exec "${native[@]}" ;;
         esac
     done
-    [ "$agents" = 1 ] || exec "$binary" "${original[@]}"
+    [ "$agents" = 1 ] || exec "${native[@]}"
 
     # /tmp is private to this bwrap invocation. Never publish a server socket
     # in shared CODEX_HOME, where another workspace could connect to it.
