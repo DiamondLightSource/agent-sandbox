@@ -275,7 +275,11 @@ def _provision(
         extra.unlink()
     home = interpreter.parent.parent
     # Earlier pins and uv's minor-version links: nothing may run them now.
+    # And uv's own bookkeeping, which nothing reads once this is done.
     apply(Remove(p) for p in store.glob("cpython-*") if p != home)
+    leftovers = [store / n for n in (".temp", ".lock", ".gitignore")]
+    leftovers += [venv / n for n in (".gitignore", "CACHEDIR.TAG")]
+    apply(Remove(p) for p in leftovers)
     apply(Remove(p) for p in plan_prune(home))
     sources = [*home.glob("lib/python3.*"), *venv.glob("lib/python3.*/site-packages")]
     runner(

@@ -52,6 +52,9 @@ class FakeUv:
                 (home / "lib/libpython3.13.so").symlink_to("libpython3.13.so.1.0")
                 (store / "cpython-3.13-linux-x86_64-gnu").symlink_to(home)
                 (store / "cpython-3.12.1-linux-x86_64-gnu").mkdir()
+                for name in (".temp/x", ".lock", ".gitignore"):
+                    (store / name).parent.mkdir(exist_ok=True)
+                    (store / name).write_text("")
             case ["python", "find"]:
                 return (
                     self.found
@@ -67,6 +70,8 @@ class FakeUv:
                 (venv / "bin/python").symlink_to(home / "bin/python3.13")
                 (venv / "bin/activate").write_text("")
                 (venv / "bin/claude-sandbox").write_text("#!venv/bin/python\n")
+                (venv / ".gitignore").write_text("*")
+                (venv / "CACHEDIR.TAG").write_text("")
                 cfg = (
                     f"home = {self.home_in_venv or home / 'bin'}\n"
                     if self.home_in_venv != ""
