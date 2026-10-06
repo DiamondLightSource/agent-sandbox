@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from claude_sandbox.bwrap import HOST, bwrap_argv
+from claude_sandbox.bwrap import (
+    ENTRY_GUARD_ENV,
+    ENTRY_POINTS,
+    HOST,
+    bwrap_argv,
+    path_ahead_of_shadow,
+)
 from claude_sandbox.config import Config, valid_tcp_port
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.gitconfig import render_gitconfig
@@ -177,3 +183,89 @@ def test_host_only_branches() -> None:
         "--bind", "/dev/null", "/etc/sudoers",
         "--ro-bind", "/r", "/etc/resolv.conf",
     ]  # fmt: skip
+
+
+# --- the entry-point guard ----------------------------------------------------
+
+
+def test_path_ahead_of_shadow(tmp_path: Path) -> None:
+    t = os.path.realpath(tmp_path)
+    for d in ("a", "b", "after"):
+        os.mkdir(f"{t}/{d}")
+    os.symlink(f"{t}/a", f"{t}/link")
+    os.symlink("/usr/local/bin", f"{t}/shadow-link")
+    open(f"{t}/file", "w").close()
+    entries = [
+        "",  # empty: skipped
+        "rel",  # relative: skipped
+        f"{t}/a",
+        f"{t}/link",  # resolves to a, which is already listed
+        f"{t}/missing",
+        f"{t}/file",
+        f"{t}/b/",
+        "/usr/local/bin/",  # the shadow's directory ends the list
+        f"{t}/after",
+    ]
+    assert path_ahead_of_shadow(":".join(entries)) == [f"{t}/a", f"{t}/b"]
+    # Reached through a symlink, the shadow's directory still ends it.
+    assert path_ahead_of_shadow(f"{t}/b:{t}/shadow-link:{t}/a") == [f"{t}/b"]
+    # Not on PATH at all: every directory is ahead of it.
+    assert path_ahead_of_shadow(f"{t}/b:{t}/a:{t}/b") == [f"{t}/b", f"{t}/a"]
+    assert path_ahead_of_shadow("") == []
+
+
+class GuardProbe(HostWithEverything):
+    """No /usr/local/bin on this host, and one writable path that is gone by
+    the time it is resolved."""
+
+    def is_dir(self, path: str) -> bool:
+        return path in {"/w", "/w/bin", "/c", "/c/venv/bin", "/elsewhere/bin"}
+
+    def exists(self, path: str) -> bool:
+        return path in {"/c", "/gone", "/"}
+
+    def readable(self, path: str) -> bool:
+        return False
+
+    def realpath(self, path: str) -> str:
+        if path in {"/usr/local/bin", "/gone"}:
+            raise FileNotFoundError(2, "No such file or directory")
+        return {"/opt/v/bin": "/c/venv/bin"}.get(path, path)
+
+
+def guard_argv(path: str, allow_write: str = "/c\n/gone") -> list[str]:
+    config = Config(allow_write=allow_write)
+    env = {"HOME": "/h", "PATH": path}
+    claude = agent_profile("claude")
+    return bwrap_argv(claude, config, env, "/w", "/real", [], probe=GuardProbe())
+
+
+def guard_binds(argv: list[str]) -> list[str]:
+    return [
+        argv[i + 2]
+        for i in range(len(argv) - 2)
+        if argv[i : i + 2] == ["--ro-bind", "/dev/null"]
+    ]
+
+
+def test_entry_guard_binds_each_name_in_each_writable_dir_ahead() -> None:
+    argv = guard_argv("/w/bin:/opt/v/bin:/elsewhere/bin:/usr/local/bin:/c")
+    expected = [f"{d}/{n}" for d in ("/w/bin", "/c/venv/bin") for n in ENTRY_POINTS]
+    assert guard_binds(argv) == expected
+    # After every read-write bind, so none of them can cover a guard bind.
+    last_rw = max(i for i, a in enumerate(argv) if a == "--bind")
+    assert argv.index(expected[0]) > last_rw
+    # The last --setenv, so no pass-env name can replace it.
+    i = max(j for j, a in enumerate(argv) if a == "--setenv")
+    assert argv[i : i + 3] == ["--setenv", ENTRY_GUARD_ENV, "/w/bin:/c/venv/bin"]
+
+
+def test_entry_guard_with_nothing_writable_ahead() -> None:
+    argv = guard_argv("/usr/local/bin:/w/bin:/c/venv/bin")
+    assert guard_binds(argv) == []
+    assert ENTRY_GUARD_ENV not in argv
+
+
+def test_entry_guard_under_an_allow_write_of_root() -> None:
+    argv = guard_argv("/elsewhere/bin", allow_write="/")
+    assert guard_binds(argv) == [f"/elsewhere/bin/{n}" for n in ENTRY_POINTS]

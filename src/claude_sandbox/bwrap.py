@@ -31,6 +31,13 @@ from .profiles import (
 
 GITCONFIG_PATH = "/etc/claude-gitconfig"
 
+# Where the installer puts the shadow, and the names the sandbox owns there
+# (Invariant 1: a plain `claude` must reach the shadow).
+SHADOW_DIR = "/usr/local/bin"
+ENTRY_POINTS = ("claude", "codex", "pi", "claude-sandbox")
+# The directories the entry-point guard covered, for battery check 22.
+ENTRY_GUARD_ENV = "CLAUDE_SANDBOX_ENTRY_GUARD"
+
 # What the agent itself needs from the launching environment, forwarded by
 # value when set and non-empty.
 PASS_THROUGH = (
@@ -171,6 +178,36 @@ class HostProbe:
 HOST = HostProbe()
 
 
+def path_ahead_of_shadow(path: str, probe: Probe = HOST) -> list[str]:
+    """The directories a ``PATH`` lookup searches before the shadow's.
+
+    Each is resolved through symlinks, as the binds are, and listed once, in
+    ``PATH`` order. Empty and relative
+    entries are skipped, and so are entries that do not resolve to a
+    directory. When ``PATH`` does not hold ``SHADOW_DIR`` at all, every entry
+    counts as ahead of it.
+    """
+    try:
+        shadow_dir = probe.realpath(SHADOW_DIR)
+    except OSError:
+        shadow_dir = SHADOW_DIR
+    dirs: list[str] = []
+    for entry in path.split(":"):
+        if not entry.startswith("/"):
+            continue
+        if os.path.normpath(entry) == SHADOW_DIR:
+            break
+        try:
+            resolved = probe.realpath(entry)
+        except OSError:
+            continue
+        if resolved == shadow_dir:
+            break
+        if probe.is_dir(resolved) and resolved not in dirs:
+            dirs.append(resolved)
+    return dirs
+
+
 def _lookup(env: Mapping[str, str], name: str) -> str:
     """``${!name:-}`` in the bash shadow: the variable's value, or empty."""
     return env[name] if name in env else SHELL_DEFAULTS.get(name, "")
@@ -198,8 +235,9 @@ def bwrap_argv(
     place of the agent. ``shipped_skills_dir`` and ``gitconfig_path`` are
     constants a caller overrides only in tests; the git config path is not
     read from the environment (in the bash, the shadow exports its constant
-    before the builder runs). Raises SandboxError for an allow-device entry that
-    is not a device node under /dev.
+    before the builder runs). ``env["PATH"]`` is the launching PATH, read
+    only for the entry-point guard. Raises SandboxError for an allow-device
+    entry that is not a device node under /dev.
     """
     home = env.get("HOME") or "/root"
 
@@ -272,10 +310,15 @@ def bwrap_argv(
     # should not push to any forge. SHARED_SKILLS_REL joins every agent's
     # list: it holds skills, not credentials, so it is the one home path
     # agents deliberately share.
+    #
+    # Every directory bound read-write is also listed in `writable`, for the
+    # entry-point guard at the end of the mounts.
+    writable: list[str] = []
     forge_rels = () if config.no_forge else (".config/gh", ".config/glab-cli")
     for rel in (*profile.home_dirs, SHARED_SKILLS_REL, ".cache", *forge_rels):
         if probe.is_dir(f"{home}/{rel}"):
             argv += ["--bind", f"{home}/{rel}", f"{home}/{rel}"]
+            writable.append(f"{home}/{rel}")
     # Per-agent tmpfs masks, emitted AFTER the binds above so they cover a
     # sub-path of a directory just bound rw. Unconditional, like the
     # .local/share masks: the mask must exist whether or not the host
@@ -308,6 +351,7 @@ def bwrap_argv(
     #                  design and would collide with the host's install.
     if probe.is_dir(f"{home}/.local/share"):
         argv += ["--bind", f"{home}/.local/share", f"{home}/.local/share"]
+        writable.append(f"{home}/.local/share")
         argv += ["--tmpfs", f"{home}/.local/share/applications"]
         argv += ["--tmpfs", f"{home}/.local/share/claude"]
     for rel in (*profile.home_files, ".local/bin/uv", ".local/bin/uvx"):
@@ -324,6 +368,7 @@ def bwrap_argv(
 
     if workspace and probe.is_dir(workspace):
         argv += ["--bind", workspace, workspace]
+        writable.append(workspace)
     # -e, not -d/-f: a unix socket is neither, so a -f test would silently
     # drop it, and rootless podman/docker expose their engine as a socket
     # under $XDG_RUNTIME_DIR. Dangling symlinks stay skipped: bwrap aborts on
@@ -338,6 +383,7 @@ def bwrap_argv(
     for path in lines(config.allow_write):
         if probe.exists(path):
             argv += ["--bind", path, path]
+            writable.append(path)
 
     # Defence-in-depth file masks. Strict-under-/root already hides the $HOME
     # dotfiles, but masking them with /dev/null is free and survives if the
@@ -353,6 +399,37 @@ def bwrap_argv(
     resolv = env.get("CLAUDE_SANDBOX_JAIL_RESOLV", "")
     if resolv and probe.readable(resolv):
         argv += ["--ro-bind", resolv, "/etc/resolv.conf"]
+
+    # Entry-point guard. Protect the sandbox's entry-point names (Invariant
+    # 1): a session cannot create a command named claude, codex, pi or
+    # claude-sandbox in a writable directory that precedes the shadow on
+    # PATH. Each such name in each such directory gets a read-only bind of
+    # /dev/null: inside the jail it is a mount point that cannot be written,
+    # replaced, renamed or removed, and with bwrap's nodev on ordinary binds
+    # it cannot even be opened. Where the name did not exist, bwrap creates
+    # the mount point on the host as an empty file without execute bits,
+    # which a PATH lookup passes over. The shadow refuses to launch when one
+    # of these names there is anything else (shadow.check_entry_points), so
+    # the bind only ever lands on that empty file or nothing. A directory
+    # that does not exist at launch is not covered: binding inside it would
+    # create it. The shadow's check runs again at the next launch.
+    #
+    # Last of the mounts: bwrap applies argv in order, so these must follow
+    # every read-write bind they sit inside.
+    roots: list[str] = []
+    for root in writable:
+        try:
+            roots.append(probe.realpath(root))
+        except OSError:
+            continue
+    guarded = [
+        directory
+        for directory in path_ahead_of_shadow(env.get("PATH", ""), probe)
+        if any(os.path.commonpath([directory, root]) == root for root in roots)
+    ]
+    for directory in guarded:
+        for name in ENTRY_POINTS:
+            argv += ["--ro-bind", "/dev/null", f"{directory}/{name}"]
 
     argv += [
         "--cap-drop", "ALL",
@@ -417,6 +494,10 @@ def bwrap_argv(
             continue
         if value := _lookup(env, name):
             argv += ["--setenv", name, value]
+    # What the entry-point guard covered, for battery check 22. After
+    # pass-env, so a forwarded variable of the same name cannot replace it.
+    if guarded:
+        argv += ["--setenv", ENTRY_GUARD_ENV, ":".join(guarded)]
 
     # Disable the Chrome browser-extension RPC channel: strip any
     # user-supplied --chrome so it can't override the --no-chrome injection.

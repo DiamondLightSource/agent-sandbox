@@ -23,7 +23,12 @@ from typing import NoReturn
 import pytest
 
 from claude_sandbox import shadow
-from claude_sandbox.bwrap import GITCONFIG_PATH, bwrap_argv
+from claude_sandbox.bwrap import (
+    ENTRY_GUARD_ENV,
+    ENTRY_POINTS,
+    GITCONFIG_PATH,
+    bwrap_argv,
+)
 from claude_sandbox.config import (
     KNOBS,
     Config,
@@ -471,6 +476,21 @@ SCENARIOS = [
         "none: arguments survive as array elements",
         args=("", "a b", "line\nbreak", "--", "--chrome=x"),
     ),
+    *(
+        Scenario(
+            f"entry-guard-{name}",
+            "none: the entry-point guard (a known divergence where it binds)",
+            {"CLAUDE_SANDBOX_ALLOW_WRITE": "{root}/data", "PATH": path},
+            tree=("home/", "data/venv/bin/", "opt/venv -> {root}/data/venv", "ro/"),
+        )
+        for name, path in (
+            ("ahead", "{root}/data/venv/bin:/usr/local/bin:{path}"),
+            ("symlinked", "{root}/opt/venv/bin:/usr/local/bin:{path}"),
+            ("no-shadow-dir", "{root}/data/venv/bin:{path}"),
+            ("after", "/usr/local/bin:{root}/data/venv/bin:{path}"),
+            ("none", "{root}/ro:/usr/local/bin:{path}"),
+        )
+    ),
     Scenario(
         "conf-end-to-end",
         "11 (parse_config feeding the builder)",
@@ -524,6 +544,44 @@ def _drop_setenv(name: str) -> Callable[[list[str]], list[str]]:
         return out
 
     return drop
+
+
+def _entry_guard_binds(argv: list[str]) -> list[str]:
+    """The destinations of the entry-point guard's ``--ro-bind /dev/null``."""
+    return [
+        argv[i + 2]
+        for i in range(len(argv) - 2)
+        if argv[i : i + 2] == ["--ro-bind", "/dev/null"]
+        and argv[i + 2].rpartition("/")[2] in ENTRY_POINTS
+    ]
+
+
+def _drop_entry_guard(argv: list[str]) -> list[str]:
+    """Remove the entry-point guard: its binds and its ``--setenv``."""
+    binds = _entry_guard_binds(argv)
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i : i + 2] == ["--ro-bind", "/dev/null"] and argv[i + 2] in binds:
+            i += 3
+            continue
+        out.append(argv[i])
+        i += 1
+    return _drop_setenv(ENTRY_GUARD_ENV)(out)
+
+
+def _guards(directory: str) -> Callable[[list[str]], bool]:
+    """Every entry-point name in ``directory`` (under the root) is bound."""
+
+    def shows(argv: list[str]) -> bool:
+        binds = _entry_guard_binds(argv)
+        return (
+            [b.rpartition("/")[0].endswith(directory) for b in binds] == [True] * 4
+            and sorted(b.rpartition("/")[2] for b in binds) == sorted(ENTRY_POINTS)
+            and ENTRY_GUARD_ENV in argv
+        )
+
+    return shows
 
 
 def _drop_lines(*prefixes: str) -> Callable[[list[str]], list[str]]:
@@ -590,6 +648,18 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         same_after=_drop_lines("validate_callback_ports="),
         racy=True,
     ),
+    **{
+        f"entry-guard-{name}": Divergence(
+            "Protect the sandbox's entry-point names (Invariant 1): a session "
+            "cannot create a command named claude, codex, pi or claude-sandbox "
+            "in a writable directory that precedes the shadow on PATH. The port "
+            "ro-binds /dev/null over each name there; the bash does not.",
+            bash_shows=lambda argv: not _entry_guard_binds(argv),
+            python_shows=_guards("/data/venv/bin"),
+            same_after=_drop_entry_guard,
+        )
+        for name in ("ahead", "symlinked", "no-shadow-dir")
+    },
     "skills-locale-order": Divergence(
         "The bash orders glob results (shipped skills, GPU nodes) by the "
         "launching locale's collation; the port uses code-point order on "
