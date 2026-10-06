@@ -1,0 +1,72 @@
+"""Installer behaviour the bash comparison cannot reach: mountpoints, image
+builds, ownership, and failures part-way through a write."""
+
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+
+from claude_sandbox.installer import actions, steps
+from claude_sandbox.installer.actions import Entry, ReplaceTree, Warn, Write
+
+
+def layout(tmp_path: Path, source: Path | None = None) -> steps.Layout:
+    return steps.Layout(
+        source=source or tmp_path / "src",
+        user_home=tmp_path / "user",
+        home=str(tmp_path / "home"),
+        prefix=tmp_path / "prefix",
+        shared=str(tmp_path / "shared"),
+        owner=(os.getuid(), os.getgid()),
+    )
+
+
+def test_a_mounted_config_is_left_as_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert steps.is_mount("/proc") and not steps.is_mount("/no/such/path")
+    (tmp_path / "home/.claude").mkdir(parents=True)
+    (tmp_path / "shared").mkdir()
+    lay = layout(tmp_path)
+
+    def is_mount(path: str) -> bool:
+        return path.endswith(".claude")
+
+    monkeypatch.setattr(steps, "is_mount", is_mount)
+    plan = steps.plan_shared_links(lay, steps.Options("1"))
+    assert plan[0] == Warn(
+        f"claude-sandbox: {lay.home}/.claude is an active mountpoint;"
+        " leaving as-is (assumed already shared)."
+    )
+    assert steps.plan_shared_links(lay, steps.Options("1", image_build=True)) == []
+
+
+def test_a_missing_source_file_stops_the_install(tmp_path: Path) -> None:
+    with pytest.raises(steps.InstallError, match="cannot find"):
+        steps.plan_shadow(layout(tmp_path), steps.Options("1"))
+
+
+def test_system_files_get_the_owner(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[2]
+    lay = layout(tmp_path, tmp_path / "src")
+    shutil.copytree(repo / "skills", tmp_path / "src/skills")
+    (tmp_path / "src/skills/extra").mkdir()
+    (tmp_path / "src/skills/extra/SKILL.md").write_text("x")
+    (tmp_path / "src/skills/extra/link").symlink_to("SKILL.md")
+    shutil.copytree(repo / ".devcontainer", tmp_path / "src/.devcontainer")
+    plan = steps.plan_skills(lay, steps.Options("1"))
+    assert all(isinstance(a, ReplaceTree) and a.owner == lay.owner for a in plan)
+    actions.apply(plan + steps.plan_conf(lay, steps.Options("1")))
+    assert steps.plan_skills(lay, steps.Options("1")) == []
+
+
+def test_a_failed_write_leaves_no_temporary_file(tmp_path: Path) -> None:
+    (tmp_path / "dir/x").mkdir(parents=True)
+    with pytest.raises(OSError):
+        actions.apply([Write(tmp_path / "dir", b"data", 0o644)])
+    assert os.listdir(tmp_path) == ["dir"]
+    twice = (Entry("a", 0o755), Entry("a", 0o755))
+    with pytest.raises(OSError):
+        actions.apply([ReplaceTree(tmp_path / "dir", 0o755, twice)])
+    assert os.listdir(tmp_path) == ["dir"]
