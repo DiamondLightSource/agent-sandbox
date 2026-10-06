@@ -38,6 +38,24 @@ Custom mounts and tools can introduce credentials outside the masked paths.
 In particular, `.local/share` and `.cache` are available to agents; credentials
 stored there are exposed. Audit additions to your container.
 
+## What a session leaves behind
+
+The sandbox contains the agent while it runs. Code from the workspace, the
+project venv or the caches that you later run outside the sandbox is
+agent-written code, whoever runs it.
+
+The commonest route is PATH: the container's PATH starts with the project
+venv's `bin`, which the session can write, so an executable left there
+shadows a system command, or `claude` itself, in every outer shell. Git hooks
+in the workspace run on your next `git commit` or `git push` and never show
+in a diff. The Python shadow quarantines both while the session runs and
+warns at your shell prompt; `claude-sandbox alerts` lists what it did. See
+{ref}`ADR 27 <adr-outer-path-guard>`.
+
+Review the rest like any contribution before you run it outside the
+sandbox: build scripts, test fixtures, `.git/config` and the venv's
+`site-packages`.
+
 ## The irreducible workspace-visibility caveat
 
 **Keep secrets outside the workspace.** A `.env` file or credential checked

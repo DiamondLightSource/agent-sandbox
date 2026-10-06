@@ -119,6 +119,12 @@ session runs.
   both if you change the bind.
 - Making the Python shadow's bind-back read-write again
   (`test_the_real_binary_is_bound_back_read_only`).
+- Weakening the PATH watcher (ADR 27, `watch.py`): it quarantines
+  executables a session adds ahead of system commands on PATH, and new git
+  hooks, while the session runs, and warns in outer shells. Refuse
+  following links when quarantining, judging only a list of names, dropping
+  the jail-off watcher, or showing the alerts inside the jail
+  (`bwrap.py` masks `/run/claude-sandbox`).
 - Dropping the Python shadow's entry-point guard, or moving its binds
   above the read-write binds they sit inside. It protects the sandbox's
   entry-point names: a session cannot create a command named claude,
@@ -252,7 +258,8 @@ amended by ADR 26).
   uvx on its account.
 - A bind or environment variable added to the bwrap argv anywhere but
   `bwrap.py`.
-- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`) across
+- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`, and
+  `watch.py` from ADR 27) across
   more modules or helpers — the `bf65407` failure mode. Profiles, config,
   host launcher, installer and helper CLI live around the core, not in it.
 

@@ -24,6 +24,8 @@ into your own devcontainer.
 | `/etc/claude-code/managed-settings.json` | Disables Claude's updater; preserves existing administrator settings and hooks |
 | `/etc/codex/managed_config.toml` | Disables Codex startup update checks; an administrator-owned file is left unchanged with a warning |
 | `/etc/claude-sandbox.conf` | [Sandbox configuration](configuration.md) |
+| `/etc/profile.d/claude-sandbox-alerts.sh` | Python shadow only: warns at outer shell prompts about what the PATH watcher quarantined; sourced from `/etc/bash.bashrc` and `/etc/zsh/zshrc` ({ref}`ADR 27 <adr-outer-path-guard>`) |
+| `/run/claude-sandbox/` | Python shadow only: the PATH watcher's alerts and baselines, hidden inside the sandbox; `claude-sandbox alerts` lists them |
 
 The installer adds `passt` (providing `pasta`) for the network jail. Custom
 devcontainers must supply `/dev/net/tun` through `runArgs`; the host launcher
