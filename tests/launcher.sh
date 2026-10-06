@@ -248,7 +248,7 @@ run -- install; [ "$RC" = 2 ] && pass || fail "install verb accepted by the scri
 if [ -e /run/.containerenv ] || [ -e /.dockerenv ]; then
     : > "$LOG"
     ( cd "${PROJECT:-$TMP/project}" && env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$TMP" LOG="$LOG" MARK="$TMP/mark" \
-        bash "$LAUNCHER" 2>"$TMP/err" ); rc=$?
+        bash "$LAUNCHER" claude 2>"$TMP/err" ); rc=$?
     [ "$rc" = 1 ] && grep -q 'inside' "$TMP/err" && [ -z "$(exec_line)" ] && pass \
         || fail "in-container launch not refused (rc=$rc): $(cat "$TMP/err")"
 else
