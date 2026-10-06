@@ -163,7 +163,7 @@ def run(
     # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf.
     jailed = egress_jail_enabled(config)
     if jailed:
-        staged = jail.stage_dns(env)
+        staged = jail.stage_dns()
         for warning in staged.warnings:
             term.warn(warning)
         if staged.path is None:

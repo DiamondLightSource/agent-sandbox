@@ -627,7 +627,7 @@ def test_stage_dns_matches_the_bash(tmp_path: Path, resolv: str) -> None:
     conf.write_text(resolv)
     (tmp_path / "py").mkdir()
     (tmp_path / "sh").mkdir()
-    staged = stage_dns({"TMPDIR": str(tmp_path / "py")}, resolv_conf=str(conf))
+    staged = stage_dns(resolv_conf=str(conf), tmpdir=str(tmp_path / "py"))
     assert staged.path is not None
     assert os.path.dirname(staged.path) == str(tmp_path / "py")
     got = Path(staged.path).read_bytes()
@@ -650,14 +650,25 @@ def test_stage_dns_matches_the_bash(tmp_path: Path, resolv: str) -> None:
 
 
 def test_stage_dns_without_a_resolv_conf(tmp_path: Path) -> None:
-    staged = stage_dns({"TMPDIR": str(tmp_path)}, resolv_conf=str(tmp_path / "none"))
+    staged = stage_dns(resolv_conf=str(tmp_path / "none"), tmpdir=str(tmp_path))
     assert staged.path is not None
     assert Path(staged.path).read_text() == "nameserver 192.0.2.53\n"
     assert len(staged.warnings) == 1
 
 
+def test_stage_dns_ignores_tmpdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unlike the bash, which honours $TMPDIR: it may be in the workspace."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    staged = stage_dns()
+    assert staged.path is not None
+    os.remove(staged.path)
+    assert os.path.dirname(staged.path) == "/tmp"
+
+
 def test_stage_dns_when_mktemp_fails(tmp_path: Path) -> None:
-    staged = stage_dns({"TMPDIR": str(tmp_path / "none")})
+    staged = stage_dns(tmpdir=str(tmp_path / "none"))
     assert staged == jail.StagedDns(
         None,
         (
@@ -676,7 +687,7 @@ def test_stage_dns_when_the_write_fails(
 
     monkeypatch.setattr(jail.os, "fdopen", fail)
     with pytest.raises(SandboxError, match="No space left on device"):
-        stage_dns({"TMPDIR": str(tmp_path)})
+        stage_dns(tmpdir=str(tmp_path))
     assert list(tmp_path.iterdir()) == []
 
 

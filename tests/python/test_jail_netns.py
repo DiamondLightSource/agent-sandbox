@@ -38,7 +38,7 @@ from claude_sandbox import jail
 from claude_sandbox.config import Config
 env = dict(os.environ)
 if env.get("DRIVER_STAGE_DNS") == "1":
-    staged = jail.stage_dns(env)
+    staged = jail.stage_dns()
     env[jail.JAIL_RESOLV] = staged.path
 command = sys.argv[1:]
 if env.get("DRIVER_SCRIPT") == "1":

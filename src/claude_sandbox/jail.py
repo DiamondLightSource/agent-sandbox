@@ -30,6 +30,23 @@ External tools are found on PATH, as the bash finds them: ``unshare``,
 ``pasta`` and ``socat`` (checked up front), ``ip`` and ``ss`` (in use). The
 interpreter is never found on PATH: the holder re-enters ``sys.executable``.
 
+Deliberate differences from the bash:
+
+- Readiness: the bash attaches pasta once ``/proc/<holder>/ns/net`` exists,
+  which is already true before ``unshare`` has made the namespace. Here
+  launch waits until the holder's netns differs from its own and its uid
+  and gid maps are written.
+- Signal dispositions: the bash starts the holder as a background job of a
+  non-interactive shell, so the holder and the agent inherit SIGINT and
+  SIGQUIT ignored. Here they keep the defaults, as on the unjailed path, so
+  ^C reaches the child's own terminal as it does there.
+- Signal handlers only record the signal (see ``Signals``), so cleanup
+  always runs whole; a second signal does not cut it short.
+- Relays get their own session from ``start_new_session``, not ``setsid``.
+- The staged resolv.conf is removed after every failure, including a
+  missing tool, and is always staged under /tmp (see ``stage_dns``).
+- A holder that cannot bring up loopback or exec the command says so.
+
 Every side effect goes through ``Ops`` so tests can replace it. Standard
 library only: this module is on the launch path (ADR 26).
 """
@@ -376,19 +393,18 @@ _KEEP = re.compile(rb"[ \t\n\v\f\r]*(search|domain|options)[ \t\n\v\f\r]")
 _NAMESERVER = re.compile(rb"[ \t\n\v\f\r]*nameserver")
 
 
-def stage_dns(env: Mapping[str, str], *, resolv_conf: str = RESOLV_CONF) -> StagedDns:
+def stage_dns(*, resolv_conf: str = RESOLV_CONF, tmpdir: str = "/tmp") -> StagedDns:
     """Stage a resolv.conf that sends every query to the pasta forwarder.
 
     The host's ``search``, ``domain`` and ``options`` lines are kept:
     dropping them breaks short-name resolution at sites with a search list.
     Its real resolvers are dropped: a route to one would open that internal
-    host on every port (issue #11). Written under ``$TMPDIR`` (else /tmp),
-    as the bash does. Raises SandboxError if the file cannot be written.
+    host on every port (issue #11). Written under /tmp, which bwrap masks,
+    never ``$TMPDIR``, which may sit in the writable workspace (the bash
+    honours it). Raises SandboxError if the file cannot be written.
     """
     try:
-        fd, path = tempfile.mkstemp(
-            prefix=_RESOLV_PREFIX, dir=env.get("TMPDIR") or "/tmp"
-        )
+        fd, path = tempfile.mkstemp(prefix=_RESOLV_PREFIX, dir=tmpdir)
     except OSError:
         return StagedDns(
             None,
