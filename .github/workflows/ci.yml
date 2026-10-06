@@ -125,6 +125,8 @@ jobs:
         run: uv run pyright
 
       # Coverage settings, including fail_under = 95, live in pyproject.toml.
+      # The bash-vs-Python argv comparison (tests/python/test_parity.py)
+      # also runs here; it needs bash, coreutils and git, which the runner has.
       - name: pytest with coverage
         run: uv run pytest --cov
 
