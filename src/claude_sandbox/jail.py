@@ -585,8 +585,10 @@ def _start(
     own_netns = ops.read("/proc/self/ns/net")
 
     def in_own_netns() -> bool:
-        if holder.poll() is not None:
-            raise JailError("— holder netns never appeared")
+        if (rc := holder.poll()) is not None:
+            raise JailError(
+                f"— holder exited with status {status(rc)} before pasta could attach"
+            )
         proc = f"/proc/{holder.pid}"
         netns = ops.read(f"{proc}/ns/net")
         return (

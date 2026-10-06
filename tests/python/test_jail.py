@@ -344,7 +344,7 @@ def test_callback_relay_that_never_listens_fails_soft() -> None:
         (
             given(lambda o: setattr(o, "next_polls", 0)),
             {},
-            "— holder netns never appeared",
+            "— holder exited with status 0 before pasta could attach",
         ),
         (
             given(lambda o: setattr(o, "netns_ready", False)),
