@@ -16,7 +16,6 @@ Standard library only: this module is on the launch path (ADR 26).
 import glob
 import os
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -49,6 +48,7 @@ from .profiles import (
     detect_agent,
     filter_chrome_args,
 )
+from .tools import TOOL_PATH, find_tool
 
 # The shim, byte for byte as install.sh places it (ADR 26). The self-exec
 # check compares the real binary against it; a test pins it to the file.
@@ -65,11 +65,15 @@ ExecVE = Callable[[str, list[str], Mapping[str, str]], NoReturn]
 def read_git_config(key: str, env: Mapping[str, str]) -> str:
     """``$(git config --get KEY 2>/dev/null || true)``: empty when unset.
 
-    git is found through PATH, as the bash shadow finds it.
+    git comes from the fixed tool path (tools.py); without it the identity
+    is empty.
     """
+    git = find_tool("git")
+    if git is None:
+        return ""
     try:
         out = subprocess.run(
-            ["git", "config", "--get", key],
+            [git, "config", "--get", key],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -96,6 +100,7 @@ class Host:
     execve: ExecVE = os.execve
     probe: Probe = HOST
     git_config_get: Callable[[str, Mapping[str, str]], str] = read_git_config
+    find_tool: Callable[[str], str | None] = find_tool
     mountinfo: str = "/proc/self/mountinfo"
 
 
@@ -158,11 +163,11 @@ def run(
     if jailed:
         env = jail.stage_dns(env, term.warn)
     argv = build_argv(profile, env, args, verify, host)
+    terminal, launch_env = terminal_command(argv, env, host)
     term.pause(verify)
-    terminal, launch_env = terminal_command(argv, env)
     if jailed:
         jail.launch(config, launch_env, terminal)
-    _exec_terminal(host, terminal, launch_env)
+    _exec(host, terminal[0], terminal, launch_env)
 
 
 # --- the steps, in order ----------------------------------------------------
@@ -460,7 +465,7 @@ def working_directory(env: Mapping[str, str]) -> str:
 
 
 def terminal_command(
-    argv: Sequence[str], env: Mapping[str, str]
+    argv: Sequence[str], env: Mapping[str, str], host: Host = INSTALLED
 ) -> tuple[list[str], dict[str, str]]:
     """Wrap the bwrap argv in script(1): (command, environment).
 
@@ -470,22 +475,29 @@ def terminal_command(
     bytes, not keystrokes, to the host terminal. --return keeps the agent's
     exit status. script runs ``$SHELL -c COMMAND``, so SHELL is bash and the
     argv is quoted for it (shlex quoting, which bash reads back to the same
-    words as the bash shadow's ``printf %q``); bash then finds bwrap through
-    PATH, as the bash shadow does.
+    words as the bash shadow's ``printf %q``).
+
+    Both script and bwrap come from the fixed tool path as absolute paths,
+    so neither this process nor the inner shell looks anything up in PATH
+    (ADR 26). The bash shadow uses PATH for both.
     """
-    command = shlex.join(argv)
+    script, bwrap = _tool(host, "script"), _tool(host, "bwrap")
+    command = shlex.join([bwrap, *argv[1:]])
     return (
-        ["script", "--return", "-q", "-E", "never", "-c", command, "/dev/null"],
+        [script, "--return", "-q", "-E", "never", "-c", command, "/dev/null"],
         {**env, "SHELL": "/bin/bash"},
     )
 
 
-def _exec_terminal(host: Host, terminal: list[str], env: Mapping[str, str]) -> NoReturn:
-    """``exec script ...``: script is found through PATH, as in the bash."""
-    script = shutil.which(terminal[0], path=env.get("PATH", os.defpath))
-    if script is None:
-        _refuse(f"claude-sandbox: {terminal[0]}: command not found", 127)
-    _exec(host, script, terminal, env)
+def _tool(host: Host, name: str) -> str:
+    path = host.find_tool(name)
+    if path is None:
+        _refuse(
+            f"claude-sandbox: {name} not found in {':'.join(TOOL_PATH)};"
+            " the sandbox needs it installed there.",
+            127,
+        )
+    return path
 
 
 def _exec(host: Host, path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:

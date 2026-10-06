@@ -18,7 +18,16 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 # The modules the launch path imports (ADR 26: standard library only).
-LAUNCH_PATH = ("bwrap", "config", "errors", "gitconfig", "jail", "profiles", "shadow")
+LAUNCH_PATH = (
+    "bwrap",
+    "config",
+    "errors",
+    "gitconfig",
+    "jail",
+    "profiles",
+    "shadow",
+    "tools",
+)
 
 # Stub execvpe, run main(), then report what it would exec, where the package
 # was imported from, and every top-level module that importing and running it,

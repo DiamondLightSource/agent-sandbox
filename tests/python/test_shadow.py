@@ -24,6 +24,7 @@ from claude_sandbox.bwrap import bwrap_argv
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.profiles import PROFILES, VERIFY_BATTERY
+from claude_sandbox.tools import TOOL_PATH, find_tool
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -86,7 +87,9 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     (tmp_path / "home").mkdir()
     (tmp_path / "work").mkdir()
     (tmp_path / "skills/alpha").mkdir(parents=True)
-    executable(tmp_path / "bin/script")
+    tools = tmp_path / "tools"
+    executable(tools / "script")
+    executable(tools / "bwrap")
     identity = {"user.name": "A U Thor", "user.email": "a@example.invalid"}
     host = shadow.Host(
         config_path=str(tmp_path / "etc/claude-sandbox.conf"),
@@ -96,6 +99,7 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
         execve=fake_execve,
         git_config_get=lambda key, env: identity[key],
         mountinfo=str(tmp_path / "mountinfo"),
+        find_tool=lambda name: find_tool(name, search=(str(tools),)),
     )
     (tmp_path / "mountinfo").write_text("")
     monkeypatch.chdir(tmp_path / "work")
@@ -107,8 +111,9 @@ def test_launch_wraps_the_bwrap_argv_in_script(
     fx: Fixture, capsys: pytest.CaptureFixture[str]
 ) -> None:
     ex = fx.run("--chrome", "a b", "")
-    assert ex.path == str(fx.root / "bin/script")
-    assert ex.argv[:6] == ["script", "--return", "-q", "-E", "never", "-c"]
+    script = str(fx.root / "tools/script")
+    assert ex.path == script
+    assert ex.argv[:6] == [script, "--return", "-q", "-E", "never", "-c"]
     assert ex.argv[7:] == ["/dev/null"]
     env = parse_config(fx.host.config_path, fx.env)
     expected = bwrap_argv(
@@ -121,7 +126,8 @@ def test_launch_wraps_the_bwrap_argv_in_script(
         shipped_skills_dir=fx.host.shipped_skills_dir,
         gitconfig_path=fx.host.gitconfig_path,
     )
-    assert shlex.split(ex.argv[6]) == expected
+    # bwrap by absolute path, so the inner shell looks nothing up.
+    assert shlex.split(ex.argv[6]) == [str(fx.root / "tools/bwrap"), *expected[1:]]
     assert expected[-3:] == ["--no-chrome", "a b", ""]
     assert ex.env == {**env, "SHELL": "/bin/bash"}
     # What the builder binds exists now.
@@ -235,9 +241,24 @@ def test_refusals_before_launch(
         shadow.run("claude", [], fx.env, fx.host)
 
     Path(fx.host.config_path).write_text("egress-jail = 0\n")
-    fx.env["PATH"] = str(fx.root / "nowhere")
-    assert fx.refused() == 127
-    assert "script: command not found" in capsys.readouterr().err
+    for tool in ("script", "bwrap"):
+        (fx.root / "tools" / tool).rename(fx.root / tool)
+        assert fx.refused() == 127
+        assert f"{tool} not found in /usr/bin:/bin" in capsys.readouterr().err
+        (fx.root / tool).rename(fx.root / "tools" / tool)
+
+
+def test_tools_never_come_from_path(fx: Fixture) -> None:
+    """ADR 26: no executable is found through PATH."""
+    planted = fx.root / "on-path"
+    for tool in ("script", "bwrap", "git"):
+        executable(planted / tool)
+    fx.env["PATH"] = str(planted)
+    fx.host = replace(fx.host, find_tool=find_tool)  # the real fixed path
+    ex = fx.run()
+    assert str(planted) not in ex.path
+    assert str(planted) not in ex.argv[6]
+    assert ex.path.rpartition("/")[0] in TOOL_PATH
 
 
 def test_unreadable_conf_refuses(
@@ -394,14 +415,22 @@ def test_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert shadow.working_directory({}) == real
 
 
-def test_git_identity_comes_from_git_on_path(tmp_path: Path) -> None:
+def test_git_identity_comes_from_the_fixed_tool_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = tmp_path / "gitconfig"
     cfg.write_text("[user]\n\tname = Real Name\n")
     env = {"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": str(cfg)}
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     assert shadow.read_git_config("user.name", env) == "Real Name"
     assert shadow.read_git_config("user.email", env) == ""
-    env["PATH"] = str(tmp_path)  # no git at all: an empty identity
+    env["PATH"] = str(tmp_path)  # PATH plays no part
+    assert shadow.read_git_config("user.name", env) == "Real Name"
+
+    def nowhere(name: str) -> None:
+        return None
+
+    monkeypatch.setattr(shadow, "find_tool", nowhere)  # no git at all
     assert shadow.read_git_config("user.name", env) == ""
 
 

@@ -74,6 +74,7 @@ def launch(root: Path, *args: str, persistent: bool = True, sig: int = 0) -> Lau
         "conf": str(root / "etc/claude-sandbox.conf"),
         "gitconfig": str(root / "etc/claude-gitconfig"),
         "skills": str(root / "skills"),
+        "tools": str(root / "bin"),
         "signal": sig,
     }
     argv = [sys.executable, "-I", str(DRIVER), json.dumps(spec), "pi", *args]

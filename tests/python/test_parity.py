@@ -39,6 +39,7 @@ from claude_sandbox.config import (
 )
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.profiles import LIBEXEC, PROFILES, agent_profile
+from claude_sandbox.tools import TOOL_PATH, find_tool
 
 REPO = Path(__file__).resolve().parents[2]
 SHADOW = REPO / ".devcontainer" / "claude-sandbox" / "claude-shadow"
@@ -876,7 +877,9 @@ LAUNCH_TREE = (
     "libexec/skills/beta/SKILL.md",
 )
 RECORDERS = (
-    "bin/script",
+    "bin/script",  # the bash finds it through PATH
+    "tools/script",  # the Python on its fixed tool path, with bwrap
+    "tools/bwrap",
     "home/.local/bin/claude",
     "libexec/claude",
     "libexec/codex-dist/bin/codex",
@@ -896,6 +899,7 @@ class Launch:
     conf: str = "egress-jail = 0\n"
     tree: tuple[str, ...] = ()
     absent: tuple[str, ...] = ()  # recorders to leave out (an uninstalled agent)
+    wrapped: bool = True  # ends in the script(1) wrap (not a refusal or nesting)
 
 
 LAUNCHES = [
@@ -936,13 +940,17 @@ LAUNCHES = [
     ),
     Launch("launch-verify", "verify.sh", args=("--sandbox-verify",)),
     Launch(
-        "launch-verify-args", "none: takes no arguments", args=("--sandbox-verify", "x")
+        "launch-verify-args",
+        "none: takes no arguments",
+        args=("--sandbox-verify", "x"),
+        wrapped=False,
     ),
     Launch(
         "launch-nested",
         "codex_launch.sh nested-launch",
         args=("--chrome", "-p", "hi"),
         env={"IS_SANDBOX": "1"},
+        wrapped=False,
     ),
     Launch(
         "launch-nested-codex",
@@ -950,6 +958,7 @@ LAUNCHES = [
         argv0="codex",
         args=("agents", "--no-alt-screen"),
         env={"IS_SANDBOX": "1"},
+        wrapped=False,
     ),
     Launch(
         "launch-nested-verify",
@@ -957,6 +966,7 @@ LAUNCHES = [
         argv0="pi",
         args=("--sandbox-verify",),
         env={"IS_SANDBOX": "1"},
+        wrapped=False,
     ),
     Launch(
         "launch-unknown-name", "none: an unrecognised argv[0] warns", argv0="claude-dev"
@@ -971,22 +981,26 @@ LAUNCHES = [
         "launch-bad-agent",
         "none: CLAUDE_SANDBOX_AGENT is a closed set",
         env={"CLAUDE_SANDBOX_AGENT": "sh"},
+        wrapped=False,
     ),
     Launch(
         "launch-missing-binary",
         "smoke.sh (an unbacked shadow loud-fails)",
         argv0="pi",
         absent=("libexec/pi-run",),
+        wrapped=False,
     ),
     Launch(
         "launch-bad-device",
         "11 invalid sandbox device (launch body)",
         conf="egress-jail = 0\nallow-device = /etc/passwd\n",
+        wrapped=False,
     ),
     Launch(
         "launch-bad-model-port",
         "none: a known divergence (KNOWN_DIVERGENCES)",
         conf="egress-jail = 0\nlocal-model-port = 99999\n",
+        wrapped=False,
     ),
     Launch(
         "launch-env-and-conf",
@@ -1021,9 +1035,9 @@ def launch_fixture(root: Path, sc: Launch) -> dict[str, str]:
 
 
 def bash_words(command: str) -> list[str]:
-    """The words bash reads from a script -c command that runs bwrap."""
+    """The words bash reads from a script -c command (one simple command)."""
     proc = subprocess.run(
-        [BASH, "-c", 'bwrap() { printf "%s\\0" "$@"; }; ' + command],
+        [BASH, "-c", "set -- " + command + '; printf "%s\\0" "$@"'],
         capture_output=True,
         check=True,
     )
@@ -1110,6 +1124,7 @@ def py_launch(root: Path, sc: Launch, capsys: pytest.CaptureFixture[str]) -> lis
             for n, p in PROFILES.items()
         },
         execve=record,
+        find_tool=lambda name: find_tool(name, search=(f"{root}/tools", *TOOL_PATH)),
     )
     status, argv = 0, None
     exec_env: Mapping[str, str] = {}
@@ -1143,6 +1158,29 @@ def test_launch_matches_bash(
 
 
 # A divergence entry that names no scenario would silently check nothing.
+# Every launch that ends in the script(1) wrap shows the tool-path difference.
+TOOLS_DIVERGENCE = Divergence(
+    "The Python shadow runs script and bwrap from a fixed root-owned tool "
+    "path by absolute path (ADR 26: no executable found through PATH); the "
+    "bash shadow finds both through PATH.",
+    bash_shows=lambda out: "{root}/bin/script" in out and "bwrap" in out,
+    python_shows=lambda out: (
+        "{root}/tools/script" in out and "{root}/tools/bwrap" in out
+    ),
+    same_after=lambda out: [
+        {
+            "{root}/bin/script": "<script>",
+            "{root}/tools/script": "<script>",
+            "bwrap": "<bwrap>",
+            "{root}/tools/bwrap": "<bwrap>",
+        }.get(line, line)
+        for line in out
+    ],
+)
+for _launch in LAUNCHES:
+    if _launch.wrapped:
+        KNOWN_DIVERGENCES.setdefault(_launch.name, TOOLS_DIVERGENCE)
+
 _unmatched = (
     set(KNOWN_DIVERGENCES)
     - {s.name for s in SCENARIOS}

@@ -3,8 +3,8 @@
 For the tests that need what an in-process call cannot give: a controlling
 terminal, a signal that kills, a real exec of script(1). Run as
 ``python -I shadow_driver.py SPEC_JSON AGENT [ARG...]``; SPEC names the
-package source, the fixture paths and, optionally, a signal to raise while
-the git config's temporary file exists.
+package source, the fixture paths (a fake bwrap in ``tools``) and,
+optionally, a signal to raise while the git config's temporary file exists.
 """
 
 import json
@@ -18,6 +18,7 @@ sys.path.insert(0, cast(str, spec["src"]))
 
 from claude_sandbox import shadow  # noqa: E402
 from claude_sandbox.profiles import PROFILES  # noqa: E402
+from claude_sandbox.tools import TOOL_PATH, find_tool  # noqa: E402
 
 real = cast(str, spec["real"])
 host = shadow.Host(
@@ -26,6 +27,10 @@ host = shadow.Host(
     shipped_skills_dir=cast(str, spec["skills"]),
     profiles={name: replace(p, real=real) for name, p in PROFILES.items()},
     git_config_get=lambda key, env: "",
+    # The fixture's fake bwrap first, then the real script(1).
+    find_tool=lambda name: find_tool(
+        name, search=(cast(str, spec["tools"]), *TOOL_PATH)
+    ),
 )
 
 signum = cast(int, spec.get("signal", 0))
