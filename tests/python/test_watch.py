@@ -178,19 +178,44 @@ def test_a_directory_that_appears_has_no_baseline(lay: Layout) -> None:
 
 
 def test_quarantine_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert watch.quarantine(str(tmp_path / "gone")) is None
+    t = str(tmp_path)
+    assert watch.quarantine(t, "gone") is None
     os.mkfifo(tmp_path / "fifo")
-    assert watch.quarantine(str(tmp_path / "fifo")) is None
+    assert watch.quarantine(t, "fifo") is None
     executable(tmp_path / "f").chmod(0o751)
-    assert watch.quarantine(str(tmp_path / "f")) is not None
+    assert watch.quarantine(t, "f") == f"cleared the execute bits of {t}/f"
     assert mode(tmp_path / "f") == 0o640
     executable(tmp_path / "g")
+    assert watch.quarantine(f"{t}/none", "g") is None  # no such directory
 
     def refuse(*args: object) -> None:
         raise PermissionError(1, "Operation not permitted")
 
     monkeypatch.setattr(os, "chmod", refuse)
-    assert watch.quarantine(str(tmp_path / "g")) is None
+    assert watch.quarantine(t, "g") is None
+
+
+def test_quarantine_never_follows_a_swapped_directory(tmp_path: Path) -> None:
+    """A component of the directory's path swapped for a link: no action
+    lands where the link leads."""
+    real, elsewhere = tmp_path / "real", tmp_path / "elsewhere"
+    executable(elsewhere / "bin/git")
+    (real / "bin").mkdir(parents=True)
+    (tmp_path / "venv").symlink_to(elsewhere)  # was a directory at the look
+    assert watch.quarantine(str(tmp_path / "venv/bin"), "git") is None
+    assert mode(elsewhere / "bin/git") == 0o755
+    assert watch.open_dir(str(tmp_path / "venv")) is None  # the link itself
+    fd = watch.open_dir(str(real))
+    assert fd is not None
+    os.close(fd)
+
+
+def test_open_dir_without_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_proc(path: str) -> str:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "readlink", no_proc)
+    assert watch.open_dir(str(tmp_path)) is None
 
 
 def test_signatures(tmp_path: Path) -> None:
@@ -208,7 +233,7 @@ def test_a_name_gone_before_its_quarantine(
     s.start()
     executable(lay.venv / "git")
 
-    def gone(path: str) -> None:
+    def gone(directory: str, name: str) -> None:
         return None
 
     monkeypatch.setattr(watch, "quarantine", gone)

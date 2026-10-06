@@ -252,23 +252,51 @@ def offends(target: Target, name: str, roots: Sequence[str] = ()) -> str | None:
     return None
 
 
-def quarantine(path: str) -> str | None:
-    """Make ``path`` unrunnable; what was done, or None if it was gone.
-
-    A link is removed (its target recorded). A file loses its execute bits
-    through a descriptor opened without following links, so a link swapped
-    in after the check is never followed; chmod goes through /proc so no
-    read permission is needed.
+def open_dir(directory: str) -> int | None:
+    """A descriptor for ``directory``, or None unless it is that very
+    directory: a session that swaps a component of the path for a link
+    between the look and the action cannot redirect the action elsewhere.
     """
     try:
-        st = os.lstat(path)
-        if stat.S_ISLNK(st.st_mode):
-            target = os.readlink(path)
-            os.unlink(path)
-            return f"removed the link {describe(path)} -> {describe(target)}"
-        fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = os.open(
+            directory, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
     except OSError:
         return None
+    try:
+        if os.readlink(f"/proc/self/fd/{fd}") == directory:
+            return fd
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
+def quarantine(directory: str, name: str) -> str | None:
+    """Make ``name`` in ``directory`` unrunnable; what was done, or None if
+    it was gone.
+
+    Every step goes through a descriptor for the directory, checked to be
+    that directory, so no link in its path is followed. A link is removed
+    (its target recorded). A file loses its execute bits through a
+    descriptor opened without following links; chmod goes through /proc so
+    no read permission is needed.
+    """
+    shown = describe(os.path.join(directory, name))
+    dirfd = open_dir(directory)
+    if dirfd is None:
+        return None
+    try:
+        st = os.lstat(name, dir_fd=dirfd)
+        if stat.S_ISLNK(st.st_mode):
+            target = os.readlink(name, dir_fd=dirfd)
+            os.unlink(name, dir_fd=dirfd)
+            return f"removed the link {shown} -> {describe(target)}"
+        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dirfd)
+    except OSError:
+        return None
+    finally:
+        os.close(dirfd)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -278,7 +306,7 @@ def quarantine(path: str) -> str | None:
         return None
     finally:
         os.close(fd)
-    return f"cleared the execute bits of {describe(path)}"
+    return f"cleared the execute bits of {shown}"
 
 
 # --- state: the alerts and the baselines ----------------------------------------
@@ -454,7 +482,7 @@ class Session:
             why = offends(target, name, self.roots)
             if why is None:
                 continue
-            action = quarantine(os.path.join(target.directory, name))
+            action = quarantine(target.directory, name)
             if action is not None:
                 done.append(f"{action} ({why})")
         record(self.state, done)
