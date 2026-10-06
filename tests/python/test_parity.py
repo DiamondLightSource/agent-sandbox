@@ -485,14 +485,40 @@ class Divergence:
     """A known, deliberate difference between the bash and the port.
 
     ``bash_shows`` and ``python_shows`` say what each side's outcome (an argv,
-    or a config report) looks like. Unless ``racy``, the two outcomes must also
-    differ, so an entry fails once the bash is fixed and can then be deleted.
+    or a config report) looks like. ``same_after`` removes exactly the
+    difference, and the rest of the two outcomes must then be identical, so
+    a regression elsewhere in a divergent scenario still fails. Unless
+    ``racy``, the outcomes must also differ, so an entry fails once the bash
+    is fixed and can then be deleted.
     """
 
     why: str
     bash_shows: Callable[[list[str]], bool]
     python_shows: Callable[[list[str]], bool]
+    same_after: Callable[[list[str]], list[str]]
     racy: bool = False  # the bash outcome is not deterministic
+
+
+def _drop_setenv(name: str) -> Callable[[list[str]], list[str]]:
+    """Remove every ``--setenv NAME VALUE`` triple."""
+
+    def drop(argv: list[str]) -> list[str]:
+        out: list[str] = []
+        i = 0
+        while i < len(argv):
+            if argv[i] == "--setenv" and argv[i + 1 : i + 2] == [name]:
+                i += 3
+                continue
+            out.append(argv[i])
+            i += 1
+        return out
+
+    return drop
+
+
+def _drop_lines(*prefixes: str) -> Callable[[list[str]], list[str]]:
+    """Remove the report lines starting with any of ``prefixes``."""
+    return lambda report: [r for r in report if not r.startswith(prefixes)]
 
 
 # Every known divergence, keyed by the scenario or conf case that shows it.
@@ -510,12 +536,16 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         "jail-writable workspace; the port only splits (config.words).",
         bash_shows=lambda argv: "FOO_GLOB_X" in argv,
         python_shows=lambda argv: "FOO_GLOB_X" not in argv,
+        same_after=_drop_setenv("FOO_GLOB_X"),
     ),
     "ports-glob": Divergence(
         "The bash expands each local-port and callback-port word as a glob "
         "against the cwd; the port only splits, so `1?` stays invalid.",
         bash_shows=lambda report: "local_ports=12" in report,
         python_shows=lambda report: "local_ports=1?" in report,
+        same_after=_drop_lines(
+            "local_ports=", "local_model_enabled=", "validate_local_model_port="
+        ),
     ),
     "ports-overlap-race": Divergence(
         "The bash checks callback/local overlap with `local_ports | grep -qx` "
@@ -526,6 +556,7 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         python_shows=lambda report: any(
             "1455 is listed as both" in line for line in report
         ),
+        same_after=_drop_lines("validate_callback_ports="),
         racy=True,
     ),
     "skills-locale-order": Divergence(
@@ -534,6 +565,7 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         "every host. Only the order of binds to distinct paths differs.",
         bash_shows=lambda argv: _before(argv, "/alpha", "/Beta"),
         python_shows=lambda argv: _before(argv, "/Beta", "/alpha"),
+        same_after=sorted,
     ),
 }
 
@@ -545,6 +577,7 @@ def compare(name: str, py: list[str], sh: list[str]) -> None:
         assert py == sh
         return
     assert known.python_shows(py), py
+    assert known.same_after(py) == known.same_after(sh)
     if not known.racy:
         assert known.bash_shows(sh), sh
         assert py != sh
