@@ -727,6 +727,11 @@ fetch_uv() {
 python_install() {
     local pkg uv interp py_dir want var
     local -a scrub=()
+    # ADR 26: nothing found through the caller's PATH. Set here, not at the
+    # top of the file, which the image entrypoint sources; the Python
+    # installer exec'd below inherits it. The same directories as
+    # tools.TOOL_PATH.
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin
     pkg="$(python_package)"
     if [ "$SMOKE" = 1 ]; then
         if [ -z "${CLAUDE_SANDBOX_SMOKE_PYTHON:-}" ]; then

@@ -126,6 +126,7 @@ def test_update(
     with pytest.raises(Exec) as exc:
         main("update")
     assert os.environ["CLAUDE_SANDBOX_IMPL"] == "python"  # a Python install stays one
+    assert os.environ["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
     assert clones[0][:3] == [find_tool("git"), "clone", "--quiet"]
     assert clones[0][0] != str(on_path / "git")
     tmp = clones[0][-1].rsplit("/", 1)[0]

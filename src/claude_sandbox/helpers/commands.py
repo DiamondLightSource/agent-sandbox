@@ -15,7 +15,7 @@ import tempfile
 
 from .. import context, watch
 from ..context import CONTAINER, HOST, JAIL, requires
-from ..tools import find_tool
+from ..tools import TOOL_PATH, find_tool
 from . import auth
 from .doctor import Doctor
 from .pi_local import pi_local as configure_pi
@@ -165,6 +165,9 @@ def update(ns: argparse.Namespace) -> int:
     # install time only.
     if os.path.exists(PYTHON_INSTALL):
         os.environ.setdefault("CLAUDE_SANDBOX_IMPL", "python")
+    # The installer runs as root: it gets the fixed tool directories, not
+    # the caller's PATH (ADR 26).
+    os.environ["PATH"] = ":".join(TOOL_PATH)
     # `install` picks the newest stable tag; the clone is removed after.
     script = '/bin/bash "$1/claude-sandbox/install" && /bin/rm -rf "$1"'
     return _exec("/bin/bash", ["-c", script, "claude-sandbox-update", tmp])
