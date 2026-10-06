@@ -101,11 +101,15 @@ jobs:
   python:
     # The Python package (ADR 26): lint, type-check and test against the
     # committed dev lockfile. pytest collects tests/python only; the bash
-    # suites above stay as they are. Pinned to the requires-python floor so
-    # the oldest supported Python is the one exercised.
+    # suites above stay as they are. Run on the requires-python floor and on
+    # 3.13, the interpreter the sandbox will install: os.path.realpath and
+    # friends differ between the two, and the argv must not.
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
     env:
-      UV_PYTHON: "3.11"
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -125,6 +129,8 @@ jobs:
         run: uv run pyright
 
       # Coverage settings, including fail_under = 95, live in pyproject.toml.
+      # The bash-vs-Python argv comparison (tests/python/test_parity.py)
+      # also runs here; it needs bash, coreutils and git, which the runner has.
       - name: pytest with coverage
         run: uv run pytest --cov
 

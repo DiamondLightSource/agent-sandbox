@@ -16,22 +16,28 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
+# The modules the launch path will import (ADR 26: standard library only).
+LAUNCH_PATH = ("bwrap", "config", "errors", "gitconfig", "profiles")
+
 # Stub execvpe, run main(), then report what it would exec, where the package
-# was imported from, and every top-level module that importing and running it
-# added which is neither the stdlib nor the package. Site-packages stay on the
-# path (python -I keeps the venv's), so a third-party import resolves and is
-# reported rather than failing to import; what `site` loaded before the
-# package (a venv's _virtualenv shim) is the environment, not the launch path.
-DRIVER = """
-import json, os, sys
+# was imported from, and every top-level module that importing and running it,
+# and importing the launch-path modules, added which is neither the stdlib nor
+# the package. Site-packages stay on the path (python -I keeps the venv's), so
+# a third-party import resolves and is reported rather than failing to import;
+# what `site` loaded before the package (a venv's _virtualenv shim) is the
+# environment, not the launch path.
+DRIVER = f"""
+import importlib, json, os, sys
 before = set(sys.modules)
 def execvpe(file, args, env):
     import claude_sandbox
-    foreign = sorted({
+    for name in {LAUNCH_PATH!r}:
+        importlib.import_module("claude_sandbox." + name)
+    foreign = sorted({{
         name.partition(".")[0] for name in set(sys.modules) - before
-    } - set(sys.stdlib_module_names) - {"__main__", "claude_sandbox"})
-    print(json.dumps({"file": file, "args": args, "foreign": foreign,
-                      "pkg": claude_sandbox.__file__}))
+    }} - set(sys.stdlib_module_names) - {{"__main__", "claude_sandbox"}})
+    print(json.dumps({{"file": file, "args": args, "foreign": foreign,
+                      "pkg": claude_sandbox.__file__}}))
     sys.exit(0)
 os.execvpe = execvpe
 sys.argv = ["claude-sandbox", "--help"]
@@ -40,7 +46,7 @@ claude_sandbox.main()
 """
 
 
-def test_wheel_execs_its_bundled_launcher_using_only_the_stdlib(
+def test_wheel_launch_path_uses_only_the_stdlib(
     tmp_path: Path,
 ) -> None:
     uv = shutil.which("uv")
