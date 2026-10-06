@@ -43,6 +43,8 @@ CODEX_MANAGED_CONFIG = "/etc/codex/managed_config.toml"
 CODEX_MARKER = "# Managed by claude-sandbox — do not edit by hand."
 USER_STATUSLINE_COMMAND = "bash $HOME/.claude/statusline-command.sh"
 SHARED_CONFIG = "/user-terminal-config"
+# ADR 26: the installer runs as root and execs nothing found through PATH.
+GIT = "/usr/bin/git"
 
 CODEX_MANAGED_BODY = f"""{CODEX_MARKER}
 #
@@ -122,7 +124,8 @@ def describe(source: Path) -> str:
     """What ``stamp_version`` records when no version is given."""
     try:
         out = subprocess.run(
-            ["git", "-C", str(source), "describe", "--tags", "--always", "--dirty"],
+            [GIT, "-c", "core.fsmonitor=false", "-C", str(source)]
+            + ["describe", "--tags", "--always", "--dirty"],
             capture_output=True,
             text=True,
             check=True,

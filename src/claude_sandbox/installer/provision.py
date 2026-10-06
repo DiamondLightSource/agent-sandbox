@@ -15,7 +15,6 @@ part of issue #72 phase 4.
 import argparse
 import mmap
 import os
-import shutil
 import stat
 import struct
 import subprocess
@@ -265,11 +264,12 @@ def _venv_home(cfg: Path) -> Path:
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Install the pinned interpreter.")
     parser.add_argument("package", help="the claude-sandbox wheel to install")
-    parser.add_argument("--uv", default=os.environ.get("UV") or shutil.which("uv"))
+    # ADR 26: nothing run as root is found through PATH or the environment.
+    parser.add_argument("--uv", required=True, help="absolute path to uv")
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
-    if not args.uv:
-        parser.error("uv not found; pass --uv")
+    if not os.path.isabs(args.uv):
+        parser.error("--uv must be an absolute path")
     owner = (0, 0) if os.geteuid() == 0 else None
     python = provision(args.uv, args.package, args.root, owner=owner)
     print(f"{python}: {size(args.root / 'python') / 1e6:.1f} MB interpreter")

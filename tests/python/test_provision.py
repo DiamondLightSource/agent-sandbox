@@ -220,11 +220,6 @@ def test_main(
     p.main(["w.whl", "--uv", "/opt/uv", "--root", "/nonexistent"])
     assert seen == [("/opt/uv", "w.whl", Path("/nonexistent"))]
     assert "MB interpreter" in capsys.readouterr().out
-    monkeypatch.delenv("UV", raising=False)
-
-    def which(name: str) -> None:
-        return None
-
-    monkeypatch.setattr(shutil, "which", which)
-    with pytest.raises(SystemExit):
-        p.main(["w.whl"])
+    for argv in (["w.whl"], ["w.whl", "--uv", "uv"]):  # never from PATH
+        with pytest.raises(SystemExit):
+            p.main(argv)
