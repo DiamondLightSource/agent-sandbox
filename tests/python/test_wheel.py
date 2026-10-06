@@ -29,25 +29,28 @@ LAUNCH_PATH = (
     "tools",
 )
 
-# Stub execvpe, run main(), then report what it would exec, where the package
-# was imported from, and every top-level module that importing and running it,
-# and importing the launch-path modules, added which is neither the stdlib nor
-# the package. Site-packages stay on the path (python -I keeps the venv's), so
-# a third-party import resolves and is reported rather than failing to import;
-# what `site` loaded before the package (a venv's _virtualenv shim) is the
-# environment, not the launch path.
-DRIVER = f"""
-import importlib, json, os, sys
+# Stub execvpe, run main(), then import every module of the package (but
+# __main__, which runs when imported; the shadow test below covers it) and report
+# what main would exec, where the package was imported from, and every
+# top-level module that all this added which is neither the stdlib nor the
+# package (ADR 26: the package has no runtime dependencies). Site-packages stay
+# on the path (python -I keeps the venv's), so a third-party import resolves
+# and is reported rather than failing to import; what `site` loaded before the
+# package (a venv's _virtualenv shim) is the environment, not the package.
+DRIVER = """
+import importlib, json, os, pkgutil, sys
 before = set(sys.modules)
 def execvpe(file, args, env):
     import claude_sandbox
-    for name in {LAUNCH_PATH!r}:
-        importlib.import_module("claude_sandbox." + name)
-    foreign = sorted({{
+    for mod in pkgutil.walk_packages(claude_sandbox.__path__, "claude_sandbox."):
+        if mod.name != "claude_sandbox.__main__":  # importing it runs it
+            importlib.import_module(mod.name)
+    foreign = sorted({
         name.partition(".")[0] for name in set(sys.modules) - before
-    }} - set(sys.stdlib_module_names) - {{"__main__", "claude_sandbox"}})
-    print(json.dumps({{"file": file, "args": args, "foreign": foreign,
-                      "pkg": claude_sandbox.__file__}}))
+    } - set(sys.stdlib_module_names) - {"__main__", "claude_sandbox"})
+    mine = sorted(m for m in sys.modules if m.startswith("claude_sandbox."))
+    print(json.dumps({"file": file, "args": args, "foreign": foreign,
+                      "pkg": claude_sandbox.__file__, "modules": mine}))
     sys.exit(0)
 os.execvpe = execvpe
 sys.argv = ["claude-sandbox", "--help"]
@@ -115,14 +118,25 @@ def run_isolated(site: Path, driver: str, env: dict[str, str]) -> dict[str, Any]
     return result
 
 
-def test_wheel_launch_path_uses_only_the_stdlib(site: Path) -> None:
+def test_wheel_imports_only_the_stdlib(site: Path) -> None:
     result = run_isolated(site, DRIVER, {})
     launcher = site / "claude_sandbox" / "tree" / "container" / "claude-container"
     assert launcher.is_file()
     assert result["file"] == "bash"
     assert Path(result["args"][1]).resolve() == launcher.resolve()
-    # ADR 26: no third-party import on the launch path.
+    # ADR 26: no runtime dependencies, so no third-party import anywhere.
+    modules = {f"claude_sandbox.{m}" for m in (*LAUNCH_PATH, "cli")}
+    assert modules <= set(result["modules"])
     assert result["foreign"] == []
+
+
+def test_the_stdlib_check_can_fail(site: Path) -> None:
+    planted = site / "claude_sandbox" / "planted.py"
+    planted.write_text("import pytest\n")
+    try:
+        assert "pytest" in run_isolated(site, DRIVER, {})["foreign"]
+    finally:
+        planted.unlink()
 
 
 def test_shadow_entry_uses_only_the_stdlib(site: Path) -> None:

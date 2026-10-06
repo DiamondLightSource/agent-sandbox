@@ -8,7 +8,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
-LAUNCHER="$HERE/../container/claude-container"
+# CLAUDE_SANDBOX_TEST_LAUNCHER runs the suite against another launcher, a
+# bash file (tests/python/test_bash_suites.py points it at the Python CLI).
+LAUNCHER="${CLAUDE_SANDBOX_TEST_LAUNCHER:-$HERE/../container/claude-container}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -72,20 +74,24 @@ ver="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$LAUNCHER")"
 [ "$out" = "claude-sandbox $ver" ] && pass || fail "--version printed '$out'"
 
 # --- verbs -----------------------------------------------------------------
-run --; assert_contains "default verb is claude" "$(exec_line)" "exec -it claude-sandbox-project-$(printf '%s' "$TMP/project" | cksum | awk '{print $1}') claude"
-run -- pi -p hi;   case "$(exec_line)" in *" pi -p hi") pass ;; *) fail "pi verb: $(exec_line)" ;; esac
-run -- codex;      case "$(exec_line)" in *" codex") pass ;; *) fail "codex verb: $(exec_line)" ;; esac
-run -- shell;      case "$(exec_line)" in *"exec bash \"\$@\" _ bash") pass ;; *) fail "shell verb default without host SHELL: $(exec_line)" ;; esac
+# The Python CLI names each in-container command by its absolute path (ADR 26),
+# so the command matches with or without /usr/local/bin/ in front ($AT).
+AT='[ /]'
+name="claude-sandbox-project-$(printf '%s' "$TMP/project" | cksum | awk '{print $1}')"
+run --; case "$(exec_line)" in "exec -it $name claude"|"exec -it $name /usr/local/bin/claude") pass ;; *) fail "default verb is claude: $(exec_line)" ;; esac
+run -- pi -p hi;   case "$(exec_line)" in *$AT"pi -p hi") pass ;; *) fail "pi verb: $(exec_line)" ;; esac
+run -- codex;      case "$(exec_line)" in *$AT"codex") pass ;; *) fail "codex verb: $(exec_line)" ;; esac
+run -- shell;      case "$(exec_line)" in *"bash \"\$@\" _ bash") pass ;; *) fail "shell verb default without host SHELL: $(exec_line)" ;; esac
 # The ancestor walk finds this harness (bash) where /proc is readable; inside the
 # sandbox host /proc is bound with foreign PIDs, so it falls back to SHELL (zsh).
 run SHELL=/usr/bin/zsh -- shell;            case "$(exec_line)" in *" _ bash"|*" _ zsh") pass ;; *) fail "shell verb default: $(exec_line)" ;; esac
 run SHELL=/usr/bin/zsh CLAUDE_SANDBOX_SHELL=fish -- shell -c ls; case "$(exec_line)" in *" _ fish -c ls") pass ;; *) fail "CLAUDE_SANDBOX_SHELL override: $(exec_line)" ;; esac
 run CLAUDE_SANDBOX_SHELL=fish --; assert_not_contains "shell choice is not baked at create" "$(create_line)" "-e CLAUDE_SANDBOX_SHELL=fish"
-run -- --resume;   case "$(exec_line)" in *" claude --resume") pass ;; *) fail "agent args without verb: $(exec_line)" ;; esac
-run -- version;    case "$(exec_line)" in *" claude-sandbox version") pass ;; *) fail "version verb not forwarded: $(exec_line)" ;; esac
-run -- gh-auth;    case "$(exec_line)" in *" claude-sandbox gh-auth") pass ;; *) fail "gh-auth verb not forwarded: $(exec_line)" ;; esac
-run -- verify --agent pi; case "$(exec_line)" in *" claude-sandbox verify --agent pi") pass ;; *) fail "verify args not forwarded: $(exec_line)" ;; esac
-run -- doctor --fix; case "$(exec_line)" in *" claude-sandbox doctor --fix") pass ;; *) fail "doctor verb not forwarded: $(exec_line)" ;; esac
+run -- --resume;   case "$(exec_line)" in *$AT"claude --resume") pass ;; *) fail "agent args without verb: $(exec_line)" ;; esac
+run -- version;    case "$(exec_line)" in *$AT"claude-sandbox version") pass ;; *) fail "version verb not forwarded: $(exec_line)" ;; esac
+run -- gh-auth;    case "$(exec_line)" in *$AT"claude-sandbox gh-auth") pass ;; *) fail "gh-auth verb not forwarded: $(exec_line)" ;; esac
+run -- verify --agent pi; case "$(exec_line)" in *$AT"claude-sandbox verify --agent pi") pass ;; *) fail "verify args not forwarded: $(exec_line)" ;; esac
+run -- doctor --fix; case "$(exec_line)" in *$AT"claude-sandbox doctor --fix") pass ;; *) fail "doctor verb not forwarded: $(exec_line)" ;; esac
 
 # --- the container tag: short slug plus 4 hex digits of the path hash ------
 hash="$(printf '%s' "$TMP/project" | cksum | awk '{print $1}')"
@@ -242,7 +248,7 @@ run -- install; [ "$RC" = 2 ] && pass || fail "install verb accepted by the scri
 if [ -e /run/.containerenv ] || [ -e /.dockerenv ]; then
     : > "$LOG"
     ( cd "${PROJECT:-$TMP/project}" && env -i PATH="$TMP/bin:/usr/bin:/bin" HOME="$TMP" LOG="$LOG" MARK="$TMP/mark" \
-        bash "$LAUNCHER" 2>"$TMP/err" ); rc=$?
+        bash "$LAUNCHER" claude 2>"$TMP/err" ); rc=$?
     [ "$rc" = 1 ] && grep -q 'inside' "$TMP/err" && [ -z "$(exec_line)" ] && pass \
         || fail "in-container launch not refused (rc=$rc): $(cat "$TMP/err")"
 else

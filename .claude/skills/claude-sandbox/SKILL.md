@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox
-description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `skills/verify-sandbox/SKILL.md` — or before any Python change that could cross the ADR 26 guardrails (third-party imports on the launch path, an interpreter found via PATH or run without -I, a bwrap bind/env outside bwrap.py, spreading the audit core) or any suggestion to revert to bash-only, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
+description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `skills/verify-sandbox/SKILL.md` — or before any Python change that could cross the ADR 26 guardrails (a runtime dependency or third-party import in the package, an interpreter found via PATH or run without -I, a bwrap bind/env outside bwrap.py, spreading the audit core) or any suggestion to revert to bash-only, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
 ---
 
 # claude-sandbox
@@ -225,8 +225,10 @@ default; the root `pyproject.toml` wheel bundles it verbatim (ADR 23,
 amended by ADR 26).
 
 **Refuse without justification (the ADR 26 guardrails):**
-- Third-party imports on the launch path. The `_shadow` path is stdlib
-  only; `__main__.py` dispatches it before Typer is imported.
+- Runtime dependencies. The package is stdlib-only: no third-party import
+  anywhere, the CLI included (argparse; ADR 26 amended 2026-10-06 to drop
+  Typer, whose rich/pygments/click would sit in PAT-handling, root-run
+  helpers). `__main__.py` dispatches `_shadow` before the CLI is imported.
 - For anything that runs in or launches the jail (the shadow shim and
   everything it execs): an interpreter found through `PATH`
   (`#!/usr/bin/env python3`, bare `python3`), running without `-I`, or
