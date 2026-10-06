@@ -89,10 +89,11 @@ def probe_userns_or_refuse(options: Options, run: Run = subprocess.run) -> None:
     if options.smoke:
         return
     bwrap = find_tool("bwrap")
-    argv = [f"{bwrap}", "--ro-bind", "/", "/", "--unshare-user-try"]
-    argv += ["--unshare-pid", "--", "/bin/true"]
+    if bwrap is None:
+        raise InstallError(USERNS_REFUSAL)
+    argv = [bwrap, "--ro-bind", "/", "/", "--unshare-user-try", "--unshare-pid"]
     quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    if bwrap is None or run(argv, check=False, **quiet).returncode != 0:
+    if run([*argv, "--", "/bin/true"], check=False, **quiet).returncode:
         raise InstallError(USERNS_REFUSAL)
 
 

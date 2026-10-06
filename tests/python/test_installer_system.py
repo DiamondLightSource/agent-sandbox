@@ -92,6 +92,8 @@ def test_platform_checks_and_apt(
     monkeypatch.setattr(system, "find_tool", missing)
     with pytest.raises(InstallError, match="Debian/Ubuntu only"):
         system.probe_or_refuse(options)
+    with pytest.raises(InstallError, match="user namespaces"):  # no bwrap
+        system.probe_userns_or_refuse(options, run)
     with pytest.raises(InstallError, match="apt-get is not installed"):
         system.apt_install(options, run)
     monkeypatch.setattr(system, "find_tool", present)
