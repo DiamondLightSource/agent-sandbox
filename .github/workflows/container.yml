@@ -166,11 +166,11 @@ jobs:
             -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
             claude-sandbox:test bash /opt/claude-sandbox/tests/pi_e2e.sh
 
-      # The opt-in Python shadow (issue #72 phase 2a), installed over the
-      # baked bash one. It has no egress jail until phase 2b, so it must
-      # refuse while the jail is on, and pass the same launches with it off.
+      # The opt-in Python shadow (issue #72 phase 2), installed over the
+      # baked bash one, with the egress jail on (the default): the same
+      # launches as the bash step above.
       # Runs after the bash steps above and changes nothing they use.
-      - name: "Test: opt-in Python shadow (egress jail off)"
+      - name: "Test: opt-in Python shadow (egress jail on)"
         run: |
           podman run --rm -t \
             --security-opt seccomp=unconfined \
@@ -186,13 +186,12 @@ jobs:
                 bash /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh --image-build \
                 || exit "$?"
               grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
-              if out="$(claude --version 2>&1)"; then
-                echo "the Python shadow launched with the egress jail on"; exit 1
-              fi
-              printf "%s\n" "$out"
-              case "$out" in *"egress jail"*) ;; *) exit 1 ;; esac
-              export CLAUDE_SANDBOX_EGRESS_JAIL=0
-              claude --version || exit "$?"
+              claude --version || {
+                rc=$?
+                echo "--- /tmp/claude-pasta.log ---"
+                cat /tmp/claude-pasta.log 2>/dev/null || true
+                exit "$rc"
+              }
               for agent in claude codex pi; do
                 claude-sandbox verify --agent "$agent" || exit "$?"
               done'

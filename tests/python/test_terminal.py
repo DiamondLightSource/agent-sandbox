@@ -6,11 +6,11 @@ The pseudo-terminal tests give that process a controlling terminal with
 the stdlib ``pty`` module, so Ctrl-C is a byte typed at a terminal, as it
 is for a user, not a signal sent by the test.
 
-In phase 2a the shadow execs script(1) and is gone before the agent
-starts, so SIGINT while the agent owns the terminal is script's and the
-agent's business; the test pins that nothing in the Python process is left
-in the way. The egress jail keeps a parent process alive (phase 2b), which
-needs its own tests.
+With the egress jail off the shadow execs script(1) and is gone before the
+agent starts, so SIGINT while the agent owns the terminal is script's and
+the agent's business; the test pins that nothing in the Python process is
+left in the way. The egress jail keeps a parent process alive; its terminal
+tests are in test_jail_netns.py.
 """
 
 import json

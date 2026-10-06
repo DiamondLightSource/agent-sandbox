@@ -8,7 +8,7 @@ lands in ``main`` below (ADR 26). Read top to bottom: ``run`` is the order a
 launch happens in, and each step is a function just below it.
 
 This module adds no bind and no environment to the bwrap argv; ``bwrap.py``
-builds all of it. The egress jail lives behind the seam in ``jail.py``.
+builds all of it. The egress jail is ``jail.py``.
 
 Standard library only: this module is on the launch path (ADR 26).
 """
@@ -159,9 +159,17 @@ def run(
         check_config_persistence(profile, env, term, host.mountinfo)
     prepare_home(profile, env, config, term, host.shipped_skills_dir)
 
+    # Stage the jail's resolver before the argv is built: bwrap.py binds the
+    # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf.
     jailed = egress_jail_enabled(config)
     if jailed:
-        env = jail.stage_dns(env, term.warn)
+        staged = jail.stage_dns(env)
+        for warning in staged.warnings:
+            term.warn(warning)
+        if staged.path is None:
+            env.pop(jail.JAIL_RESOLV, None)
+        else:
+            env[jail.JAIL_RESOLV] = staged.path
     argv = build_argv(profile, env, args, verify, host)
     terminal, launch_env = terminal_command(argv, env, host)
     term.pause(verify)

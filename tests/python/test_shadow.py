@@ -167,28 +167,59 @@ def test_inherited_gitconfig_path_never_reaches_the_builder(fx: Fixture) -> None
     assert "/evil/gitconfig" not in argv
 
 
-def test_the_egress_jail_is_refused_not_skipped(
-    fx: Fixture, capsys: pytest.CaptureFixture[str]
-) -> None:
+@dataclass
+class Launched(Exception):
+    """jail.launch was called (it never returns), with these arguments."""
+
+    config: Config
+    env: dict[str, str]
+    command: list[str]
+
+
+def jailed(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch, staged: jail.StagedDns
+) -> Launched:
+    def launch(config: Config, env: Mapping[str, str], command: list[str]) -> NoReturn:
+        raise Launched(config, dict(env), list(command))
+
+    def stage_dns(*args: object) -> jail.StagedDns:
+        return staged
+
+    monkeypatch.setattr(jail, "stage_dns", stage_dns)
+    monkeypatch.setattr(jail, "launch", launch)
     Path(fx.host.config_path).write_text("")  # the jail is on by default
-    with pytest.raises(SandboxError, match="egress jail"):
+    with pytest.raises(Launched) as exc:
         shadow.run("claude", [], fx.env, fx.host)
-    # The refusal names the fix, never the operator opt-out.
-    assert "EGRESS_JAIL" not in jail.NOT_PORTED
+    return exc.value
 
 
-def test_a_jailed_launch_goes_through_the_jail_seam_only(
+def test_a_jailed_launch_stages_dns_then_goes_through_the_jail(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resolv = fx.root / "claude-jail-resolv.x"
+    resolv.write_text("nameserver 192.0.2.53\n")
+    staged = jail.StagedDns(str(resolv), ("egress jail — a warning",))
+    call = jailed(fx, monkeypatch, staged)
+    assert call.config.egress_jail == ""
+    assert call.env["CLAUDE_SANDBOX_JAIL_RESOLV"] == str(resolv)
+    assert call.env["SHELL"] == "/bin/bash"
+    # The staged resolver is bound by bwrap.py, and the warning was shown.
+    argv = shlex.split(call.command[6])
+    assert argv[argv.index(str(resolv)) - 1 :][:3] == [
+        "--ro-bind", str(resolv), "/etc/resolv.conf"
+    ]  # fmt: skip
+    assert capsys.readouterr().err.endswith(
+        "\nclaude-sandbox: egress jail — a warning\n"
+    )
+
+
+def test_an_unstaged_resolver_is_never_bound(
     fx: Fixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    Path(fx.host.config_path).write_text("")
-
-    def staged(env: Mapping[str, str], warn: object) -> dict[str, str]:
-        return {**env, "CLAUDE_SANDBOX_JAIL_RESOLV": str(fx.root / "resolv")}
-
-    monkeypatch.setattr(jail, "stage_dns", staged)
-    # Never the unjailed exec: the seam refuses until phase 2b fills it.
-    with pytest.raises(SandboxError, match="egress jail"):
-        shadow.run("claude", [], fx.env, fx.host)
+    fx.env["CLAUDE_SANDBOX_JAIL_RESOLV"] = "/etc/hosts"
+    call = jailed(fx, monkeypatch, jail.StagedDns(None))
+    assert "CLAUDE_SANDBOX_JAIL_RESOLV" not in call.env
+    assert "/etc/resolv.conf" not in shlex.split(call.command[6])
 
 
 def test_recursion_guard_execs_the_agent_without_bwrap(fx: Fixture) -> None:
@@ -535,12 +566,24 @@ def test_dunder_main_dispatches(
     def front_door() -> None:
         calls.append(("front", []))
 
+    def holder_main(args: list[str]) -> None:
+        calls.append(("holder", args))
+
     monkeypatch.setattr(shadow, "main", shadow_main)
+    monkeypatch.setattr(jail, "holder_main", holder_main)
     monkeypatch.setattr(claude_sandbox, "main", front_door)
-    for argv in (["_shadow", "pi", "--", "--", "x"], ["--help"]):
+    for argv in (
+        ["_shadow", "pi", "--", "--", "x"],
+        ["_jail_holder", "--", "script"],
+        ["--help"],
+    ):
         monkeypatch.setattr(sys, "argv", ["claude_sandbox", *argv])
         runpy.run_module("claude_sandbox", run_name="__main__")
-    assert calls == [("pi", ["--", "x"]), ("front", [])]
+    assert calls == [
+        ("pi", ["--", "x"]),
+        ("holder", ["--", "script"]),
+        ("front", []),
+    ]
     monkeypatch.setattr(sys, "argv", ["claude_sandbox", "_shadow", "pi", "x"])
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("claude_sandbox", run_name="__main__")
