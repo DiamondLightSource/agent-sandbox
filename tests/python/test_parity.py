@@ -828,6 +828,8 @@ def test_config_matches_bash(
 
 
 # A divergence entry that names no scenario would silently check nothing.
-assert set(KNOWN_DIVERGENCES) <= {s.name for s in SCENARIOS} | {
-    c.name for c in CONF_CASES
-}
+_unmatched = (
+    set(KNOWN_DIVERGENCES) - {s.name for s in SCENARIOS} - {c.name for c in CONF_CASES}
+)
+if _unmatched:
+    raise AssertionError(f"KNOWN_DIVERGENCES names no scenario: {_unmatched}")

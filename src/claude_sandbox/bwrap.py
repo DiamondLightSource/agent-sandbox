@@ -141,16 +141,21 @@ class HostProbe:
         return _mode_is(path, stat.S_IFBLK)
 
     def realpath(self, path: str) -> str:
-        # `realpath -e` as GNU coreutils does it, which is the kernel's own
-        # path resolution: every component must exist, and a non-directory
-        # may not be followed by anything, not even `.`, `..` or `/`. The
-        # first stat raises exactly those errors on every Python version;
-        # os.path.realpath(strict=True) does not (3.11 resolves
+        # `realpath -e` as GNU coreutils does it, which is close to the
+        # kernel's own path resolution: every component must exist, and a
+        # non-directory may not be followed by anything, not even `.`, `..`
+        # or `/`. The first stat raises exactly those errors on every Python
+        # version; os.path.realpath(strict=True) does not (3.11 resolves
         # /dev/zero/.. to /dev, 3.13 refuses it). Once the path resolves,
         # os.path.realpath agrees across versions. The second stat refuses
         # what GNU's readlink walk cannot finish: a procfs magic link such as
-        # /dev/stdin -> socket:[N]. uutils coreutils (Ubuntu 25.10+) is more
-        # lenient and accepts /dev/zero/../null; this follows GNU.
+        # /dev/stdin -> socket:[N].
+        #
+        # The kernel is stricter than GNU's walk in two corner cases, both
+        # refusals here where GNU would resolve: a path needing more than 40
+        # symlink hops, and `..` out of a directory without search
+        # permission. uutils coreutils (Ubuntu 25.10+) is more lenient still
+        # and accepts /dev/zero/../null; this follows GNU.
         os.stat(path)
         resolved = os.path.realpath(path)
         os.stat(resolved)
