@@ -805,4 +805,41 @@ else
     pass
 fi
 
+# --- Scenario 17: config word lists never glob against the cwd ---
+# The cwd at launch is the workspace, writable from the jail. If a conf word
+# list were pathname-expanded there, `pass-env = *` or `local-port = *` would
+# pick up whatever file names a compromised session planted: a file named
+# after a secret variable would forward that secret, one named 5432 would
+# relay that port. Every list must reach its consumer as literal words.
+GLOBFIX="$(mktemp -d)"
+register_cleanup "$GLOBFIX"
+touch "$GLOBFIX/PLANTED_SECRET" "$GLOBFIX/5432" "$GLOBFIX/6543"
+ARGV17="$(cd "$GLOBFIX" && HOME="$TMPHOME" CLAUDE_SANDBOX_PASS_ENV="*, PLANTED_*" \
+    PLANTED_SECRET=planted-value \
+    CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    bwrap_argv_lines "$TMPHOME" /test/.local/bin/claude)"
+assert_not_contains scenario17-pass-env-name "$ARGV17" "PLANTED_SECRET"
+assert_not_contains scenario17-pass-env-value "$ARGV17" "planted-value"
+
+# local-port and callback-port: the literal word survives, so validation
+# names it and refuses the launch, and no planted port reaches the relay set.
+assert_eq scenario17-local-ports "$(printf '%s\n' '*' '5[0-9]*')" \
+    "$(cd "$GLOBFIX" && CLAUDE_SANDBOX_LOCAL_MODEL_PORT=0 \
+        CLAUDE_SANDBOX_LOCAL_PORTS='*
+5[0-9]*' local_ports)"
+if (cd "$GLOBFIX" && CLAUDE_SANDBOX_LOCAL_MODEL_PORT=0 CLAUDE_SANDBOX_LOCAL_PORTS='*' \
+        validate_local_model_port) >/dev/null 2>&1; then
+    fail "scenario17-local-port-validate — a glob local-port was accepted"
+else
+    pass
+fi
+assert_eq scenario17-callback-ports '*' \
+    "$(cd "$GLOBFIX" && CLAUDE_SANDBOX_CALLBACK_PORTS='*' callback_ports)"
+if (cd "$GLOBFIX" && CLAUDE_SANDBOX_LOCAL_MODEL_PORT=0 CLAUDE_SANDBOX_CALLBACK_PORTS='*' \
+        validate_callback_ports) >/dev/null 2>&1; then
+    fail "scenario17-callback-port-validate — a glob callback-port was accepted"
+else
+    pass
+fi
+
 finish bwrap_argv.sh

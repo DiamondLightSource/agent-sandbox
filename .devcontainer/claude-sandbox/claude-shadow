@@ -265,6 +265,17 @@ fi
 # Export so the inlined bwrap_argv_build picks up the gitconfig path.
 export CLAUDE_SANDBOX_GITCONFIG_PATH="$GITCONFIG_PATH"
 
+# split_words NAME STRING: set the array NAME to STRING split on spaces, tabs
+# and newlines. Use it for every config-derived word list instead of an
+# unquoted $var or $(cmd): those also pathname-expand each word against the
+# cwd, which is the workspace and writable from the jail, so `pass-env = *` or
+# `local-port = *` would become whatever file names a session planted there
+# (Invariant 4). read never globs. Callers fold commas to spaces first where a
+# list allows them. read -d '' always reports EOF, hence the || true.
+split_words() {
+    IFS=$' \t\n' read -r -d '' -a "$1" <<< "$2" || true
+}
+
 # bwrap_argv_build OUT WORKSPACE REAL ARGS...: fill OUT with the bwrap command.
 # Reads configuration and source-path availability without creating files.
 # Keep arguments as arrays so newlines and empty strings survive unchanged.
@@ -531,13 +542,9 @@ bwrap_argv_build() {
     # shell already has but cannot invent a value of its own.
     if [ -n "${CLAUDE_SANDBOX_PASS_ENV:-}" ]; then
         # Split on comma/space/newline so `pass-env = A, B` and repeated
-        # pass-env lines both work. Word splitting is the point here, and
-        # a local IFS keeps it from leaking into the caller.
-        local old_ifs="$IFS"
-        IFS=$', \t\n'
-        # shellcheck disable=SC2206  # deliberate split on IFS
-        local -a pass_names=( $CLAUDE_SANDBOX_PASS_ENV )
-        IFS="$old_ifs"
+        # pass-env lines both work, without globbing (see split_words).
+        local -a pass_names=()
+        split_words pass_names "${CLAUDE_SANDBOX_PASS_ENV//,/ }"
         local pass_name
         for pass_name in "${pass_names[@]+"${pass_names[@]}"}"; do
             # Not a shell identifier — skip rather than emit a --setenv
@@ -863,7 +870,9 @@ local_port_words() {
 
 local_ports() {
     local p seen=" "
-    for p in "${CLAUDE_SANDBOX_LOCAL_MODEL_PORT:-0}" $(local_port_words); do
+    local -a words=()
+    split_words words "$(local_port_words)"
+    for p in "${CLAUDE_SANDBOX_LOCAL_MODEL_PORT:-0}" "${words[@]+"${words[@]}"}"; do
         [ "$p" = 0 ] && continue
         case "$seen" in *" $p "*) continue ;; esac
         seen="$seen$p "
@@ -883,7 +892,9 @@ validate_local_model_port() {
         echo "claude-sandbox: local-model-port must be 1–65535 (or 0 to disable)." >&2
         ok=1
     fi
-    for port in $(local_port_words); do
+    local -a words=()
+    split_words words "$(local_port_words)"
+    for port in "${words[@]+"${words[@]}"}"; do
         if ! valid_tcp_port "$port"; then
             echo "claude-sandbox: local-port entries must be 1–65535, got '$port'." >&2
             ok=1
@@ -907,7 +918,9 @@ callback_port_words() {
 
 callback_ports() {
     local p seen=" "
-    for p in $(callback_port_words); do
+    local -a words=()
+    split_words words "$(callback_port_words)"
+    for p in "${words[@]+"${words[@]}"}"; do
         case "$seen" in *" $p "*) continue ;; esac
         seen="$seen$p "
         printf '%s\n' "$p"
@@ -923,7 +936,9 @@ callback_enabled() {
 # listener outside would sit on the host service's port.
 validate_callback_ports() {
     local port ok=0
-    for port in $(callback_port_words); do
+    local -a words=()
+    split_words words "$(callback_port_words)"
+    for port in "${words[@]+"${words[@]}"}"; do
         if ! valid_tcp_port "$port"; then
             echo "claude-sandbox: callback-port entries must be 1–65535, got '$port'." >&2
             ok=1
@@ -966,9 +981,11 @@ relay_dir_init() {
 
 local_model_outer() {
     local port
+    local -a ports=()
     CLAUDE_JAIL_LOCAL_PORTS="$(local_ports | tr '\n' ' ')"
     export CLAUDE_JAIL_LOCAL_PORTS
-    for port in $CLAUDE_JAIL_LOCAL_PORTS; do
+    split_words ports "$CLAUDE_JAIL_LOCAL_PORTS"
+    for port in "${ports[@]+"${ports[@]}"}"; do
         setsid socat "UNIX-LISTEN:$CLAUDE_JAIL_RELAY_DIR/$port.sock,mode=0600,fork" \
             "TCP4:127.0.0.1:$port" 2>/dev/null &
         model_relay="$model_relay $!"
@@ -986,7 +1003,9 @@ local_model_outer() {
 # that has no listener behind it.
 callback_outer() {
     local port started=""
-    for port in $(callback_ports); do
+    local -a ports=()
+    split_words ports "$(callback_ports)"
+    for port in "${ports[@]+"${ports[@]}"}"; do
         if port_in_use "$port"; then
             echo "claude-sandbox: callback-port $port is already in use on this host; browser logins on that port will not reach this session." >&2
             continue
@@ -1011,10 +1030,12 @@ callback_outer() {
 # agent that is not mid-login costs nothing and the browser is refused, not hung.
 local_model_inner() {
     local relay="" child="" rc=0 port
+    local -a ports=()
     trap 'stop_relay $relay; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    for port in ${CLAUDE_JAIL_LOCAL_PORTS:-}; do
+    split_words ports "${CLAUDE_JAIL_LOCAL_PORTS:-}"
+    for port in "${ports[@]+"${ports[@]}"}"; do
         setsid socat "TCP4-LISTEN:$port,bind=127.0.0.1,reuseaddr,fork" \
             "UNIX-CONNECT:$CLAUDE_JAIL_RELAY_DIR/$port.sock" 2>/dev/null &
         relay="$relay $!"
@@ -1023,7 +1044,8 @@ local_model_inner() {
         wait_for local_model_listening "$port" \
             || jail_fail "— loopback listener for port $port failed to start"
     done
-    for port in ${CLAUDE_JAIL_CALLBACK_PORTS:-}; do
+    split_words ports "${CLAUDE_JAIL_CALLBACK_PORTS:-}"
+    for port in "${ports[@]+"${ports[@]}"}"; do
         setsid socat "UNIX-LISTEN:$CLAUDE_JAIL_RELAY_DIR/in-$port.sock,mode=0600,fork" \
             "TCP4:127.0.0.1:$port" 2>/dev/null &
         relay="$relay $!"
