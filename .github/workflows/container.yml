@@ -166,12 +166,14 @@ jobs:
             -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
             claude-sandbox:test bash /opt/claude-sandbox/tests/pi_e2e.sh
 
-      # The opt-in Python shadow (issue #72 phase 2), installed over the
-      # baked bash one, with the egress jail on (the default): the same
-      # launches as the bash step above, the entry-point guard and the PATH
-      # watcher end to end (tests/entry_guard.sh, tests/watch_e2e.sh), then
-      # the Python jail's own tests in real namespaces (tests/jail_python.sh,
-      # which fetches pytest).
+      # The opt-in Python installer and shadow (issue #72 phases 2 and 4),
+      # installed over the baked bash ones: install.sh bootstraps uv and the
+      # pinned interpreter and hands over to the Python installer. With the
+      # egress jail on (the default): the same launches as the bash step
+      # above, the entry-point guard and the PATH watcher end to end
+      # (tests/entry_guard.sh, tests/watch_e2e.sh), then the Python jail's
+      # own tests in real namespaces (tests/jail_python.sh, which fetches
+      # pytest).
       # Runs after the bash steps above and changes nothing they use.
       - name: "Test: opt-in Python shadow (egress jail on)"
         run: |
