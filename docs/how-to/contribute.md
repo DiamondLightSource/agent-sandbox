@@ -80,9 +80,18 @@ first phase ports the pure parts of `claude-shadow` into
 | `bwrap.py` | `bwrap_argv_build` | A pure function from profile, config and environment to the bwrap argv |
 | `gitconfig.py` | `render_gitconfig` | The jail's git config, returned as text |
 
-Nothing calls these modules yet. The installer, the shadow and the
-`uvx claude-sandbox` front door still run the bash, so these modules don't
-change sandbox behaviour. They use the standard library only, and
+Phase 2 adds the launch path that uses them:
+
+| Module | Ported from | What it holds |
+|---|---|---|
+| `shadow.py` | the launch body, `configure_launch`, `sandbox_launch` | One launch, top to bottom: the recursion guard, the refusals, the conf and git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
+| `jail.py` | `netns_launch` and its helpers | The egress jail. In phase 2a a stub that refuses; phase 2b ports it |
+| `__main__.py` | | Dispatches the shim's `_shadow` call before importing anything outside the standard library |
+
+By default nothing calls these modules: the installer, the shadow and the
+`uvx claude-sandbox` front door still run the bash, so the modules don't
+change sandbox behaviour unless you opt in to the Python shadow (see below).
+They use the standard library only, and
 `tests/python/test_wheel.py` fails if one of them imports anything else.
 `bwrap.py` reads the environment only from the mapping it is given. It
 reads the filesystem only through an injectable probe, which can test what
@@ -106,12 +115,50 @@ It needs only bash, coreutils and git. Each scenario names the
 or `parse_config`, make the same change in the Python and add a scenario for
 it. A failure reports the first argv index where the two differ.
 
+The same file compares whole launches. `tests/python/launch_driver.sh`
+installs a copy of `claude-shadow` under a fixture directory, as
+`tests/verify.sh` does, and runs it; the Python shadow runs against the same
+paths. The exit status, the warnings, the command that is executed (with the
+`script -c` command compared as the words bash reads back), the git config
+and every path the launch creates must match.
+
 Where the Python differs from the bash on purpose, for example by not
 expanding pass-env names as globs against the workspace, the difference is
 listed in `KNOWN_DIVERGENCES` in `tests/python/test_parity.py` with its
 reason. A listed scenario must still differ, so once the bash is fixed the
 entry fails and can be removed. The harness is removed with the bash in
 phase 5.
+
+### Trying the Python shadow
+
+The Python shadow is opt-in until phase 5, and it is chosen when the sandbox
+is installed, never when an agent starts. With `CLAUDE_SANDBOX_IMPL=python`
+the installer places the three-line shim from ADR 26 at
+`/usr/local/bin/claude`, `codex` and `pi`. It also installs a CPython
+interpreter and a venv holding `src/claude_sandbox`, both root-owned, under
+`/usr/libexec/claude-sandbox/`. Fetching the interpreter needs `uv` and
+network access. In a devcontainer terminal of this repository (not inside an
+agent session), run:
+
+```bash
+CLAUDE_SANDBOX_IMPL=python ./install --here
+head -3 /usr/local/bin/claude    # the shim, not the bash shadow
+```
+
+To use it from the start in this repository's devcontainer, set
+`CLAUDE_SANDBOX_IMPL=python` in the host environment that VS Code starts
+from, then rebuild the container. `devcontainer.json` passes the variable to
+`postCreate`. To go back to the bash shadow, run `./install --here` without
+the variable, or rebuild without it. The installer then puts the bash shadow
+back and removes the interpreter.
+
+Phase 2a does not include the egress jail. While the jail is enabled, which
+is the default, the Python shadow refuses to launch rather than start an
+agent without it. To try the Python shadow, turn the jail off for that
+session as an operator would (see the
+[threat model](../explanations/threat-model.md#the-egress-jail-and-the-native-sandbox)).
+Use it only for development: an agent started this way can reach your
+internal network. Phase 2b ports the jail.
 
 ## Build the docs locally
 
