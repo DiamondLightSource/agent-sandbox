@@ -25,6 +25,9 @@ from pathlib import Path
 from .actions import Owner, Remove, apply
 
 PYTHON_VERSION = "3.13.16"
+# The uv the bootstrap must fetch: uv only installs the CPython releases it
+# knows, and 0.12.23 knows 3.13.16 (0.8.15 does not). Bump them together.
+UV_VERSION = "0.12.23"
 ROOT = Path("/usr/libexec/claude-sandbox")
 
 # The installed interpreter is checked against what the package imports
