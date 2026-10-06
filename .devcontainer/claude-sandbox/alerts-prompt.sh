@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # claude-sandbox: warn at the prompt of every outer shell when the PATH
 # watcher has quarantined something a session left behind (ADR 27).
 #
