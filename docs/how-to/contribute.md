@@ -48,7 +48,7 @@ sandbox; run those from an ordinary container terminal as described in CI.
 For packaging changes:
 
 ```bash
-uv build --wheel packaging/pypi -o dist
+uv build --wheel -o dist
 ```
 
 ## Build the docs locally

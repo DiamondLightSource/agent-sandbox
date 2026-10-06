@@ -99,8 +99,8 @@ jobs:
         run: bash tests/shadow_git.sh
 
   wheel:
-    # The PyPI front door (ADR 23) is the one Python packaging in the repo:
-    # build it, prove the entry point execs the bundled bash, and prove
+    # The PyPI front door (ADR 23): build the wheel from the root
+    # pyproject.toml, prove the entry point execs the bundled bash, and prove
     # `install` refuses on a host (the runner is a VM, not a container).
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +110,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Build the wheel
-        run: uv build --wheel packaging/pypi -o dist
+        run: uv build --wheel -o dist
 
       - name: "Test: the entry point runs the bundled launcher at the wheel version"
         run: |

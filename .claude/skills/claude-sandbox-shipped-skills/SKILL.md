@@ -45,7 +45,7 @@ new shipped skill only if it is useful for repo work; most will not need it.
    (`prepare_shipped_skills`). bwrap leaves an empty mount point per shipped
    skill in that host dir. The warning therefore ignores an empty dir, or
    every launch after the first would warn.
-4. The wheel force-includes `skills/` (`packaging/pypi/pyproject.toml`) and
+4. The wheel force-includes `skills/` (root `pyproject.toml`) and
    the Dockerfile's `install.sh` function list calls
    `install_shipped_skills`, so clone, wheel and image all ship the same
    tree. CI byte-diffs the wheel's copy against the checkout.

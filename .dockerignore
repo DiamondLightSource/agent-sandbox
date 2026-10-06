@@ -6,3 +6,9 @@ build
 .venv*
 tmp
 node_modules
+# Python package build output and dev caches (ADR 26). pyproject.toml and
+# uv.lock are copied but inert in the image: nothing runs uv against them.
+dist
+__pycache__
+.pytest_cache
+.ruff_cache

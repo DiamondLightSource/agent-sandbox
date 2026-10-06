@@ -1,10 +1,10 @@
-# The PyPI front door for claude-sandbox (ADR 23). This directory is the
-# ONLY Python packaging in the repository, and it holds no sandbox logic:
-# the wheel ships the bash launcher and installer verbatim as package data,
-# and the one Python module execs them. Build with `uv build --wheel`
-# from this directory; the version comes from the git tag (hatch-vcs, the
-# same setuptools_scm mechanism the DLS python-copier template uses), so the
-# wheel and the image tag are the same release by construction.
+# claude-sandbox as a Python package (ADR 26, migrating from bash per issue
+# #72). Until the switch-over (phase 5) the wheel is still the PyPI front door
+# of ADR 23: it ships the bash launcher and installer verbatim as package
+# data, and `claude_sandbox:main` execs them. Build with `uv build --wheel`;
+# the version comes from the git tag (hatch-vcs, the same setuptools_scm
+# mechanism the DLS python-copier template uses), so the wheel and the image
+# tag are the same release by construction.
 [build-system]
 requires = ["hatchling>=1.25", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
@@ -13,7 +13,8 @@ build-backend = "hatchling.build"
 name = "claude-sandbox"
 dynamic = ["version"]
 description = "Sandboxed Claude Code, Codex and Pi: a bubblewrap jail with an egress allowlist, via uvx"
-readme = "README.md"
+# The PyPI page, kept apart from the repository README (README.md).
+readme = "README.pypi.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
 classifiers = [
@@ -31,7 +32,6 @@ claude-sandbox = "claude_sandbox:main"
 
 [tool.hatch.version]
 source = "vcs"
-raw-options = { root = "../.." }
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/claude_sandbox/_version.py"
@@ -43,9 +43,9 @@ packages = ["src/claude_sandbox"]
 # shim locates `install.sh` relative to itself and `install.sh` locates the
 # conf and the statusline script relative to the repo root.
 [tool.hatch.build.targets.wheel.force-include]
-"../../install" = "claude_sandbox/tree/install"
-"../../container/claude-container" = "claude_sandbox/tree/container/claude-container"
-"../../.devcontainer/claude-sandbox" = "claude_sandbox/tree/.devcontainer/claude-sandbox"
-"../../.devcontainer/claude-sandbox.conf" = "claude_sandbox/tree/.devcontainer/claude-sandbox.conf"
-"../../.claude/statusline-command.sh" = "claude_sandbox/tree/.claude/statusline-command.sh"
-"../../skills" = "claude_sandbox/tree/skills"
+"install" = "claude_sandbox/tree/install"
+"container/claude-container" = "claude_sandbox/tree/container/claude-container"
+".devcontainer/claude-sandbox" = "claude_sandbox/tree/.devcontainer/claude-sandbox"
+".devcontainer/claude-sandbox.conf" = "claude_sandbox/tree/.devcontainer/claude-sandbox.conf"
+".claude/statusline-command.sh" = "claude_sandbox/tree/.claude/statusline-command.sh"
+"skills" = "claude_sandbox/tree/skills"

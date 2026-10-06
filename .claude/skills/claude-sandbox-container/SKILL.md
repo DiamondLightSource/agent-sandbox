@@ -66,8 +66,10 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   label and degrades to silence — expected, not a bug.
 - **PyPI front door (ADR 23, 2026-09-13)**: `uvx claude-sandbox` is the
   launcher and `uvx claude-sandbox install` the guest-devcontainer installer.
-  The wheel (`packaging/pypi/`, hatchling, wheel-only) bundles the bash
-  VERBATIM via `force-include` and one module execs it; the version is
+  The wheel (root `pyproject.toml` since ADR 26 replaced `packaging/pypi/`;
+  hatchling, wheel-only) bundles the bash VERBATIM via `force-include` and
+  one module execs it — until issue #72 phase 5, when the Python
+  implementation becomes what runs; the version is
   the git tag via hatch-vcs (`_dist.yml`/`_pypi.yml`/`_release.yml` copied
   from the DLS python-copier template, wired in `ci.yml`), so wheel == image
   tag (4.0.0 onward; nothing in the tree to bump). The entry point pins `CLAUDE_SANDBOX_IMAGE` to its own version and
@@ -151,8 +153,9 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   terminal (`which claude-sandbox` = `/usr/local/bin/...`, `version`
   shows `-dirty`). To exercise the WHEEL path from a branch without a
   release, in another devcontainer:
-  `uvx --from "git+https://github.com/DiamondLightSource/claude-sandbox@<branch>#subdirectory=packaging/pypi" claude-sandbox install`
-  (the `#subdirectory=` is mandatory — pyproject is not at the repo root).
+  `uvx --from "git+https://github.com/DiamondLightSource/claude-sandbox@<branch>" claude-sandbox install`
+  (no `#subdirectory=` since ADR 26 moved `pyproject.toml` to the repo
+  root; branches older than that still need `#subdirectory=packaging/pypi`).
 - **`clean [--force] [--images]` (PR #42)**: removes the launcher's
   project containers — stopped only by default, running too with
   `--force`, unused `*/diamondlightsource/claude-sandbox` image tags with
