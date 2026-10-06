@@ -662,8 +662,10 @@ provision_python_shadow() {
         exit 1
     fi
     # An active venv or a UV_PYTHON request must not choose the interpreter.
+    # --no-bin: write nothing outside $py_dir (uv would otherwise add a
+    # python3.x launcher to the installing user's ~/.local/bin).
     env -u VIRTUAL_ENV -u UV_PYTHON UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
-        "$uv" python install --no-config --quiet "$PY_VERSION"
+        "$uv" python install --no-config --no-bin --quiet "$PY_VERSION"
     interp="$(env -u VIRTUAL_ENV -u UV_PYTHON UV_PYTHON_INSTALL_DIR="$py_dir" \
         "$uv" python find --no-config --no-project --managed-python "$PY_VERSION")"
     interp="$(readlink -f "$interp")"
