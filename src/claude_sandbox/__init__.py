@@ -4,6 +4,10 @@ This module holds no sandbox logic. It locates the bash files shipped
 under ``tree/`` (the launcher, the installer and what the installer
 reads), sets the two environment variables that tie the wheel version to
 what runs, and execs bash. Read the bash: it is what actually runs.
+
+``CLAUDE_SANDBOX_IMPL=python`` opts in to the Python CLI (issue #72 phase
+3) in place of the bash launcher, with the same environment. ``install``
+stays bash either way until phase 4.
 """
 
 import os
@@ -72,4 +76,9 @@ def main() -> None:
     tag = "latest" if ("dev" in ver or "+" in ver) else ver
     env.setdefault("CLAUDE_SANDBOX_IMAGE", f"{IMAGE}:{tag}")
     env["CLAUDE_SANDBOX_LAUNCHER"] = "uvx"
+    if env.get("CLAUDE_SANDBOX_IMPL") == "python":
+        from .cli import main as cli
+
+        os.environ.update(env)
+        sys.exit(cli(argv))
     os.execvpe("bash", ["bash", launcher, *argv], env)
