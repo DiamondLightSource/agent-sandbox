@@ -749,7 +749,7 @@ python_install() {
     # prunes it, builds the venv and checks both.
     env "${scrub[@]}" UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
         "$uv" python install --no-config --no-bin --quiet "$want"
-    interp="$(env "${scrub[@]}" UV_PYTHON_INSTALL_DIR="$py_dir" \
+    interp="$(env "${scrub[@]}" UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
         "$uv" python find --no-config --no-project --managed-python "$want")"
     interp="$(readlink -f "$interp")"
     case "$interp" in

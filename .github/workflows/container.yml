@@ -188,12 +188,16 @@ jobs:
               git config --global user.name "Sandbox integration test" || exit "$?"
               git config --global user.email "sandbox-test@example.invalid" || exit "$?"
               before="$(ls -A "$HOME/.local/bin" 2>/dev/null)"
+              cached="$(ls -d "$HOME/.cache/uv" 2>/dev/null)"
               CLAUDE_SANDBOX_IMPL=python \
                 bash /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh --image-build \
                 || exit "$?"
               # The opt-in writes only under /usr/libexec/claude-sandbox.
               [ "$(ls -A "$HOME/.local/bin" 2>/dev/null)" = "$before" ] || {
                 echo "the Python shadow install changed ~/.local/bin"; exit 1; }
+              # Nor uv's cache: the interpreter is never fetched through it.
+              [ "$(ls -d "$HOME/.cache/uv" 2>/dev/null)" = "$cached" ] || {
+                echo "the Python install created ~/.cache/uv"; exit 1; }
               grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
               claude --version || {
                 rc=$?
