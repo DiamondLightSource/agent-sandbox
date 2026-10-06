@@ -63,7 +63,11 @@ new git hooks, while the session runs; warn in outer shells.
     through a descriptor opened without following links; a link is removed
     and its target recorded. A re-`chmod +x` is quarantined again.
   - In the hooks directory, any new or changed executable but `*.sample`
-    loses its execute bits.
+    loses its execute bits. A directory the repository's `core.hooksPath`
+    names is watched the same way when it lies inside a read-write root;
+    the watcher reads the setting with `git config --get` (git from the fixed
+    tool path, a scrubbed environment, fsmonitor off), and a change of the
+    setting during the session is an alert of its own.
   - What was present and unchanged when the session started is left alone,
     so the venv's own `python3` stays. A changed file is judged again.
   - One allowance: a link named `python`, `python3` or `python3.N` whose
@@ -131,8 +135,9 @@ Options rejected:
   must keep `_ctypes`.
 - Only the Python shadow does this; the bash shadow is being retired.
 - Not covered: a directory that does not exist at launch has no mount guard
-  (the watcher and the next launch's checks still apply), `core.hooksPath`
-  and other `.git/config` settings, and code in the workspace, the venv's
-  `site-packages` or the caches that the user runs outside the sandbox.
-  Review that like any contribution.
+  (the watcher and the next launch's checks still apply); a change of
+  `core.hooksPath` between sessions (only one during a session alerts);
+  `.git/config` settings other than `core.hooksPath`; and code in the
+  workspace, the venv's `site-packages` or the caches that the user runs
+  outside the sandbox. Review that like any contribution.
 - The threat model gains a section, "What a session leaves behind".

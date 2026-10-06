@@ -15,7 +15,8 @@ So, from outside the jail and for as long as the session lasts:
 
 - The watched directories are the writable ones (inside a read-write bind,
   per ``bwrap.py``) that a PATH lookup searches before the last system
-  command directory, and the workspace's git hooks directory.
+  command directory, and the workspace's git hooks directory and the one
+  its ``core.hooksPath`` names. A change of that setting is an alert.
 - In a PATH directory, an executable (or a link to one) whose name a later
   PATH directory also has is a shadow. Its execute bits are cleared on the
   file itself, never through a link; a link is removed and its target
@@ -41,6 +42,7 @@ import re
 import select
 import signal
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -50,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import NoReturn, cast
 
 from .bwrap import HOST, STATE_DIR, Probe, inside, path_ahead, watched_path_dirs
+from .tools import find_tool
 
 # Where the alerts go when /run cannot be written (bwrap masks /tmp).
 FALLBACK_STATE_DIR = "/tmp/claude-sandbox"
@@ -77,7 +80,7 @@ def git_hooks_dir(workspace: str) -> str | None:
 
     ``.git`` is the git directory, or in a worktree a file naming it; a
     worktree's hooks live in the common directory its ``commondir`` names.
-    ``core.hooksPath`` is not followed.
+    ``core.hooksPath`` is ``git_hooks_path``'s.
     """
     dot = os.path.join(workspace, ".git")
     gitdir = dot
@@ -99,18 +102,62 @@ def git_hooks_dir(workspace: str) -> str | None:
     return hooks if os.path.isdir(hooks) else None
 
 
+def git_hooks_path(workspace: str, git: str | None = None) -> str | None:
+    """The workspace repository's ``core.hooksPath``, as git reads it, or
+    None when it is unset (or there is no repository, or no git).
+
+    git comes from the fixed tool path, with a scrubbed environment and
+    fsmonitor off: ``git config --get`` reads configuration (includes too)
+    and runs nothing from the repository, which the session can write.
+    """
+    git = git or find_tool("git")
+    if git is None or not workspace:
+        return None
+    argv = [git, "-C", workspace, "-c", "core.fsmonitor=false"]
+    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/root")}
+    try:
+        done = subprocess.run(
+            [*argv, "config", "--get", "core.hooksPath"],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = os.fsdecode(done.stdout).rstrip("\n")
+    return value if done.returncode == 0 and value else None
+
+
+def _hooks_path_dir(workspace: str, value: str) -> str | None:
+    """Where ``core.hooksPath`` = ``value`` points: relative to the working
+    tree, ``~`` expanded; resolved, if it is a directory."""
+    hooks = os.path.realpath(os.path.join(workspace, os.path.expanduser(value)))
+    return hooks if os.path.isdir(hooks) else None
+
+
 def targets(
-    path: str, roots: Sequence[str], workspace: str, probe: Probe = HOST
+    path: str,
+    roots: Sequence[str],
+    workspace: str,
+    probe: Probe = HOST,
+    hooks_path: str | None = None,
 ) -> list[Target]:
-    """Every directory to watch now: they come and go during a session."""
+    """Every directory to watch now: they come and go during a session.
+    ``hooks_path`` is the repository's ``core.hooksPath``, when set."""
     order = path_ahead(path, (), probe)  # every PATH directory, in order
     found = [
         Target(d, tuple(order[order.index(d) + 1 :]))
         for d in watched_path_dirs(path, roots, probe)
     ]
-    hooks = git_hooks_dir(workspace) if workspace else None
-    if hooks is not None and inside(hooks, roots):
-        found.append(Target(hooks, hooks=True))
+    hooks = [git_hooks_dir(workspace)] if workspace else []
+    if workspace and hooks_path is not None:
+        hooks.append(_hooks_path_dir(workspace, hooks_path))
+    for directory in dict.fromkeys(hooks):
+        if directory is not None and inside(directory, roots):
+            found.append(Target(directory, hooks=True))
     return found
 
 
@@ -374,9 +421,26 @@ class Session:
     )
     seen: dict[tuple[str, str], Sig] = field(default_factory=dict[tuple[str, str], Sig])
     actions: list[str] = field(default_factory=list[str])
+    hooks_path: str | None = None  # core.hooksPath at the last look
 
     def targets(self) -> list[Target]:
-        return targets(self.path, self.roots, self.workspace, self.probe)
+        return targets(
+            self.path, self.roots, self.workspace, self.probe, self.hooks_path
+        )
+
+    def _hooks_path_changed(self) -> list[str]:
+        """Look at core.hooksPath again; an alert if it changed."""
+        before, self.hooks_path = self.hooks_path, git_hooks_path(self.workspace)
+        if before == self.hooks_path:
+            return []
+        done = [
+            f"core.hooksPath of {describe(self.workspace)} changed from"
+            f" {describe(before or '(unset)')} to"
+            f" {describe(self.hooks_path or '(unset)')}"
+        ]
+        record(self.state, done)
+        self.actions += done
+        return done
 
     def _judge(
         self, target: Target, current: Mapping[str, Sig], base: Mapping[str, Sig]
@@ -402,6 +466,7 @@ class Session:
         then keep this one. A directory with no baseline yet gets one and is
         not judged. What was done, for the launch warnings."""
         done: list[str] = []
+        self.hooks_path = git_hooks_path(self.workspace)
         for target in self.targets():
             current = snapshot(target.directory)
             stored = None
@@ -417,13 +482,15 @@ class Session:
     def start(self) -> None:
         """Take the session's baseline: what is there now is left alone."""
         self.seen.clear()
+        self.hooks_path = git_hooks_path(self.workspace)
         for target in self.targets():
             self.baseline[target.directory] = snapshot(target.directory)
 
     def tick(self) -> list[str]:
         """One pass. A directory that appeared since the start has an empty
-        baseline: everything in it is new."""
-        done: list[str] = []
+        baseline: everything in it is new. A change of core.hooksPath is an
+        alert of its own, and the directory it names is watched from then."""
+        done = self._hooks_path_changed()
         for target in self.targets():
             base = self.baseline.setdefault(target.directory, {})
             done += self._judge(target, snapshot(target.directory), base)

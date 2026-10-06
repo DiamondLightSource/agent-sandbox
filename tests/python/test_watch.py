@@ -360,7 +360,7 @@ def test_fork_watcher_parent_side(lay: Layout, monkeypatch: pytest.MonkeyPatch) 
     s = lay.session()
     watch.fork_watcher(s)
     assert s.baseline  # taken before the fork, so the watcher judges by it
-    assert waited == [4242]  # the intermediate child, reaped at once
+    assert waited[-1] == 4242  # the intermediate child, reaped at once
 
 
 CHILD = """
@@ -538,3 +538,43 @@ def test_system_interpreter_needs_a_python_target(tmp_path: Path) -> None:
     (tmp_path / "python3").unlink()
     (tmp_path / "python3").symlink_to(tmp_path / "sys/python-missing")
     assert not watch.system_interpreter(str(tmp_path / "python3"), [])
+
+
+def git(*args: str, cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def test_core_hooks_path(lay: Layout, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hooks directory named by core.hooksPath is watched like .git/hooks,
+    and a change of the setting is an alert of its own."""
+    monkeypatch.setenv("HOME", str(lay.root))  # no user config
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    assert watch.git_hooks_path(str(lay.work)) is None
+    assert watch.git_hooks_path(str(lay.work), git="/nonexistent/git") is None
+    assert watch.git_hooks_path("") is None
+    s = lay.session()
+    s.start()
+    (lay.work / "hooks").mkdir()
+    git("config", "core.hooksPath", "hooks", cwd=lay.work)
+    assert s.tick() == [f"core.hooksPath of {lay.work} changed from (unset) to hooks"]
+    assert watch.Target(str(lay.work / "hooks"), hooks=True) in s.targets()
+    executable(lay.work / "hooks/pre-push")
+    assert s.tick() == [cleared(lay.work / "hooks/pre-push", "a git hook")]
+    # Outside the writable roots: not watched (nothing the session wrote).
+    git("config", "core.hooksPath", str(lay.sys), cwd=lay.work)
+    assert s.tick() == [f"core.hooksPath of {lay.work} changed from hooks to {lay.sys}"]
+    assert all(t.directory != str(lay.sys) for t in s.targets())
+    git("config", "--unset", "core.hooksPath", cwd=lay.work)
+    assert s.tick()[0].endswith(f"from {lay.sys} to (unset)")
+    assert len(lay.alerts()) == 4
+
+
+def test_git_hooks_path_survives_git_failing(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired("git", 5)
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    assert watch.git_hooks_path(str(lay.work)) is None
