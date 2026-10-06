@@ -180,6 +180,9 @@ def jailed(
     fx: Fixture, monkeypatch: pytest.MonkeyPatch, staged: jail.StagedDns
 ) -> Launched:
     def launch(config: Config, env: Mapping[str, str], command: list[str]) -> NoReturn:
+        # As the real one does, the launch removes the staged file on exit.
+        if "CLAUDE_SANDBOX_JAIL_RESOLV" in env:
+            os.remove(env["CLAUDE_SANDBOX_JAIL_RESOLV"])
         raise Launched(config, dict(env), list(command))
 
     def stage_dns(*args: object) -> jail.StagedDns:
@@ -211,6 +214,21 @@ def test_a_jailed_launch_stages_dns_then_goes_through_the_jail(
     assert capsys.readouterr().err.endswith(
         "\nclaude-sandbox: egress jail — a warning\n"
     )
+
+
+def test_ctrl_c_at_the_pause_removes_the_staged_resolver(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolv = fx.root / "claude-jail-resolv.x"
+    resolv.write_text("nameserver 192.0.2.53\n")
+
+    def ctrl_c(self: shadow.Terminal, verify: bool) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(shadow.Terminal, "pause", ctrl_c)
+    with pytest.raises(KeyboardInterrupt):
+        jailed(fx, monkeypatch, jail.StagedDns(str(resolv)))
+    assert not resolv.exists()
 
 
 def test_an_unstaged_resolver_is_never_bound(

@@ -160,22 +160,38 @@ def run(
     prepare_home(profile, env, config, term, host.shipped_skills_dir)
 
     # Stage the jail's resolver before the argv is built: bwrap.py binds the
-    # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf.
+    # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf. jail.launch
+    # removes it on exit; the finally removes it if the launch never starts
+    # (a refusal, or Ctrl-C at the pause), which the bash leaves behind (a
+    # known divergence).
     jailed = egress_jail_enabled(config)
-    if jailed:
-        staged = jail.stage_dns()
-        for warning in staged.warnings:
-            term.warn(warning)
-        if staged.path is None:
-            env.pop(jail.JAIL_RESOLV, None)
-        else:
-            env[jail.JAIL_RESOLV] = staged.path
-    argv = build_argv(profile, env, args, verify, host)
-    terminal, launch_env = terminal_command(argv, env, host)
-    term.pause(verify)
-    if jailed:
-        jail.launch(config, launch_env, terminal)
+    resolv = None
+    try:
+        if jailed:
+            staged = jail.stage_dns()
+            for warning in staged.warnings:
+                term.warn(warning)
+            resolv = staged.path
+            if resolv is None:
+                env.pop(jail.JAIL_RESOLV, None)
+            else:
+                env[jail.JAIL_RESOLV] = resolv
+        argv = build_argv(profile, env, args, verify, host)
+        terminal, launch_env = terminal_command(argv, env, host)
+        term.pause(verify)
+        if jailed:
+            jail.launch(config, launch_env, terminal)
+    finally:
+        if resolv is not None:
+            _remove(resolv)
     _exec(host, terminal[0], terminal, launch_env)
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 # --- the steps, in order ----------------------------------------------------
