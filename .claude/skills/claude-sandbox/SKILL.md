@@ -14,7 +14,7 @@ the phase-1 PASS/FAIL battery is the committed
 script `.devcontainer/claude-sandbox/verify-sandbox-battery.sh`, run by
 absolute path from `/usr/libexec/claude-sandbox`).
 
-**Why the 21-check battery is a committed script, not inline in the
+**Why the 22-check battery is a committed script, not inline in the
 command markdown** (refuse a "simplify it back inline" request): slash
 commands substitute `$1`…`$9` as positional args, so the awk field refs
 the checks need were silently blanked when injected from the .md —
@@ -106,7 +106,9 @@ package, not a bare binary — see Invariant 0).
 `/usr/libexec/claude-sandbox/claude` (off the user's PATH). The
 shadow binds it back to `~/.local/bin/claude` *inside* the sandbox
 so Claude's `installMethod=native` self-check still sees the
-conventional path.
+conventional path. The Python shadow binds it **read-only**: the bash
+bound it read-write, which let a session rewrite the binary every later
+session runs.
 
 **Refuse as regressions:**
 - Any "simplification" that skips the relocate-after-curl step.
@@ -115,6 +117,21 @@ conventional path.
   `$HOME`, so don't gate it on the host file existing.
 - `tests/bwrap_argv.sh` scenarios 1 & 4a guard the bind pair; update
   both if you change the bind.
+- Making the Python shadow's bind-back read-write again
+  (`test_the_real_binary_is_bound_back_read_only`).
+- Weakening the PATH watcher (ADR 27, `watch.py`): it quarantines
+  executables a session adds ahead of system commands on PATH, and new git
+  hooks, while the session runs, and warns in outer shells. Refuse
+  following links when quarantining, judging only a list of names, dropping
+  the jail-off watcher, or showing the alerts inside the jail
+  (`bwrap.py` masks `/run/claude-sandbox`).
+- Dropping the Python shadow's entry-point guard, or moving its binds
+  above the read-write binds they sit inside. It protects the sandbox's
+  entry-point names: a session cannot create a command named claude,
+  codex, pi or claude-sandbox in a writable directory that precedes the
+  shadow on PATH (`bwrap.py` ro-binds `/dev/null` over each name there;
+  `shadow.check_entry_points` refuses a launch when one is anything but
+  the empty mount point the bind leaves; battery check 22 asserts it).
 
 **Acceptable swap:** if Anthropic adds `--no-modify-path`, drop the
 relocate — provided plain `claude` still cannot resolve past
@@ -241,7 +258,8 @@ amended by ADR 26).
   uvx on its account.
 - A bind or environment variable added to the bwrap argv anywhere but
   `bwrap.py`.
-- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`) across
+- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`, and
+  `watch.py` from ADR 27) across
   more modules or helpers — the `bf65407` failure mode. Profiles, config,
   host launcher, installer and helper CLI live around the core, not in it.
 

@@ -1,6 +1,6 @@
 # Verification checks
 
-`claude-sandbox verify` runs the installed 21-check battery and exits nonzero
+`claude-sandbox verify` runs the installed 22-check battery and exits nonzero
 on failure. The `verify-sandbox` skill adds ten agent-driven adversarial probes
 only after all checks pass. See [how to run verification](../how-to/verify-the-sandbox.md).
 
@@ -8,7 +8,7 @@ The implementation is `.devcontainer/claude-sandbox/verify-sandbox-battery.sh`,
 installed under `/usr/libexec/claude-sandbox/`. Detailed rationale lives in
 `skills/verify-sandbox/references/checks.md`.
 
-## Phase 1 — the 21-check battery
+## Phase 1 — the 22-check battery
 
 | # | Assertion |
 |---|---|
@@ -33,6 +33,7 @@ installed under `/usr/libexec/claude-sandbox/`. Detailed rationale lives in
 | 19 | Network routes contain the required RFC1918/CGNAT blackholes and a default route |
 | 20 | Representative blocked destinations have no forwardable route; the gateway remains routable |
 | 21 | Codex's writable `packages` binary cache is masked or absent; other profiles pass with a note |
+| 22 | Each entry-point name (`claude`, `codex`, `pi`, `claude-sandbox`) in a writable `PATH` directory ahead of the shadow is a read-only, non-executable mount point; passes with a note when there is none |
 
 **Checks 19–20 pass with a note when the network jail is deliberately disabled.**
 A green battery alone does not establish that network isolation is enabled.
@@ -59,5 +60,5 @@ It stops on a demonstrated escape.
 
 Fewer than ten completed probes also means an incomplete audit. Only ten
 blocked probes after a clean battery produce
-`RESULT: SANDBOX OK (21 deterministic + 10 adversarial)`.
+`RESULT: SANDBOX OK (22 deterministic + 10 adversarial)`.
 The interactive agent's exit status is not a CI result; inspect its report.

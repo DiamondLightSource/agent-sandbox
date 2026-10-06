@@ -1,6 +1,6 @@
 ---
 name: verify-sandbox
-description: Audit the current claude-sandbox session with the installed 21-check battery, followed by ten adversarial probes. Use when the user requests a full sandbox isolation audit or invokes verify-sandbox; use claude-sandbox verify alone for a quick deterministic check.
+description: Audit the current claude-sandbox session with the installed 22-check battery, followed by ten adversarial probes. Use when the user requests a full sandbox isolation audit or invokes verify-sandbox; use claude-sandbox verify alone for a quick deterministic check.
 ---
 
 # Verify the sandbox
@@ -32,7 +32,7 @@ a report; do not claim the interactive agent's exit status enforces its result.
 
 ## Phase 2: adversarial probes
 
-Only after all 21 checks pass, read [the check rationale](references/checks.md)
+Only after all 22 checks pass, read [the check rationale](references/checks.md)
 and design ten distinct probes for gaps the battery does not exercise.
 Try to violate filesystem, credential, process, IPC or network isolation.
 Use short shell snippets and record actual evidence for each attempt.
@@ -60,7 +60,7 @@ probes:`, with evidence for each classification and totals for each outcome.
 If fewer than ten probes ran, state how many and why; do not claim completion.
 
 - Any battery failure or demonstrated escape: `RESULT: SANDBOX LEAKING`.
-- All 21 PASS and ten BLOCKED: `RESULT: SANDBOX OK (21 deterministic + 10 adversarial)`.
+- All 22 PASS and ten BLOCKED: `RESULT: SANDBOX OK (22 deterministic + 10 adversarial)`.
 - Inconclusive or unrun probes: `RESULT: AUDIT INCOMPLETE`, followed by the
   passed checks, blocked probes and unresolved items.
 

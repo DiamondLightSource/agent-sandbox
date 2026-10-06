@@ -65,6 +65,7 @@ COMMANDS = {
         Command(helpers.verify, helpers.verify_arguments),
         Command(helpers.pi_local, rest, raw=True),
         Command(helpers.doctor, helpers.doctor_arguments),
+        Command(helpers.alerts, helpers.alerts_arguments),
         Command(helpers.version, raw=True),
         Command(helpers.update, raw=True),
         Command(helpers.install, raw=True),

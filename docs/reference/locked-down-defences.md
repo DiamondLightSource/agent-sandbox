@@ -24,6 +24,7 @@ not a complete proof against every attack on that interface.
 | `.Xauthority` defence in depth | `--bind-try /dev/null /root/.Xauthority` | check 15 |
 | Curated gitconfig in effect | `GIT_CONFIG_GLOBAL=/etc/claude-gitconfig`, `GIT_CONFIG_SYSTEM=/dev/null` | check 16 |
 | Chrome browser-extension RPC channel disabled | shadow injects `--no-chrome` and strips user `--chrome` so Claude Code never writes its `NativeMessagingHosts` manifest | check 03 (regression manifests as browser dirs under `~/.config`) |
+| Entry-point names stay the shadow's (Invariant 1) | `--ro-bind /dev/null` over `claude`, `codex`, `pi` and `claude-sandbox` in each writable `PATH` directory ahead of `/usr/local/bin` (Python shadow), and a launch-time refusal when one is present there | check 22 |
 | Lateral-movement egress isolation | netns + `pasta` routing allowlist around bwrap; blocks RFC1918, CGNAT, connected subnets and link-local ({ref}`adr-network-egress-jail`) | checks 19–20 inspect blackhole routes and representative destinations; a disabled jail is reported as a pass with a note |
 
 ## Reading the results

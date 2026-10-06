@@ -66,8 +66,8 @@ PROFILES: Mapping[str, AgentProfile] = {
         real=f"{LIBEXEC}/claude",
         # Bound back to the conventional path inside the sandbox so Claude's
         # installMethod=native self-check sees what it expects (Invariant 1).
-        # The bind is rw, so an in-session self-update could rewrite the host
-        # binary — mitigated by the managed DISABLE_AUTOUPDATER.
+        # Read-only, so a session cannot rewrite the binary later sessions
+        # run (the bash shadow binds it read-write).
         inner_rel=".local/bin/claude",
         bind_back=True,
         home_dirs=(".claude",),

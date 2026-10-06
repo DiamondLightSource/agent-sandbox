@@ -11,7 +11,8 @@ import shlex
 import signal
 import stat
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import NoReturn
 
 import pytest
 
-from claude_sandbox import cli, jail, shadow
+from claude_sandbox import cli, jail, shadow, watch
 from claude_sandbox.bwrap import bwrap_argv
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
@@ -44,6 +45,7 @@ class Fixture:
     root: Path
     host: shadow.Host
     env: dict[str, str]
+    forked: list[watch.Session]  # the jail-off watchers a launch started
 
     @property
     def home(self) -> Path:
@@ -91,6 +93,7 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     executable(tools / "script")
     executable(tools / "bwrap")
     identity = {"user.name": "A U Thor", "user.email": "a@example.invalid"}
+    forked: list[watch.Session] = []
     host = shadow.Host(
         config_path=str(tmp_path / "etc/claude-sandbox.conf"),
         gitconfig_path=str(tmp_path / "etc/claude-gitconfig"),
@@ -100,11 +103,13 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
         git_config_get=lambda key, env: identity[key],
         mountinfo=str(tmp_path / "mountinfo"),
         find_tool=lambda name: find_tool(name, search=(str(tools),)),
+        state_dir=str(tmp_path / "state"),
+        fork_watcher=forked.append,
     )
     (tmp_path / "mountinfo").write_text("")
     monkeypatch.chdir(tmp_path / "work")
     env = {"HOME": str(tmp_path / "home"), "PATH": str(tmp_path / "bin")}
-    return Fixture(tmp_path, host, env)
+    return Fixture(tmp_path, host, env, forked)
 
 
 def test_launch_wraps_the_bwrap_argv_in_script(
@@ -125,7 +130,12 @@ def test_launch_wraps_the_bwrap_argv_in_script(
         ["--chrome", "a b", ""],
         shipped_skills_dir=fx.host.shipped_skills_dir,
         gitconfig_path=fx.host.gitconfig_path,
+        state_dir=fx.host.state_dir,
     )
+    i = expected.index(fx.host.state_dir)  # created, then masked
+    assert expected[i - 1] == "--tmpfs"
+    # The jail is off: a child watches while script(1) runs.
+    assert [s.roots[-1] for s in fx.forked] == [str(fx.root / "work")]
     # bwrap by absolute path, so the inner shell looks nothing up.
     assert shlex.split(ex.argv[6]) == [str(fx.root / "tools/bwrap"), *expected[1:]]
     assert expected[-3:] == ["--no-chrome", "a b", ""]
@@ -177,7 +187,10 @@ class Launched(Exception):
 
 
 def jailed(
-    fx: Fixture, monkeypatch: pytest.MonkeyPatch, staged: jail.StagedDns
+    fx: Fixture,
+    monkeypatch: pytest.MonkeyPatch,
+    staged: jail.StagedDns,
+    args: Sequence[str] = (),
 ) -> Launched:
     def launch(config: Config, env: Mapping[str, str], command: list[str]) -> NoReturn:
         # As the real one does, the launch removes the staged file on exit.
@@ -192,8 +205,42 @@ def jailed(
     monkeypatch.setattr(jail, "launch", launch)
     Path(fx.host.config_path).write_text("")  # the jail is on by default
     with pytest.raises(Launched) as exc:
-        shadow.run("claude", [], fx.env, fx.host)
+        shadow.run("claude", args, fx.env, fx.host)
     return exc.value
+
+
+def test_the_path_watcher_around_a_launch(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    venv, system = fx.root / "work/venv/bin", fx.root / "sys"
+    executable(system / "git")
+    venv.mkdir(parents=True)
+    fx.env["PATH"] = f"{venv}:{system}"
+    fx.run()  # the first launch keeps a baseline
+    executable(venv / "git")  # left by something since
+    fx.run()
+    assert "claude-sandbox: quarantined at launch: cleared the execute bits of" in (
+        capsys.readouterr().err
+    )
+    assert not os.access(venv / "git", os.X_OK)
+    assert len(fx.forked) == 2  # each jail-off launch had a watcher
+    # Jailed, the watcher runs around the jail; never for the battery.
+    watched: list[watch.Session] = []
+
+    @contextmanager
+    def watching(
+        session: watch.Session, report: Callable[[str], None]
+    ) -> Generator[None]:
+        watched.append(session)
+        yield
+
+    fx.host = replace(fx.host, watching=watching)
+    staged = jail.StagedDns(None)
+    jailed(fx, monkeypatch, staged)
+    assert [s.path for s in watched] == [fx.env["PATH"]]
+    call = jailed(fx, monkeypatch, staged, ["--sandbox-verify"])
+    assert call.command[6].endswith("verify-sandbox-battery.sh")
+    assert len(watched) == 1 and len(fx.forked) == 2
 
 
 def test_a_jailed_launch_stages_dns_then_goes_through_the_jail(
@@ -295,6 +342,46 @@ def test_refusals_before_launch(
         assert fx.refused() == 127
         assert f"{tool} not found in /usr/bin:/bin" in capsys.readouterr().err
         (fx.root / tool).rename(fx.root / "tools" / tool)
+
+
+@pytest.mark.parametrize("kind", ["executable", "link", "directory"])
+def test_an_entry_point_ahead_of_the_shadow_refuses(
+    fx: Fixture, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    venv = fx.root / "venv/bin"
+    venv.mkdir(parents=True)
+    fx.env["PATH"] = f"{venv}:/usr/local/bin"
+    entry = venv / "codex"
+    if kind == "executable":
+        executable(entry)
+    elif kind == "link":
+        entry.symlink_to(executable(fx.root / "elsewhere"))
+    else:
+        entry.mkdir()
+    assert fx.refused(argv0="claude") == 1
+    err = capsys.readouterr().err
+    assert f"{entry} is ahead of /usr/local/bin/codex on PATH" in err
+    assert "Remove it, and review the session that created it" in err
+    assert entry.exists()  # left for a person to look at
+    assert not Path(fx.host.gitconfig_path).exists()  # before any launch step
+
+
+def test_entry_points_the_guard_left_or_behind_the_shadow_launch(
+    fx: Fixture,
+) -> None:
+    venv, after = fx.root / "venv/bin", fx.root / "after"
+    venv.mkdir(parents=True)
+    fx.env["PATH"] = f"{venv}:/usr/local/bin:{after}"
+    # What the guard's bind leaves: an empty file without execute bits.
+    for name in ("claude", "codex", "pi", "claude-sandbox"):
+        (venv / name).touch(0o644)
+    executable(after / "claude")  # a lookup reaches the shadow first
+    fx.run()
+    # Inside a sandbox the recursion guard execs the agent: the PATH in there
+    # is the sandbox's own.
+    executable(venv / "claude")
+    fx.env["IS_SANDBOX"] = "1"
+    fx.run()
 
 
 def test_tools_never_come_from_path(fx: Fixture) -> None:

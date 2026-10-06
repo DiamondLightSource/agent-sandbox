@@ -630,10 +630,39 @@ shadow_source() {
     esac
 }
 
+# The prompt hook (ADR 27): every outer bash and zsh warns at the prompt when
+# the Python shadow's PATH watcher has quarantined something. The file goes
+# in /etc/profile.d (login shells) and is sourced from the system rc files
+# (every interactive shell), between markers so a bash install removes it.
+ALERTS_HOOK="/etc/profile.d/claude-sandbox-alerts.sh"
+ALERTS_BEGIN="# >>> claude-sandbox alerts >>>"
+ALERTS_END="# <<< claude-sandbox alerts <<<"
+
+alerts_hook() {
+    local rc
+    for rc in /etc/bash.bashrc /etc/zsh/zshrc; do
+        rc="$(prefixed "$rc")"
+        [ -f "$rc" ] || continue
+        if grep -qxF "$ALERTS_BEGIN" "$rc"; then
+            sed -i "/^$ALERTS_BEGIN\$/,/^$ALERTS_END\$/d" "$rc"
+        fi
+        if [ "$IMPL" = python ]; then
+            printf '%s\n%s\n%s\n' "$ALERTS_BEGIN" \
+                "[ -r $ALERTS_HOOK ] && . $ALERTS_HOOK" "$ALERTS_END" >> "$rc"
+        fi
+    done
+    if [ "$IMPL" = python ]; then
+        install_file "$SCRIPT_DIR/alerts-prompt.sh" "$(prefixed "$ALERTS_HOOK")" 0644
+    else
+        rm -f "$(prefixed "$ALERTS_HOOK")"
+    fi
+}
+
 provision_python_shadow() {
     local py_dir venv interp site
     py_dir="$(prefixed "$PY_DIR")"
     venv="$(prefixed "$PY_VENV")"
+    alerts_hook
     if [ "$IMPL" != python ]; then
         rm -rf "$py_dir" "$venv"
         return 0

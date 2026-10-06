@@ -168,8 +168,10 @@ jobs:
 
       # The opt-in Python shadow (issue #72 phase 2), installed over the
       # baked bash one, with the egress jail on (the default): the same
-      # launches as the bash step above, then the Python jail's own tests in
-      # real namespaces (tests/jail_python.sh, which fetches pytest).
+      # launches as the bash step above, the entry-point guard and the PATH
+      # watcher end to end (tests/entry_guard.sh, tests/watch_e2e.sh), then
+      # the Python jail's own tests in real namespaces (tests/jail_python.sh,
+      # which fetches pytest).
       # Runs after the bash steps above and changes nothing they use.
       - name: "Test: opt-in Python shadow (egress jail on)"
         run: |
@@ -200,6 +202,8 @@ jobs:
               for agent in claude codex pi; do
                 claude-sandbox verify --agent "$agent" || exit "$?"
               done
+              bash /opt/claude-sandbox/tests/entry_guard.sh || exit "$?"
+              bash /opt/claude-sandbox/tests/watch_e2e.sh || exit "$?"
               bash /opt/claude-sandbox/tests/jail_python.sh'
 
       - name: Log in to GHCR

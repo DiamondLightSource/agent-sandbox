@@ -23,7 +23,12 @@ from typing import NoReturn
 import pytest
 
 from claude_sandbox import shadow
-from claude_sandbox.bwrap import GITCONFIG_PATH, bwrap_argv
+from claude_sandbox.bwrap import (
+    ENTRY_GUARD_ENV,
+    ENTRY_POINTS,
+    GITCONFIG_PATH,
+    bwrap_argv,
+)
 from claude_sandbox.config import (
     KNOBS,
     Config,
@@ -471,6 +476,21 @@ SCENARIOS = [
         "none: arguments survive as array elements",
         args=("", "a b", "line\nbreak", "--", "--chrome=x"),
     ),
+    *(
+        Scenario(
+            f"entry-guard-{name}",
+            "none: the entry-point guard (a known divergence where it binds)",
+            {"CLAUDE_SANDBOX_ALLOW_WRITE": "{root}/data", "PATH": path},
+            tree=("home/", "data/venv/bin/", "opt/venv -> {root}/data/venv", "ro/"),
+        )
+        for name, path in (
+            ("ahead", "{root}/data/venv/bin:/usr/local/bin:{path}"),
+            ("symlinked", "{root}/opt/venv/bin:/usr/local/bin:{path}"),
+            ("no-shadow-dir", "{root}/data/venv/bin:{path}"),
+            ("after", "/usr/local/bin:{root}/data/venv/bin:{path}"),
+            ("none", "{root}/ro:/usr/local/bin:{path}"),
+        )
+    ),
     Scenario(
         "conf-end-to-end",
         "11 (parse_config feeding the builder)",
@@ -526,6 +546,44 @@ def _drop_setenv(name: str) -> Callable[[list[str]], list[str]]:
     return drop
 
 
+def _entry_guard_binds(argv: list[str]) -> list[str]:
+    """The destinations of the entry-point guard's ``--ro-bind /dev/null``."""
+    return [
+        argv[i + 2]
+        for i in range(len(argv) - 2)
+        if argv[i : i + 2] == ["--ro-bind", "/dev/null"]
+        and argv[i + 2].rpartition("/")[2] in ENTRY_POINTS
+    ]
+
+
+def _drop_entry_guard(argv: list[str]) -> list[str]:
+    """Remove the entry-point guard: its binds and its ``--setenv``."""
+    binds = _entry_guard_binds(argv)
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i : i + 2] == ["--ro-bind", "/dev/null"] and argv[i + 2] in binds:
+            i += 3
+            continue
+        out.append(argv[i])
+        i += 1
+    return _drop_setenv(ENTRY_GUARD_ENV)(out)
+
+
+def _guards(directory: str) -> Callable[[list[str]], bool]:
+    """Every entry-point name in ``directory`` (under the root) is bound."""
+
+    def shows(argv: list[str]) -> bool:
+        binds = _entry_guard_binds(argv)
+        return (
+            [b.rpartition("/")[0].endswith(directory) for b in binds] == [True] * 4
+            and sorted(b.rpartition("/")[2] for b in binds) == sorted(ENTRY_POINTS)
+            and ENTRY_GUARD_ENV in argv
+        )
+
+    return shows
+
+
 def _drop_lines(*prefixes: str) -> Callable[[list[str]], list[str]]:
     """Remove the report lines starting with any of ``prefixes``."""
     return lambda report: [r for r in report if not r.startswith(prefixes)]
@@ -552,6 +610,12 @@ def _drop_lines(*prefixes: str) -> Callable[[list[str]], list[str]]:
 # - The bash shadow quotes the bwrap argv for script -c with printf %q, the
 #   Python shadow with shlex; the launch scenarios compare the words bash
 #   reads back, not the text.
+#
+# One divergence shows in every Claude scenario, so ``compare`` applies it to
+# the bash outcome everywhere rather than through this table:
+# - The bash binds Claude's real binary back to ~/.local/bin/claude
+#   read-write, so a session could rewrite the binary later sessions run;
+#   the port binds it read-only (``bind_back_read_only``).
 KNOWN_DIVERGENCES: dict[str, Divergence] = {
     "launch-bad-model-port": Divergence(
         "The bash validates local-model-port only on the jailed path "
@@ -590,6 +654,18 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         same_after=_drop_lines("validate_callback_ports="),
         racy=True,
     ),
+    **{
+        f"entry-guard-{name}": Divergence(
+            "Protect the sandbox's entry-point names (Invariant 1): a session "
+            "cannot create a command named claude, codex, pi or claude-sandbox "
+            "in a writable directory that precedes the shadow on PATH. The port "
+            "ro-binds /dev/null over each name there; the bash does not.",
+            bash_shows=lambda argv: not _entry_guard_binds(argv),
+            python_shows=_guards("/data/venv/bin"),
+            same_after=_drop_entry_guard,
+        )
+        for name in ("ahead", "symlinked", "no-shadow-dir")
+    },
     "skills-locale-order": Divergence(
         "The bash orders glob results (shipped skills, GPU nodes) by the "
         "launching locale's collation; the port uses code-point order on "
@@ -601,8 +677,18 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
 }
 
 
+def bind_back_read_only(out: list[str]) -> list[str]:
+    """The bash outcome with its read-write bind-back made read-only."""
+    out = list(out)
+    for i in range(len(out) - 2):
+        if out[i] == "--bind" and out[i + 2].endswith("/.local/bin/claude"):
+            out[i] = "--ro-bind"
+    return out
+
+
 def compare(name: str, py: list[str], sh: list[str]) -> None:
     """Assert ``py`` matches ``sh``, or shows the divergence registered."""
+    sh = bind_back_read_only(sh)
     known = KNOWN_DIVERGENCES.get(name)
     if known is None:
         assert py == sh
@@ -628,6 +714,9 @@ def py_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
             verify=sc.verify,
             shipped_skills_dir=str(root / "shipped"),
             gitconfig_path=sc.gitconfig,
+            # The watcher's state dir, masked when it exists, is the port's
+            # own: the bash has none. A fixture path no scenario creates.
+            state_dir=str(root / "state"),
         )
     except SandboxError as e:
         return [REFUSED, str(e)]
@@ -1125,6 +1214,8 @@ def py_launch(root: Path, sc: Launch, capsys: pytest.CaptureFixture[str]) -> lis
         },
         execve=record,
         find_tool=lambda name: find_tool(name, search=(f"{root}/tools", *TOOL_PATH)),
+        state_dir=str(root / "state"),
+        fork_watcher=lambda session: None,
     )
     status, argv = 0, None
     exec_env: Mapping[str, str] = {}
@@ -1159,10 +1250,24 @@ def test_launch_matches_bash(
 
 # A divergence entry that names no scenario would silently check nothing.
 # Every launch that ends in the script(1) wrap shows the tool-path difference.
+def _drop_state_mask(out: list[str]) -> list[str]:
+    """Remove the ``--tmpfs`` over the PATH watcher's state directory."""
+    i = next(
+        (
+            i
+            for i in range(len(out) - 1)
+            if out[i : i + 2] == ["--tmpfs", "{root}/state"]
+        ),
+        None,
+    )
+    return out if i is None else out[:i] + out[i + 2 :]
+
+
 TOOLS_DIVERGENCE = Divergence(
     "The Python shadow runs script and bwrap from a fixed root-owned tool "
     "path by absolute path (ADR 26: no executable found through PATH); the "
-    "bash shadow finds both through PATH.",
+    "bash shadow finds both through PATH. It also masks the PATH watcher's "
+    "state directory (ADR 27), which the bash shadow does not have.",
     bash_shows=lambda out: "{root}/bin/script" in out and "bwrap" in out,
     python_shows=lambda out: (
         "{root}/tools/script" in out and "{root}/tools/bwrap" in out
@@ -1174,7 +1279,7 @@ TOOLS_DIVERGENCE = Divergence(
             "bwrap": "<bwrap>",
             "{root}/tools/bwrap": "<bwrap>",
         }.get(line, line)
-        for line in out
+        for line in _drop_state_mask(out)
     ],
 )
 for _launch in LAUNCHES:

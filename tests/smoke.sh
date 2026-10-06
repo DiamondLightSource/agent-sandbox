@@ -290,7 +290,7 @@ fi
 BATTERY_OUT="$(env -u IS_SANDBOX bash "$BATTERY_DEST" 2>/dev/null)"
 BATTERY_RC=$?
 if [ "$BATTERY_RC" -ne 0 ] \
-        && printf '%s\n' "$BATTERY_OUT" | grep -qx '/verify-sandbox: 21 checks' \
+        && printf '%s\n' "$BATTERY_OUT" | grep -qx '/verify-sandbox: 22 checks' \
         && printf '%s\n' "$BATTERY_OUT" | grep -qE '^  Summary: [0-9]+ PASS / [0-9]+ FAIL$'; then
     pass
 else

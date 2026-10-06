@@ -75,6 +75,7 @@ def launch(root: Path, *args: str, persistent: bool = True, sig: int = 0) -> Lau
         "gitconfig": str(root / "etc/claude-gitconfig"),
         "skills": str(root / "skills"),
         "tools": str(root / "bin"),
+        "state": str(root / "state"),
         "signal": sig,
     }
     argv = [sys.executable, "-I", str(DRIVER), json.dumps(spec), "pi", *args]
