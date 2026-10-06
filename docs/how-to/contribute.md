@@ -67,6 +67,45 @@ Build the wheel with:
 uv build --wheel -o dist
 ```
 
+### The Python port and the comparison harness
+
+ADR 26 replaces the bash with Python one phase at a time (issue #72). The
+first phase ports the pure parts of `claude-shadow` into
+`src/claude_sandbox/`:
+
+| Module | Ported from | What it holds |
+|---|---|---|
+| `profiles.py` | `detect_agent`, `agent_profile`, `agent_exec_argv`, `filter_chrome_args` | One frozen dataclass per agent: the real binary, home paths, injected flags, `--chrome` stripping |
+| `config.py` | `parse_config`, `resolve_workspace_root`, the port helpers | The `/etc/claude-sandbox.conf` parser and the local-port and callback-port checks |
+| `bwrap.py` | `bwrap_argv_build` | A pure function from profile, config and environment to the bwrap argv |
+| `gitconfig.py` | `render_gitconfig` | The jail's git config, returned as text |
+
+Nothing calls these modules yet. The installer, the shadow and the
+`uvx claude-sandbox` front door still run the bash, so these modules don't
+change sandbox behaviour. They use the standard library only, and
+`tests/python/test_wheel.py` fails if one of them imports anything else.
+`bwrap.py` reads the environment only from the mapping it is given, and it
+reads the filesystem only through an injectable probe that tests whether a
+path exists.
+
+The comparison harness checks that the port matches the bash. For each
+scenario it builds a temporary directory tree and runs both builders against
+that tree with the same environment. The bash side is
+`tests/python/argv_driver.sh`, which sources `claude-shadow` with
+`CLAUDE_SHADOW_SOURCE_ONLY=1` and prints the argv separated by NUL bytes.
+The resulting argv, or the refusal message, must be identical. Run it with
+the rest of the suite, or on its own:
+
+```bash
+uv run pytest tests/python/test_parity.py
+```
+
+It needs only bash, coreutils and git. Each scenario names the
+`tests/bwrap_argv.sh` cases it stands for. If you change `bwrap_argv_build`
+or `parse_config`, make the same change in the Python and add a scenario for
+it. A failure reports the first argv index where the two differ. The harness
+is removed with the bash in phase 5.
+
 ## Build the docs locally
 
 The isolated docs dependencies are listed in `docs/requirements.txt`.
