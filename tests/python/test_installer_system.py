@@ -272,5 +272,14 @@ def test_module_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     }.items():
         monkeypatch.setenv(key, value)
     assert cli.main(["--source", str(REPO), "--image-build"]) == 0
+    # The image entrypoint's share: links, credential directories, conf.
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("CLAUDE_SHARED_CONFIG", str(tmp_path / "shared"))
+    (tmp_path / "prefix/etc/claude-sandbox.conf").unlink()
+    assert cli.main(["--source", str(REPO), "--container-start"]) == 0
+    assert (tmp_path / "home/.claude").is_symlink()
+    assert (tmp_path / "prefix/etc/claude-sandbox.conf").is_file()
+    assert cli.main(["--source", str(REPO), "--probe-userns"]) == 0
     monkeypatch.setenv("CLAUDE_SANDBOX_IMPL", "perl")
     assert cli.main(["--source", str(REPO)]) == 2

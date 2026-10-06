@@ -62,14 +62,19 @@ _STATUSLINE = ".claude/statusline-command.sh"
 # all three names: it must own them on PATH before any vendor installer runs
 # (Invariant 1). Then the helper CLI, as main() places them.
 SHADOW_NAMES = ("/usr/local/bin/claude", "/usr/local/bin/codex", "/usr/local/bin/pi")
+# Per CLAUDE_SANDBOX_IMPL: the shadow and the helper CLI, as bash, or as the
+# shims that run the Python ones from the root-owned venv with -I.
 SHADOW_SOURCE = {
     "bash": f"{_SCRIPTS}/claude-shadow",
     "python": f"{_SCRIPTS}/claude-shim",
 }
+CLI_SOURCE = {
+    "bash": f"{_SCRIPTS}/claude-sandbox",
+    "python": f"{_SCRIPTS}/claude-sandbox-shim",
+}
 HELPER_FILES = (
     (f"{_SCRIPTS}/pi-run", f"{LIBEXEC}/pi-run", 0o755),
     (f"{_SCRIPTS}/pi-system.md", f"{LIBEXEC}/pi-system.md", 0o644),
-    (f"{_SCRIPTS}/claude-sandbox", "/usr/local/bin/claude-sandbox", 0o755),
 )
 # install_runtime_scripts.
 RUNTIME_FILES = (
@@ -222,7 +227,8 @@ def plan_shadow(layout: Layout, options: Options) -> list[Action]:
     that runs the Python one), ``pi-run``, the Pi note and the helper CLI."""
     src = SHADOW_SOURCE[options.impl]
     shadow = tuple((src, name, 0o755) for name in SHADOW_NAMES)
-    return _place_all(layout, shadow + HELPER_FILES)
+    cli = ((CLI_SOURCE[options.impl], "/usr/local/bin/claude-sandbox", 0o755),)
+    return _place_all(layout, shadow + HELPER_FILES + cli)
 
 
 def plan_runtime_scripts(layout: Layout, options: Options) -> list[Action]:

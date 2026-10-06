@@ -26,9 +26,24 @@ export CLAUDE_SANDBOX_SMOKE=1
 # tests/smoke.sh runs it against the Python one (issue #72 phase 4), which a
 # smoke run starts from the tree with this test-only interpreter.
 export CLAUDE_SANDBOX_SMOKE_PYTHON="${CLAUDE_SANDBOX_SMOKE_PYTHON:-$(command -v python3)}"
+# With the Python opt-in the installed CLI is a shim into the root-owned venv,
+# which a smoke run does not provision, so the CLI's behaviour is checked by
+# running the package from the tree.
 case "${CLAUDE_SANDBOX_IMPL:-bash}" in
-    python) SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim" ;;
-    *) SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" ;;
+    python)
+        SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim"
+        CLI_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-sandbox-shim"
+        cli() {
+            CLAUDE_SANDBOX_CONTEXT=container "$CLAUDE_SANDBOX_SMOKE_PYTHON" -I -c \
+                'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = "claude-sandbox"; runpy.run_module("claude_sandbox", run_name="__main__")' \
+                "$REPO_ROOT/src" "$@"
+        }
+        ;;
+    *)
+        SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"
+        CLI_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-sandbox"
+        cli() { bash "$CLI_DEST" "$@"; }
+        ;;
 esac
 export INSTALL_PREFIX="$PREFIX"
 export INSTALL_USER_HOME="$USER_HOME_DIR"
@@ -84,20 +99,20 @@ if [ -x "$CLI_DEST" ] && [ "$(stat -c '%a' "$CLI_DEST" 2>/dev/null)" = "755" ]; 
 else
     fail "helper CLI missing or not 0755-executable at $CLI_DEST"
 fi
-if head -1 "$CLI_DEST" | grep -qxF '#!/usr/bin/env bash'; then
+if cmp -s "$CLI_SRC" "$CLI_DEST"; then
     pass
 else
-    fail "helper CLI does not start with #!/usr/bin/env bash"
+    fail "helper CLI at $CLI_DEST is not $CLI_SRC"
 fi
 
 # CLI behaviour: help exits 0 and prints usage; unknown subcommand exits 2;
 # version reports the stamped value via the test seam.
-if bash "$CLI_DEST" help 2>/dev/null | grep -q '^Usage:'; then
+if cli help 2>/dev/null | grep -qi '^Usage:'; then
     pass
 else
     fail "claude-sandbox help did not print a Usage: line"
 fi
-bash "$CLI_DEST" no-such-command >/dev/null 2>&1
+cli no-such-command >/dev/null 2>&1
 [ "$?" -eq 2 ] && pass || fail "claude-sandbox unknown subcommand did not exit 2"
 
 # Version stamp: recorded from the installing clone (tag when on a tag,
@@ -110,7 +125,7 @@ if [ "$(cat "$VERSION_DEST" 2>/dev/null)" = "$EXPECT_VER" ]; then
 else
     fail "version stamp at $VERSION_DEST is '$(cat "$VERSION_DEST" 2>/dev/null)', expected '$EXPECT_VER'"
 fi
-if [ "$(CLAUDE_SANDBOX_VERSION_FILE="$VERSION_DEST" bash "$CLI_DEST" version)" = "claude-sandbox $EXPECT_VER" ]; then
+if [ "$(CLAUDE_SANDBOX_VERSION_FILE="$VERSION_DEST" cli version)" = "claude-sandbox $EXPECT_VER" ]; then
     pass
 else
     fail "claude-sandbox version did not report the stamped value"

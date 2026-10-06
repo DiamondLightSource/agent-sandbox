@@ -16,7 +16,17 @@ from typing import TextIO
 
 from . import system
 from .actions import Warn, apply
-from .steps import LIBEXEC, STEPS, Layout, Options
+from .steps import (
+    CONF,
+    LIBEXEC,
+    STEPS,
+    Layout,
+    Options,
+    is_mount,
+    plan_conf,
+    plan_cred_dirs,
+    plan_shared_links,
+)
 
 
 def install(
@@ -52,3 +62,19 @@ def install(
         os.umask(old)
     venv = f"{LIBEXEC}/venv"
     print(system.summary(layout, options, skipped, venv), end="", file=out)
+
+
+def container_start(
+    layout: Layout, options: Options, err: TextIO | None = None
+) -> None:
+    """What the published image's entrypoint redoes at each start, where the
+    runtime mounts are: the shared-config links, the credential directories,
+    and the conf, unless the operator mounted their own over it."""
+    old = os.umask(0o022)
+    try:
+        apply(plan_shared_links(layout, options), err)
+        apply(plan_cred_dirs(layout, options), err)
+        if not is_mount(str(layout.system(CONF))):
+            apply(plan_conf(layout, options), err)
+    finally:
+        os.umask(old)
