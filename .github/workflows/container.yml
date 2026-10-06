@@ -166,6 +166,37 @@ jobs:
             -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
             claude-sandbox:test bash /opt/claude-sandbox/tests/pi_e2e.sh
 
+      # The opt-in Python shadow (issue #72 phase 2a), installed over the
+      # baked bash one. It has no egress jail until phase 2b, so it must
+      # refuse while the jail is on, and pass the same launches with it off.
+      # Runs after the bash steps above and changes nothing they use.
+      - name: "Test: opt-in Python shadow (egress jail off)"
+        run: |
+          podman run --rm -t \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --security-opt label=disable \
+            --device /dev/net/tun \
+            -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
+            -v "$RUNNER_TEMP/project:/work" -w /work \
+            claude-sandbox:test bash -c '
+              git config --global user.name "Sandbox integration test" || exit "$?"
+              git config --global user.email "sandbox-test@example.invalid" || exit "$?"
+              CLAUDE_SANDBOX_IMPL=python \
+                bash /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh --image-build \
+                || exit "$?"
+              grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
+              if out="$(claude --version 2>&1)"; then
+                echo "the Python shadow launched with the egress jail on"; exit 1
+              fi
+              printf "%s\n" "$out"
+              case "$out" in *"egress jail"*) ;; *) exit 1 ;; esac
+              export CLAUDE_SANDBOX_EGRESS_JAIL=0
+              claude --version || exit "$?"
+              for agent in claude codex pi; do
+                claude-sandbox verify --agent "$agent" || exit "$?"
+              done'
+
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
