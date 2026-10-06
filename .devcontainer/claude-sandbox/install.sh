@@ -713,7 +713,7 @@ fetch_uv() {
         echo "claude-sandbox: could not fetch and verify uv $want." >&2
         exit 1
     fi
-    mkdir -p "$dir"
+    install -d -m 0755 "$dir"
     install -m 0755 "$tmp/uv-$arch-unknown-linux-gnu/uv" "$uv"
     rm -rf "$tmp"
     printf '%s\n' "$uv"
