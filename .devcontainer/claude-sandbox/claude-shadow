@@ -935,14 +935,17 @@ callback_enabled() {
 # would sit on the port the agent needs for its own server, and the inbound
 # listener outside would sit on the host service's port.
 validate_callback_ports() {
-    local port ok=0
+    local port ok=0 outbound
     local -a words=()
     split_words words "$(callback_port_words)"
+    # No pipe into grep -q: under pipefail, grep exiting on an early match
+    # SIGPIPEs local_ports and the overlap went unreported.
+    outbound="$(local_ports)"
     for port in "${words[@]+"${words[@]}"}"; do
         if ! valid_tcp_port "$port"; then
             echo "claude-sandbox: callback-port entries must be 1–65535, got '$port'." >&2
             ok=1
-        elif local_ports | grep -qx "$port"; then
+        elif grep -qxF -e "$port" <<< "$outbound"; then
             echo "claude-sandbox: port $port is listed as both callback-port and local-port/local-model-port." >&2
             ok=1
         fi

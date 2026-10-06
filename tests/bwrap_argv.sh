@@ -842,4 +842,24 @@ else
     pass
 fi
 
+# --- Scenario 18: a callback/local overlap is reported however long the list ---
+# The check used to pipe local_ports into grep -q. Under pipefail, grep exits
+# on an early match, local_ports takes SIGPIPE on its next write, and the
+# pipeline fails, so an overlap first in a long list went unreported. Put the
+# overlap first, follow it with hundreds of ports, and repeat the check: every
+# run must refuse.
+_long_ports="$(seq 1001 1400 | tr '\n' ' ')"
+_overlap_missed=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if (CLAUDE_SANDBOX_LOCAL_MODEL_PORT=0 CLAUDE_SANDBOX_LOCAL_PORTS="1000 $_long_ports" \
+            CLAUDE_SANDBOX_CALLBACK_PORTS=1000 validate_callback_ports) >/dev/null 2>&1; then
+        _overlap_missed=$((_overlap_missed + 1))
+    fi
+done
+assert_eq scenario18-overlap-first-in-long-list 0 "$_overlap_missed"
+# And a callback port absent from that list still passes.
+assert_parse scenario18-no-overlap env CLAUDE_SANDBOX_LOCAL_MODEL_PORT=0 \
+    CLAUDE_SANDBOX_LOCAL_PORTS="1000 $_long_ports" CLAUDE_SANDBOX_CALLBACK_PORTS=2000 \
+    bash -c 'export CLAUDE_SHADOW_SOURCE_ONLY=1; . "$SHADOW"; validate_callback_ports'
+
 finish bwrap_argv.sh
