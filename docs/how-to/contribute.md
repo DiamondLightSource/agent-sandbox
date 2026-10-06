@@ -152,6 +152,8 @@ from, then rebuild the container. `devcontainer.json` passes the variable to
 `postCreate`. To go back to the bash shadow, run `./install --here` without
 the variable, or rebuild without it. The installer then puts the bash shadow
 back and removes the interpreter.
+`claude-sandbox update` installs a published release, which won't carry the
+opt-in until a release that includes the Python shadow ships.
 
 The Python shadow runs the egress jail by default, as the bash shadow does,
 and refuses to launch if the jail cannot start.
