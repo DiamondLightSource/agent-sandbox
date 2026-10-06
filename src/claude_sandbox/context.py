@@ -11,8 +11,9 @@ The signals are the ones the bash uses: ``IS_SANDBOX=1`` (set by the
 shadow inside the jail), and the files podman and docker write into every
 container. ``CLAUDE_SANDBOX_NESTED=1`` treats a container as a host, as
 the bash launcher does (an engine inside a container, and the launcher
-tests). ``CLAUDE_SANDBOX_CONTEXT=host|container`` is the test seam that
-lets the helper suites run on a host. Neither can leave the jail: the jail
+tests). ``CLAUDE_SANDBOX_CONTEXT=host|container`` is a test seam only, which lets
+the helper suites run on a host; what changes the system (``update``)
+checks the container files themselves. Neither can leave the jail: the jail
 is decided first, and none of this is a security boundary — bwrap is.
 """
 
@@ -38,9 +39,30 @@ MARKERS = ("/run/.containerenv", "/.dockerenv")
 SHADOW = "/usr/local/bin/claude"
 
 
+# Refusing to install (or update) outside a container: the installer runs apt
+# and writes /etc and /usr/libexec, which would reshape a host.
+HOST_INSTALL_REFUSAL = (
+    "claude-sandbox: refusing to install outside a container.\n"
+    "  Run this inside a devcontainer (as root), or set\n"
+    "  CLAUDE_SANDBOX_HOST_INSTALL=1 to install on this host.\n"
+)
+
+
+def has_container_markers(exists: Callable[[str], bool] | None = None) -> bool:
+    """The files podman and docker write into every container. Unlike
+    :func:`detect`, no environment variable can stand in for them."""
+    exists = exists or os.path.exists
+    return any(exists(m) for m in MARKERS)
+
+
+def may_install(env: Mapping[str, str] = os.environ) -> bool:
+    """Whether install and update may change this system."""
+    return has_container_markers() or env.get("CLAUDE_SANDBOX_HOST_INSTALL") == "1"
+
+
 def detect(
     env: Mapping[str, str] = os.environ,
-    exists: Callable[[str], bool] = os.path.exists,
+    exists: Callable[[str], bool] | None = None,
 ) -> Where:
     """Classify the current process from its environment and container files."""
     if env.get("IS_SANDBOX") == "1":
@@ -50,7 +72,7 @@ def detect(
         return Where(forced)
     if env.get("CLAUDE_SANDBOX_NESTED") == "1":
         return HOST
-    return CONTAINER if any(exists(m) for m in MARKERS) else HOST
+    return CONTAINER if has_container_markers(exists) else HOST
 
 
 @functools.cache

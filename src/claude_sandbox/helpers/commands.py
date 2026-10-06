@@ -110,6 +110,9 @@ def version(ns: argparse.Namespace) -> int:
 @requires(CONTAINER, forward_from=HOST)
 def update(ns: argparse.Namespace) -> int:
     """clone and install the latest claude-sandbox release"""
+    if not context.may_install():
+        sys.stderr.write(context.HOST_INSTALL_REFUSAL)
+        return 1
     if os.geteuid() != 0:
         return _fail("update must run as root (install requires it).")
     if os.path.isdir(IMAGE_INSTALL):

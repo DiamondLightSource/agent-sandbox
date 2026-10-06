@@ -1,5 +1,7 @@
 """Where the CLI is, and what each command does there."""
 
+from pathlib import Path
+
 import pytest
 
 from claude_sandbox import context
@@ -22,6 +24,16 @@ from claude_sandbox.context import CONTAINER, HOST, JAIL, Action, Requirement, W
 )
 def test_detect(env: dict[str, str], markers: bool, where: Where) -> None:
     assert context.detect(env, lambda path: markers) is where
+
+
+def test_install_needs_the_container_files_or_the_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(context, "MARKERS", (str(tmp_path),))
+    assert context.may_install({})
+    monkeypatch.setattr(context, "MARKERS", (str(tmp_path / "absent"),))
+    assert not context.may_install({"CLAUDE_SANDBOX_CONTEXT": "container"})
+    assert context.may_install({"CLAUDE_SANDBOX_HOST_INSTALL": "1"})
 
 
 def test_current_is_detected_once() -> None:

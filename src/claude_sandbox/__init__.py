@@ -40,11 +40,9 @@ def _in_container() -> bool:
     Podman writes ``/run/.containerenv`` and sets ``container``; docker
     writes ``/.dockerenv``. A devcontainer is one of the two.
     """
-    return (
-        os.path.exists("/run/.containerenv")
-        or os.path.exists("/.dockerenv")
-        or bool(os.environ.get("container"))
-    )
+    from .context import has_container_markers
+
+    return has_container_markers() or bool(os.environ.get("container"))
 
 
 def main() -> None:
@@ -59,11 +57,9 @@ def main() -> None:
         # container that would reshape the host; the twelve-line postCreate
         # it replaces could not be typed on a host by accident, and this can.
         if not _in_container() and env.get("CLAUDE_SANDBOX_HOST_INSTALL") != "1":
-            sys.stderr.write(
-                "claude-sandbox: refusing to install outside a container.\n"
-                "  Run this inside a devcontainer (as root), or set\n"
-                "  CLAUDE_SANDBOX_HOST_INSTALL=1 to install on this host.\n"
-            )
+            from .context import HOST_INSTALL_REFUSAL
+
+            sys.stderr.write(HOST_INSTALL_REFUSAL)
             sys.exit(1)
         # The shipped tree has no .git, so the installer would stamp
         # `unknown`; the wheel version is the release it was built from.

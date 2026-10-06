@@ -89,6 +89,12 @@ def test_update(
     main: Main, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:  # fmt: skip
+    # Only where the container files are, whatever CLAUDE_SANDBOX_CONTEXT says.
+    monkeypatch.setattr(context, "MARKERS", (str(tmp_path / "no-marker"),))
+    monkeypatch.delenv("CLAUDE_SANDBOX_HOST_INSTALL", raising=False)
+    assert main("update") == 1
+    assert "refusing to install outside a container" in capsys.readouterr().err
+    monkeypatch.setenv("CLAUDE_SANDBOX_HOST_INSTALL", "1")
     installer = tmp_path / "installer"
     installer.write_text("uvx\n")
     monkeypatch.setenv("CLAUDE_SANDBOX_INSTALLER_FILE", str(installer))
