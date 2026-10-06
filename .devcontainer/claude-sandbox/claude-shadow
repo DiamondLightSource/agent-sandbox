@@ -422,6 +422,13 @@ bwrap_argv_build() {
         argv+=( --bind "$real_agent" "$home/$AGENT_INNER_REL" )
     fi
 
+    # A relative bind source would resolve against the cwd, the jail-writable
+    # workspace, so a planted symlink there could choose what gets bound rw.
+    # $PWD is always absolute; only a relative workspace-root lands here.
+    if [ -n "$workspace" ] && [[ "$workspace" != /* ]]; then
+        echo "claude-sandbox: workspace-root needs an absolute path: $workspace" >&2
+        return 1
+    fi
     if [ -n "$workspace" ] && [ -d "$workspace" ]; then
         argv+=( --bind "$workspace" "$workspace" )
     fi
@@ -440,9 +447,17 @@ bwrap_argv_build() {
     # (ssh-agent, gpg-agent, dbus, keyring sockets) stays masked. Keep
     # allow-write after the masks; hoisting it above them would let a mask
     # clobber the operator's bind silently.
+    #
+    # Relative entries are refused, not resolved: they would resolve against
+    # the cwd, which is the jail-writable workspace, so a symlink planted
+    # there would choose the rw bind source.
     if [ -n "${CLAUDE_SANDBOX_ALLOW_WRITE:-}" ]; then
         while IFS= read -r extra_path; do
             [ -z "$extra_path" ] && continue
+            if [[ "$extra_path" != /* ]]; then
+                echo "claude-sandbox: allow-write needs an absolute path: $extra_path" >&2
+                return 1
+            fi
             if [ -e "$extra_path" ]; then
                 argv+=( --bind "$extra_path" "$extra_path" )
             fi

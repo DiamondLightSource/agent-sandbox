@@ -862,4 +862,37 @@ assert_parse scenario18-no-overlap env CLAUDE_SANDBOX_LOCAL_MODEL_PORT=0 \
     CLAUDE_SANDBOX_LOCAL_PORTS="1000 $_long_ports" CLAUDE_SANDBOX_CALLBACK_PORTS=2000 \
     bash -c 'export CLAUDE_SHADOW_SOURCE_ONLY=1; . "$SHADOW"; validate_callback_ports'
 
+# --- Scenario 19: relative bind sources are refused, not resolved ---
+# A relative allow-write or workspace-root would resolve against the cwd, the
+# jail-writable workspace, so a symlink planted there would choose the rw bind
+# source. Refuse the launch even when the relative path exists.
+RELFIX="$(mktemp -d)"
+register_cleanup "$RELFIX"
+ln -s / "$RELFIX/planted"
+for _relative in planted ./planted ../planted; do
+    if (cd "$RELFIX" && HOME="$TMPHOME" CLAUDE_SANDBOX_ALLOW_WRITE="$_relative" \
+            bwrap_argv_build rejected_args "$TMPHOME" /test/.local/bin/claude) >/dev/null 2>&1; then
+        fail "scenario19-allow-write — relative allow-write accepted: $_relative"
+    else
+        pass
+    fi
+done
+# One bad entry refuses the launch even beside a good one.
+if (cd "$RELFIX" && HOME="$TMPHOME" CLAUDE_SANDBOX_ALLOW_WRITE="$TMPHOME/extra-rw
+planted" bwrap_argv_build rejected_args "$TMPHOME" /test/.local/bin/claude) >/dev/null 2>&1; then
+    fail "scenario19-allow-write-mixed — relative allow-write accepted beside an absolute one"
+else
+    pass
+fi
+assert_contains scenario19-allow-write-message \
+    "$(cd "$RELFIX" && HOME="$TMPHOME" CLAUDE_SANDBOX_ALLOW_WRITE=planted \
+        bwrap_argv_build rejected_args "$TMPHOME" /test/.local/bin/claude 2>&1 >/dev/null || true)" \
+    "claude-sandbox: allow-write needs an absolute path: planted"
+if (cd "$RELFIX" && HOME="$TMPHOME" \
+        bwrap_argv_build rejected_args planted /test/.local/bin/claude) >/dev/null 2>&1; then
+    fail "scenario19-workspace-root — relative workspace root accepted"
+else
+    pass
+fi
+
 finish bwrap_argv.sh

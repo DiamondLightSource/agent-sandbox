@@ -31,9 +31,9 @@ through [team setup](../how-to/sandbox-a-team-devcontainer.md).
 
 | Key | Value | Effect |
 |---|---|---|
-| `workspace-root` | absolute path | Sets the rw bind-mount root if `CLAUDE_SANDBOX_WORKSPACE_ROOT` is not already set. Empty value ignored |
+| `workspace-root` | absolute path | Sets the rw bind-mount root if `CLAUDE_SANDBOX_WORKSPACE_ROOT` is not already set. Empty value ignored; a relative path fails launch |
 | `no-forge` | bare flag (no value) | Equivalent to `CLAUDE_SANDBOX_NO_FORGE=1`: skips the `gh`/`glab` token binds and removes the credential helpers from the generated gitconfig |
-| `allow-write` | absolute path | Adds a writable path; repeatable. Empty or missing paths are skipped. Never expose host container-engine, session-bus or X11 sockets: they grant control beyond the sandbox. See [socket access](../how-to/configure-workspace-scope.md#sockets-grant-access-to-services) |
+| `allow-write` | absolute path | Adds a writable path; repeatable. Empty or missing paths are skipped; a relative path fails launch. Never expose host container-engine, session-bus or X11 sockets: they grant control beyond the sandbox. See [socket access](../how-to/configure-workspace-scope.md#sockets-grant-access-to-services) |
 | `pass-env` | variable name(s) | Forwards named environment variables through the `--clearenv` scrub. Comma- or space-separated, and repeatable. Names only — the value is read from the launching environment. Unset, non-identifier and denied names are skipped |
 | `allow-device` | absolute `/dev/…` path | Exposes one existing character or block device read-write to agents using a device bind. Repeatable; merged with the environment. Symlinks resolve to their canonical path. Missing or invalid devices fail launch. Container access must already be configured; the host launcher `--device PATH` does both steps |
 | `local-model-port` | TCP port 1–65535; shipped default `1920`; `0` drops it; bare flag means `1920` | The port Pi discovers a model on at startup. Always part of the loopback relay set ({ref}`adr-local-port-all-agents`), so every agent reaches it on its own `127.0.0.1`. Environment `CLAUDE_SANDBOX_LOCAL_MODEL_PORT` takes precedence. See [Use Pi](../how-to/use-pi.md) |
