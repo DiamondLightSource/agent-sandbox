@@ -1153,7 +1153,7 @@ netns_launch() {
     # The holder runs in a fresh `bash -c`, so every function it calls must be
     # exported too — not just netns_holder, but the helpers it reaches:
     # jail_fail, wait_for, route_field.
-    export -f netns_holder jail_fail wait_for route_field local_model_inner local_model_listening stop_relay
+    export -f netns_holder split_words jail_fail wait_for route_field local_model_inner local_model_listening stop_relay
     export JAIL_DNS_FWD
     # Explicit <&0 keeps the holder's stdin on the terminal: bash redirects a
     # background job's stdin to /dev/null otherwise, which would break Claude's
