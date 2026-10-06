@@ -8,30 +8,51 @@ for open-ended questions. Agree the scope of large changes before implementation
 ## Development setup
 
 Clone the repository and open its devcontainer for work on the sandbox itself.
-To install the checkout you are editing:
+To install the checkout you are editing, in a container terminal (not inside
+an agent session), as root:
 
 ```bash
 ./install --here
 ```
 
-Without `--here`, the installer selects a release and refuses a pinned,
-non-default or modified checkout.
+`install` is a short Bash bootstrap: it chooses the revision, fetches a
+pinned uv if needed, and hands over to the Python installer in
+`src/claude_sandbox/installer/`. Without `--here`, it selects a release and
+refuses a pinned, non-default or modified checkout.
+<!-- TODO(phase5): confirm the bootstrap's behaviour once it is written (issue #72 phase 4, second part) -->
 
-The sandbox is migrating from Bash to a Python package
-({ref}`ADR 26 <adr-python-implementation>`, issue #72). Until that finishes,
-the Bash is what runs: the wheel bundles it and its entry point executes it.
-See `CLAUDE.md` for the project boundaries and the Python guardrails.
+The sandbox is a Python package, `src/claude_sandbox/`, with a root
+`pyproject.toml` ({ref}`ADR 26 <adr-python-implementation>`). See
+`CLAUDE.md` for the project boundaries and the Python guardrails.
 The repository's `.claude/` holds the skills, commands and hooks for developing
 this repo; only the top-level `skills/` tree ships to users (see the
 `claude-sandbox-shipped-skills` skill).
 
 ## Validation
 
-The suites are shell scripts; the CI workflow is the complete list.
-Core installation and launcher checks include:
+The Python tests, linters and type checker run from the uv development
+environment. The development tools (pytest, ruff, pyright) are pinned in
+`uv.lock`:
 
 ```bash
-CLAUDE_SANDBOX_SMOKE=1 bash tests/bwrap_argv.sh
+uv sync
+uv run pytest --cov
+uv run ruff check
+uv run ruff format --check
+uv run pyright
+```
+
+pytest collects `tests/python/` only. CI requires at least 95% branch
+coverage of `src/claude_sandbox/`, and pyright runs in strict mode: fix the
+code rather than relaxing the check.
+
+The end-to-end suites are shell scripts that test the installed sandbox
+from outside, as a user would. The CI workflow is the complete list; the
+core installation and launcher checks include:
+
+<!-- TODO(phase5): confirm this list against ci.yml after the bash is deleted -->
+
+```bash
 CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
 bash tests/install_ref.sh
 bash tests/launcher.sh
@@ -46,126 +67,90 @@ The smoke flag confines fixture installations to temporary directories.
 Network tests need namespaces and capabilities unavailable inside an agent
 sandbox; run those from an ordinary container terminal as described in CI.
 
-## Python development
-
-The package lives in `src/claude_sandbox/` with a root `pyproject.toml`.
-The development tools (pytest, ruff, pyright) are pinned in `uv.lock`:
-
-```bash
-uv sync
-uv run pytest --cov
-uv run ruff check
-uv run ruff format --check
-uv run pyright
-```
-
-pytest collects `tests/python/` only; the shell suites above run directly.
-CI requires at least 95% branch coverage of `src/claude_sandbox/`.
 Build the wheel with:
 
 ```bash
 uv build --wheel -o dist
 ```
 
-### The Python port and the comparison harness
+## The Python package
 
-ADR 26 replaces the bash with Python one phase at a time (issue #72). The
-first phase ports the pure parts of `claude-shadow` into
-`src/claude_sandbox/`:
+The package uses the standard library only and has no runtime
+dependencies. `tests/python/test_wheel.py` imports every module and fails if
+one imports anything else. Keep it that way: helpers that handle tokens or
+run as root share the package with the launch path.
 
-| Module | Ported from | What it holds |
-|---|---|---|
-| `profiles.py` | `detect_agent`, `agent_profile`, `agent_exec_argv`, `filter_chrome_args` | One frozen dataclass per agent: the real binary, home paths, injected flags, `--chrome` stripping |
-| `config.py` | `parse_config`, `resolve_workspace_root`, the port helpers | The `/etc/claude-sandbox.conf` parser and the local-port and callback-port checks |
-| `bwrap.py` | `bwrap_argv_build` | A pure function from profile, config and environment to the bwrap argv |
-| `gitconfig.py` | `render_gitconfig` | The jail's git config, returned as text |
+### The audit core
 
-Phase 2 adds the launch path that uses them:
+Three modules hold the security-critical code. Each is meant to be read top
+to bottom; don't spread them across more modules.
 
-| Module | Ported from | What it holds |
-|---|---|---|
-| `shadow.py` | the launch body, `configure_launch`, `sandbox_launch` | One launch, top to bottom: the recursion guard, the refusals, the conf and git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
-| `jail.py` | `netns_launch`, `netns_holder`, `jail_stage_dns` and the relay helpers | The egress jail: the namespace holder, pasta, DNS forwarding and the loopback relays |
-| `tools.py` | | The fixed system directories the launch path runs its tools from; nothing is found through `PATH` |
-| `__main__.py` | | Dispatches the shim's `_shadow` call and the jail's `_jail_holder` before importing anything outside the standard library |
+| Module | What it holds |
+|---|---|
+| `bwrap.py` | A pure function from agent profile, configuration and environment to the bwrap argv. The only place that adds a mount or an environment variable to it |
+| `jail.py` | The egress jail: the namespace holder, `pasta`, DNS forwarding and the loopback relays |
+| `shadow.py` | One launch, top to bottom: the recursion guard, the refusals, the configuration and Git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
 
-By default nothing calls these modules: the installer, the shadow and the
-`uvx claude-sandbox` front door still run the bash, so the modules don't
-change sandbox behaviour unless you opt in to the Python shadow (see below).
-They use the standard library only, and
-`tests/python/test_wheel.py` fails if one of them imports anything else.
+Around them:
+
+| Module | What it holds |
+|---|---|
+| `__main__.py` | Dispatches the shim's `_shadow` call and the jail's `_jail_holder` before the CLI is imported |
+| `profiles.py` | One frozen dataclass per agent: the real binary, home paths, injected flags, `--chrome` stripping |
+| `config.py` | The `/etc/claude-sandbox.conf` parser and the local-port and callback-port checks |
+| `gitconfig.py` | The jail's Git config, returned as text |
+| `tools.py` | The fixed system directories the launch path runs its tools from |
+| `context.py`, `cli.py` | Where the CLI runs, and the command table |
+| `host/` | The host launcher: options, engine calls, `clean` |
+| `helpers/` | The in-container helpers: `gh-auth`, `glab-auth`, `verify`, `pi-local`, `doctor`, `version`, `update` |
+| `installer/` | The installer's steps and the interpreter provisioning |
+
 `bwrap.py` reads the environment only from the mapping it is given. It
 reads the filesystem only through an injectable probe, which can test what
 a path is, resolve it the way `realpath -e` does, and list the matches for
-a glob such as `/dev/nvidia*`.
+a glob such as `/dev/nvidia*`. Its tests are plain pytest on that function.
+bubblewrap applies its operations in order, so keep new mounts in the right
+section: a mask must follow the bind it covers.
 
-The comparison harness checks that the port matches the bash. For each
-scenario it builds a temporary directory tree and runs both builders against
-that tree with the same environment. The bash side is
-`tests/python/argv_driver.sh`, which sources `claude-shadow` with
-`CLAUDE_SHADOW_SOURCE_ONLY=1` and prints the argv separated by NUL bytes.
-The resulting argv, or the refusal message, must be identical. Run it with
-the rest of the suite, or on its own:
+### The launch path
 
-```bash
-uv run pytest tests/python/test_parity.py
-```
-
-It needs only bash, coreutils and git. Each scenario names the
-`tests/bwrap_argv.sh` cases it stands for. If you change `bwrap_argv_build`
-or `parse_config`, make the same change in the Python and add a scenario for
-it. A failure reports the first argv index where the two differ.
-
-The same file compares whole launches. `tests/python/launch_driver.sh`
-installs a copy of `claude-shadow` under a fixture directory, as
-`tests/verify.sh` does, and runs it; the Python shadow runs against the same
-paths. The exit status, the warnings, the command that is executed (with the
-`script -c` command compared as the words bash reads back), the git config
-and every path the launch creates must match.
-
-Where the Python differs from the bash on purpose, for example by not
-expanding pass-env names as globs against the workspace, the difference is
-listed in `KNOWN_DIVERGENCES` in `tests/python/test_parity.py` with its
-reason. A listed scenario must still differ, so once the bash is fixed the
-entry fails and can be removed. The harness is removed with the bash in
-phase 5.
-
-### Trying the Python shadow
-
-The Python shadow is opt-in until phase 5, and it is chosen when the sandbox
-is installed, never when an agent starts. With `CLAUDE_SANDBOX_IMPL=python`
-the installer places the three-line shim from ADR 26 at
-`/usr/local/bin/claude`, `codex` and `pi`. It also installs a CPython
-interpreter and a venv holding `src/claude_sandbox`, both root-owned, under
-`/usr/libexec/claude-sandbox/`. Fetching the interpreter needs `uv` and
-network access. In a devcontainer terminal of this repository (not inside an
-agent session), run:
+`/usr/local/bin/claude`, `codex` and `pi` are one file,
+`.devcontainer/claude-sandbox/claude-shim`:
 
 ```bash
-CLAUDE_SANDBOX_IMPL=python ./install --here
-head -3 /usr/local/bin/claude    # the shim, not the bash shadow
+#!/bin/bash
+# /usr/local/bin/claude (and codex, pi): hand off to the root-owned install.
+exec /usr/libexec/claude-sandbox/venv/bin/python -I -m claude_sandbox _shadow "${0##*/}" -- "$@"
 ```
 
-To use it from the start in this repository's devcontainer, set
-`CLAUDE_SANDBOX_IMPL=python` in the host environment that VS Code starts
-from, then rebuild the container. `devcontainer.json` passes the variable to
-`postCreate`. To go back to the bash shadow, run `./install --here` without
-the variable, or rebuild without it. The installer then puts the bash shadow
-back and removes the interpreter.
-`claude-sandbox update` installs a published release, which won't carry the
-opt-in until a release that includes the Python shadow ships.
+The shim names the root-owned interpreter by absolute path and runs it with
+`-I`. `__main__.py` sees `_shadow` and calls `shadow.main` before anything
+else is imported. Never add a `#!/usr/bin/env python3`, an interpreter
+found through `PATH`, or a launch from uv's cache: `PATH` in the published
+image starts with a directory on the writable `/cache` volume, and
+`~/.cache` is writable from the jail. `tests/python/test_hijack.py` plants
+`sitecustomize.py`, `usercustomize.py`, a `.pth` file, a `PYTHONPATH` and a
+fake `python` earlier on `PATH`, launches, and asserts that none ran.
 
-The Python shadow runs the egress jail by default, as the bash shadow does,
-and refuses to launch if the jail cannot start.
+The same rule covers the tools the launch path runs. `tools.find_tool`
+looks only in `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`, and returns an
+absolute path; `script`, `bwrap`, `git`, `unshare`, `pasta`, `ip`, `ss` and
+`socat` all come from it. A missing tool is a refusal, never a fallback to
+`PATH`.
 
-### The egress jail in Python
+`shadow.py` handles interrupts with `try`/`finally` and signal handlers:
+INT, TERM and HUP unwind, remove what the launch created, and then the
+process dies by the same signal so the caller's shell sees it. A signal
+that was ignored on entry stays ignored. `tests/python/test_terminal.py`
+types Ctrl-C at a real pseudo-terminal while the agent runs;
+`tests/python/test_jail_netns.py` does the same through the egress jail.
 
-`jail.py` ports `netns_launch`, `netns_holder`, `jail_stage_dns` and the
-relay helpers. The shadow calls `stage_dns` before it builds the bwrap argv,
-because `bwrap.py` binds the staged resolver, and then hands the `script(1)`
-command to `launch`, which runs it in the jail and exits with its status.
-The bash ran the namespace holder as `unshare -rn bash -c` with `export -f`.
-The Python holder re-enters the package instead:
+### The egress jail
+
+The shadow calls `jail.stage_dns` before it builds the bwrap argv, because
+`bwrap.py` binds the staged resolver, and then hands the `script(1)`
+command to `jail.launch`, which runs it in the jail and exits with its
+status. The namespace holder re-enters the package:
 `unshare -rn <sys.executable> -I -m claude_sandbox _jail_holder -- COMMAND`,
 so it runs the same root-owned interpreter, in isolated mode, that launched
 it, and `__main__.py` dispatches `_jail_holder` before importing anything
@@ -173,72 +158,43 @@ else. The holder inherits stdin and the process group, so it, `script` and
 `bwrap` stay in the terminal's foreground group.
 
 Every side effect in `jail.py` goes through an `Ops` object, so the unit
-tests in `tests/python/test_jail.py` replace it and check the argv, the fail-closed
-paths, the cleanup and the exit status after each signal. Real namespaces
-need `/dev/net/tun` and unprivileged user namespaces, so
+tests in `tests/python/test_jail.py` replace it and check the argv, the
+fail-closed paths, the cleanup and the exit status after each signal. Real
+namespaces need `/dev/net/tun` and unprivileged user namespaces, so
 `tests/python/test_jail_netns.py` skips elsewhere. Run it in this
 repository's image with `tests/jail_python.sh`; the comment at its top gives
 the `podman run` command.
 
 ### One CLI: host, container and jail
 
-Phase 3 of issue #72 ports the host launcher (`container/claude-container`)
-and the in-container helper (`.devcontainer/claude-sandbox/claude-sandbox`)
-into one command, `claude-sandbox`, built on argparse. Like the rest of the
-package it uses the standard library only.
-
-`context.py` decides once where the process runs:
+`claude-sandbox` is one argparse command on both sides of the container
+boundary. `context.py` decides once where the process runs:
 
 - **JAIL** when `IS_SANDBOX=1`, which the shadow sets inside an agent
   session;
 - **CONTAINER** when `/run/.containerenv` or `/.dockerenv` exists;
 - **HOST** otherwise, or when `CLAUDE_SANDBOX_NESTED=1` (an engine inside a
-  container, as the bash launcher allows).
+  container).
 
 Each command declares where it runs, for example
 `@requires(CONTAINER, JAIL, forward_from=HOST)` on `verify`. `cli.py` runs a
 command where it is declared, forwards it from `forward_from` into the
 project container as `podman exec … /usr/local/bin/claude-sandbox VERB
 ARGS` (so it runs the version installed there), and refuses it anywhere
-else. That declaration replaces the bash launcher's hand-kept list of
-forwarded verbs.
+else. Add a command by writing its function in `host/` or `helpers/` with
+its `@requires` and listing it in `cli.COMMANDS`; there is no separate list
+of verbs to forward.
 
-As ADR 26 requires, no program the CLI runs in the container or the jail is
-found through `PATH`. The agents and `claude-sandbox` are named by their
-absolute paths under `/usr/local/bin`, the `shell` verb starts from
-`/bin/sh`, and `gh`, `glab` and `git` come from `tools.find_tool`. Only the
-engine on the host (`podman` or `docker`) is still found on the user's
-`PATH`, as the bash launcher finds it.
+No program the CLI runs in the container or the jail is found through
+`PATH`. The agents and `claude-sandbox` are named by their absolute paths
+under `/usr/local/bin`, the `shell` verb starts from `/bin/sh`, and `gh`,
+`glab` and `git` come from `tools.find_tool`. Only the engine on the host
+(`podman` or `docker`) is found on the user's `PATH`.
 
-Where the Python CLI differs from the bash on purpose:
-
-- The create-time pass-through to the container leaves out
-  `CLAUDE_SANDBOX_IMPL`, `CLAUDE_SANDBOX_CONTEXT` and
-  `CLAUDE_SANDBOX_NESTED`; the bash passes `NESTED`.
-- Inside the jail, `gh-auth` and `glab-auth` refuse, as `update` does.
-- In a container, `--version` reports the installed sandbox's version, as
-  the helper does, rather than the launcher's.
-
-| Where | What it holds |
-|---|---|
-| `cli.py` | The command table, the parser for each context, and the dispatch |
-| `host/options.py` | The launcher's own options (`--recreate`, `--mount`, ...), parsed as the bash parses them |
-| `host/launcher.py` | The engine calls: create, reuse, the session, `clean`, the version warning |
-| `host/commands.py` | The host commands: `claude`, `codex`, `pi`, `shell`, `clean` |
-| `helpers/commands.py` | The helpers and where they run: `gh-auth`, `glab-auth`, `verify`, `pi-local`, `doctor`, `version`, `update`, `install`, `help` |
-| `helpers/auth.py`, `doctor.py`, `pi_local.py` | The longer helpers |
-
-The bash stays the default. To try the Python CLI from a checkout, run the
-wheel's entry point with the opt-in:
-
-```bash
-CLAUDE_SANDBOX_IMPL=python uv run claude-sandbox --help
-CLAUDE_SANDBOX_IMPL=python uvx --from dist/claude_sandbox-*.whl claude-sandbox
-```
-
-`install` still runs the bash installer either way. `uv run python -m
-claude_sandbox` runs the CLI directly, without the front door's
-environment.
+On the host the launcher's own options (`--recreate`, `--mount`, ...) come
+first and are parsed by hand in `host/options.py`: the first word that is
+not one of them ends them, and everything after it goes to the command or
+the agent untouched, so `claude-sandbox --resume` is `claude --resume`.
 
 `CLAUDE_SANDBOX_CONTEXT=host|container` is a test seam only: it lets the
 helper suites run on a host. It never overrides the jail, and `update`
@@ -246,9 +202,44 @@ ignores it: `update` changes the system only where `/run/.containerenv` or
 `/.dockerenv` exists, or with `CLAUDE_SANDBOX_HOST_INSTALL=1`, as `install`
 does.
 
-`tests/launcher.sh` and `tests/doctor.sh` run against the Python CLI as
-well as the bash: `tests/python/test_bash_suites.py` points them at a
-wrapper through `CLAUDE_SANDBOX_TEST_LAUNCHER` and `CLAUDE_SANDBOX_TEST_CLI`.
+### The installer
+
+`install` (the clone route) and `uvx claude-sandbox install` both end in
+`src/claude_sandbox/installer/`, run as root.
+<!-- TODO(phase5): confirm against the wired-in installer (issue #72 phase 4, second part) -->
+
+- Each step in `steps.py` is a `plan_*` function that reads the filesystem
+  and returns actions, and `actions.apply` performs them, so a second
+  install writes nothing. The steps take an install prefix and a user home
+  (`INSTALL_PREFIX`, `INSTALL_USER_HOME`), so tests run them on a temporary
+  tree. Files are created and moved without following symlinks, under
+  umask 022.
+- `jsonfile.py` reads and writes the JSON settings files in place of `jq`.
+  The managed-settings step merges into
+  `/etc/claude-code/managed-settings.json`, keeping existing administrator
+  policy, and warns and skips a file it cannot parse or write back.
+- `provision.py` installs the pinned CPython and the venv under
+  `/usr/libexec/claude-sandbox/` with uv. uv's cache is not used, the venv
+  is pinned to the resolved patch directory rather than uv's minor-version
+  symlink, and the package is installed with `--no-deps`. It removes uv's
+  `_virtualenv.pth` and the venv's console scripts, prunes the interpreter
+  (Tcl/Tk, idlelib, pip, ensurepip, headers, tests, and the duplicate
+  `libpython` when nothing links it) to about 55 MB, byte-compiles it,
+  makes it root-owned and not group- or world-writable, and then checks that
+  every module of the package imports under `-I`.
+- The installer runs nothing found through `PATH`: `git` and uv are named by
+  absolute path.
+
+### The entry-point guard
+
+<!-- TODO(phase5): confirm against fix/entry-point-guard (module names,
+the watcher's lifetime, the quarantine location, the tests and ADR 27) -->
+
+While a session runs, a watcher outside the jail quarantines executables the
+session adds in writable directories ahead of system commands on `PATH`,
+and new Git hooks; outer shells and the end of the session warn about them.
+ADR 27 records the design. Battery check 22 checks the guard from inside
+the jail.
 
 ### The Python installer
 
