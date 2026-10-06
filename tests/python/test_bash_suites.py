@@ -33,7 +33,10 @@ def test_bash_suite_passes_against_python(
 ) -> None:
     for tool in ("jq", "script", "cksum"):
         if shutil.which(tool) is None:
-            pytest.skip(f"{suite} needs {tool}")
+            # A skip in CI would hide the suites; there, a missing tool fails.
+            (pytest.fail if os.environ.get("CI") else pytest.skip)(
+                f"{suite} needs {tool}"
+            )
     wrapper = tmp_path / "claude-sandbox"
     wrapper.write_text(
         "#!/bin/bash\n"
