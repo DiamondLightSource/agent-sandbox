@@ -115,18 +115,32 @@ def listening(port: int) -> bool:
     return bool(out)
 
 
+def ancestors() -> set[str]:
+    """This process, its ancestors and pid 1, as /proc entry names."""
+    pids = {"1"}
+    pid = str(os.getpid())
+    while pid not in pids and pid != "0":
+        pids.add(pid)
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        pid = stat.rpartition(")")[2].split()[1]  # the parent's pid
+    return pids
+
+
 def leftovers() -> list[str]:
     """Anything a jail left behind: holders, pasta, relays, jail dirs."""
     found = [str(p) for p in Path("/tmp").glob("claude-jail.*")]
     found += [str(p) for p in Path("/tmp").glob("claude-jail-resolv.*")]
+    mine = ancestors()
     for proc in Path("/proc").glob("[0-9]*"):
+        if proc.name in mine:
+            continue
         try:
             cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ")
             comm = (proc / "comm").read_text().strip()
         except OSError:
             continue
         if (
-            b"_jail_holder" in cmdline
+            b"-m claude_sandbox _jail_holder " in cmdline
             or comm.startswith("pasta")
             or comm.startswith("passt")
             or (comm == "socat" and b"/tmp/claude-jail." in cmdline)
