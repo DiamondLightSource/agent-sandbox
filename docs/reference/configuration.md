@@ -5,9 +5,13 @@ The sandbox reads `/etc/claude-sandbox.conf` inside the container and
 `~/.config/claude-sandbox.conf` on the host; it is mounted read-only at that
 container path. See [mounting the config](../how-to/use-the-container-image.md#configure-the-sandbox).
 
-On the host, `claude-sandbox` launches containers. Inside the container, the
-same name is an administrative helper (`verify`, `gh-auth`, `version`, etc.).
-Run `claude-sandbox --help` on the host for launcher options.
+`claude-sandbox` is one command in every context. On the host it launches
+project containers, and forwards helpers such as `verify`, `gh-auth` and
+`version` into the project container. Inside the container it runs those
+helpers. Inside an agent session, helpers that would take a credential or
+change the installation refuse. Run `claude-sandbox --help` in each place
+for the commands available there; on the host it also lists the launcher
+options.
 
 ## `/etc/claude-sandbox.conf`
 
@@ -65,7 +69,9 @@ These names are ignored, and the sandbox's own value always wins:
 ## Environment variables
 
 With the host launcher, `CLAUDE_SANDBOX_*` variables are forwarded at container
-creation; recreate to change them. Other host variables are not forwarded.
+creation, apart from the launcher's own settings such as
+`CLAUDE_SANDBOX_IMAGE` and `CLAUDE_SANDBOX_ENGINE`; recreate to change them.
+Other host variables are not forwarded.
 Inside your own devcontainer, set variables in the launching terminal or
 `remoteEnv`. Config-file settings are usually simpler for durable host-launcher
 configuration.
@@ -83,8 +89,7 @@ configuration.
 | `CLAUDE_SANDBOX_ALLOW_WRITE` | populated by `parse_config` from `allow-write` lines | Newline-separated extra writable paths bound in addition to the workspace |
 | `CLAUDE_SANDBOX_ALLOW_DEVICES` | launcher `--device` / conf `allow-device` → shadow | Newline-separated device paths to expose inside the jail; setting this alone does not mount devices into the outer container |
 | `CLAUDE_SANDBOX_PASS_ENV` | populated by `parse_config` from `pass-env` lines | Names of environment variables to forward into the sandbox. Set it directly to forward a variable for one session without editing the conf |
-| `CLAUDE_SANDBOX_GITCONFIG_PATH` | exported by the shadow | Path to the curated gitconfig (`/etc/claude-gitconfig`) consumed by the argv builder |
-| `DISABLE_AUTOUPDATER` | set to `1` in managed settings by `install.sh` | Disables Claude Code's in-container auto-updater (alongside `autoUpdates:false`) so a self-update can't re-arm the unwrapped-launch bypass |
+| `DISABLE_AUTOUPDATER` | set to `1` in managed settings by the installer | Disables Claude Code's in-container auto-updater (alongside `autoUpdates:false`) so a self-update can't re-arm the unwrapped-launch bypass |
 
 `CLAUDE_SANDBOX_NO_FORGE` is documented as a task in
 [run a no-push session](../how-to/authenticate-with-forges.md#run-without-push-access); workspace scope

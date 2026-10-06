@@ -24,7 +24,7 @@ home and runtime masks described in [Architecture](../explanations/architecture.
 | `~/.config/{gh,glab-cli}/` | rw | Forge tokens; omitted with `no-forge`. Other `.config` directories remain hidden |
 | `~/.local/share/` | rw | Tool data and plugins. `applications/` and `claude/` are masked to keep Claude's runtime writes temporary |
 | `~/.local/bin/{uv,uvx}` | rw | Individual tool binaries; the rest of the directory stays temporary |
-| Agent binaries under `/usr/libexec/claude-sandbox/` | r | Installed executables. Claude is also bound at `~/.local/bin/claude` |
+| `/usr/libexec/claude-sandbox/` | r | Agent binaries, the sandbox's Python interpreter and venv, and shipped skills. Claude is also bound at `~/.local/bin/claude` |
 | Configured devices | rw | `allow-device` exposes hardware and its driver interface |
 | Network | — | Internet, DNS, gateway, allowed IPs and configured loopback relays; private networks otherwise blocked by default |
 
