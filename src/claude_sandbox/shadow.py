@@ -17,6 +17,7 @@ import glob
 import os
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,15 @@ from types import FrameType
 from typing import NoReturn
 
 from . import jail
-from .bwrap import GITCONFIG_PATH, HOST, Probe, bwrap_argv
+from .bwrap import (
+    ENTRY_POINTS,
+    GITCONFIG_PATH,
+    HOST,
+    SHADOW_DIR,
+    Probe,
+    bwrap_argv,
+    path_ahead_of_shadow,
+)
 from .config import (
     CONFIG_PATH,
     Config,
@@ -146,6 +155,7 @@ def run(
             " explicitly."
         )
     _check_real_binary(profile)
+    check_entry_points(env, host.probe)
 
     # configure_launch: the conf (env wins over it), then the git identity.
     try:
@@ -279,6 +289,33 @@ def _check_real_binary(profile: AgentProfile) -> None:
             " real one;\n"
             "  if the download is failing, the sandbox says so at the end of install."
         )
+
+
+def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
+    """Refuse when an entry-point name precedes the shadow on PATH.
+
+    Invariant 1: a plain claude, codex, pi or claude-sandbox reaches the
+    shadow. The entry-point guard in bwrap.py covers directories that exist
+    at launch; this covers the rest. Only an empty mount point that guard
+    left (a plain file without execute bits, which a PATH lookup passes
+    over) may stand there. Nothing is removed here: the user reviews it.
+    """
+    for directory in path_ahead_of_shadow(env.get("PATH", ""), probe):
+        for name in ENTRY_POINTS:
+            path = f"{directory}/{name}"
+            try:
+                mode = os.lstat(path).st_mode
+            except OSError:  # absent, or a lookup could not reach it either
+                continue
+            if stat.S_ISREG(mode) and not mode & 0o111:
+                continue
+            _refuse(
+                f"claude-sandbox: refusing to launch: {path} is ahead of"
+                f" {SHADOW_DIR}/{name} on PATH, so a plain `{name}` may not reach"
+                " the sandbox.\n"
+                "  Remove it, and review the session that created it, before"
+                " launching again."
+            )
 
 
 def write_gitconfig(host: Host, env: Mapping[str, str], *, no_forge: bool) -> None:

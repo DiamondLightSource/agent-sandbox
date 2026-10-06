@@ -297,6 +297,46 @@ def test_refusals_before_launch(
         (fx.root / tool).rename(fx.root / "tools" / tool)
 
 
+@pytest.mark.parametrize("kind", ["executable", "link", "directory"])
+def test_an_entry_point_ahead_of_the_shadow_refuses(
+    fx: Fixture, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    venv = fx.root / "venv/bin"
+    venv.mkdir(parents=True)
+    fx.env["PATH"] = f"{venv}:/usr/local/bin"
+    entry = venv / "codex"
+    if kind == "executable":
+        executable(entry)
+    elif kind == "link":
+        entry.symlink_to(executable(fx.root / "elsewhere"))
+    else:
+        entry.mkdir()
+    assert fx.refused(argv0="claude") == 1
+    err = capsys.readouterr().err
+    assert f"{entry} is ahead of /usr/local/bin/codex on PATH" in err
+    assert "Remove it, and review the session that created it" in err
+    assert entry.exists()  # left for a person to look at
+    assert not Path(fx.host.gitconfig_path).exists()  # before any launch step
+
+
+def test_entry_points_the_guard_left_or_behind_the_shadow_launch(
+    fx: Fixture,
+) -> None:
+    venv, after = fx.root / "venv/bin", fx.root / "after"
+    venv.mkdir(parents=True)
+    fx.env["PATH"] = f"{venv}:/usr/local/bin:{after}"
+    # What the guard's bind leaves: an empty file without execute bits.
+    for name in ("claude", "codex", "pi", "claude-sandbox"):
+        (venv / name).touch(0o644)
+    executable(after / "claude")  # a lookup reaches the shadow first
+    fx.run()
+    # Inside a sandbox the recursion guard execs the agent: the PATH in there
+    # is the sandbox's own.
+    executable(venv / "claude")
+    fx.env["IS_SANDBOX"] = "1"
+    fx.run()
+
+
 def test_tools_never_come_from_path(fx: Fixture) -> None:
     """ADR 26: no executable is found through PATH."""
     planted, system = fx.root / "on-path", fx.root / "system"
