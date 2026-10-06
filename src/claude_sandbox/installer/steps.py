@@ -61,10 +61,12 @@ _STATUSLINE = ".claude/statusline-command.sh"
 # (source relative to the tree, destination, mode). The shadow first, under
 # all three names: it must own them on PATH before any vendor installer runs
 # (Invariant 1). Then the helper CLI, as main() places them.
-SHADOW_FILES = (
-    (f"{_SCRIPTS}/claude-shadow", "/usr/local/bin/claude", 0o755),
-    (f"{_SCRIPTS}/claude-shadow", "/usr/local/bin/codex", 0o755),
-    (f"{_SCRIPTS}/claude-shadow", "/usr/local/bin/pi", 0o755),
+SHADOW_NAMES = ("/usr/local/bin/claude", "/usr/local/bin/codex", "/usr/local/bin/pi")
+SHADOW_SOURCE = {
+    "bash": f"{_SCRIPTS}/claude-shadow",
+    "python": f"{_SCRIPTS}/claude-shim",
+}
+HELPER_FILES = (
     (f"{_SCRIPTS}/pi-run", f"{LIBEXEC}/pi-run", 0o755),
     (f"{_SCRIPTS}/pi-system.md", f"{LIBEXEC}/pi-system.md", 0o644),
     (f"{_SCRIPTS}/claude-sandbox", "/usr/local/bin/claude-sandbox", 0o755),
@@ -83,7 +85,12 @@ RUNTIME_FILES = (
 
 
 class InstallError(RuntimeError):
-    """A step cannot go ahead (the bash exits 1)."""
+    """A step cannot go ahead: the installer exits ``code``, as the bash
+    does (1, or 2 for a usage error)."""
+
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -111,13 +118,20 @@ class Layout:
 
 @dataclass(frozen=True)
 class Options:
-    """``CLAUDE_SANDBOX_VERSION``/``git describe``, ``CLAUDE_SANDBOX_INSTALLER``
-    and ``STATUS=1``; ``image_build`` is ``--image-build``."""
+    """``CLAUDE_SANDBOX_VERSION``/``git describe``, ``CLAUDE_SANDBOX_INSTALLER``,
+    ``STATUS=1``, ``CLAUDE_SANDBOX_IMPL`` (which shadow: the bash one, or the
+    shim that runs the Python one), ``CLAUDE_SANDBOX_SMOKE``, ``WITH_CODEX``,
+    ``WITH_PI`` and ``PI_VERSION``; ``image_build`` is ``--image-build``."""
 
     version: str
     installer: str = ""
     force_statusline: bool = False
     image_build: bool = False
+    impl: str = "bash"
+    smoke: bool = False
+    with_codex: bool = True
+    with_pi: bool = True
+    pi_version: str = "latest"
     now: Callable[[], time.struct_time] = field(default=time.localtime)
 
 
@@ -146,10 +160,22 @@ def from_env(source: Path, env: Mapping[str, str]) -> tuple[Layout, Options]:
         home=home,
         shared=env.get("CLAUDE_SHARED_CONFIG") or SHARED_CONFIG,
     )
+    impl = env.get("CLAUDE_SANDBOX_IMPL") or "bash"
+    if impl not in ("bash", "python"):
+        raise InstallError(
+            "claude-sandbox: CLAUDE_SANDBOX_IMPL must be bash or python,"
+            f" got '{impl}'.",
+            2,
+        )
     options = Options(
         version=env.get("CLAUDE_SANDBOX_VERSION") or describe(source),
         installer=env.get("CLAUDE_SANDBOX_INSTALLER", ""),
         force_statusline=env.get("STATUS", "0") == "1",
+        impl=impl,
+        smoke=env.get("CLAUDE_SANDBOX_SMOKE", "0") == "1",
+        with_codex=env.get("WITH_CODEX", "1") == "1",
+        with_pi=env.get("WITH_PI", "1") == "1",
+        pi_version=env.get("PI_VERSION") or "latest",
     )
     return layout, options
 
@@ -192,9 +218,11 @@ def _place_all(layout: Layout, files: tuple[tuple[str, str, int], ...]) -> list[
 
 
 def plan_shadow(layout: Layout, options: Options) -> list[Action]:
-    """main()'s ``install_file`` calls: the shadow, ``pi-run``, the Pi note
-    and the helper CLI."""
-    return _place_all(layout, SHADOW_FILES)
+    """main()'s ``install_file`` calls: the shadow (the bash one, or the shim
+    that runs the Python one), ``pi-run``, the Pi note and the helper CLI."""
+    src = SHADOW_SOURCE[options.impl]
+    shadow = tuple((src, name, 0o755) for name in SHADOW_NAMES)
+    return _place_all(layout, shadow + HELPER_FILES)
 
 
 def plan_runtime_scripts(layout: Layout, options: Options) -> list[Action]:

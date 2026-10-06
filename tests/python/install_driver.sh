@@ -18,7 +18,7 @@ source "$_drv_install"
 
 case "$_drv_step" in
     main)
-        main >/dev/null ;;
+        main ;;
     shadow)
         for _drv_fn in probe_or_refuse apt_install probe_userns_or_refuse \
                 link_terminal_config install_claude_binary install_codex_binary \

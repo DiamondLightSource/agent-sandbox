@@ -1,26 +1,54 @@
-"""The Python installer (ADR 26, issue #72 phase 4), as a library.
+"""The Python installer (ADR 26, issue #72 phase 4).
 
-Not wired in yet: ``install.sh`` is still what every install runs. This
-package holds the same steps, each a plan (``steps.plan_*``, reading only)
-and an apply (``actions.apply``), so the switch-over replaces the bash
-function by function. ``provision`` installs the pinned interpreter and
-venv the shadow shim will run. Standard library only: it runs as root.
+``install.sh`` runs it when ``CLAUDE_SANDBOX_IMPL=python`` is set: its bash
+bootstrap fetches uv, ``provision`` installs the pinned interpreter and the
+venv, and the venv runs ``python -I -m claude_sandbox.installer``. Without
+the opt-in the bash installer runs, unchanged. Each file step is a plan
+(``steps.plan_*``, reading only) and an apply (``actions.apply``); the
+steps that touch the system are in ``system``. Standard library only: it
+runs as root.
 """
 
 import os
+import subprocess
+import sys
 from typing import TextIO
 
-from .actions import apply
-from .steps import STEPS, Layout, Options
+from . import system
+from .actions import Warn, apply
+from .steps import LIBEXEC, STEPS, Layout, Options
 
 
-def install(layout: Layout, options: Options, err: TextIO | None = None) -> None:
-    """Run every ported step in ``install.sh``'s order. Each step is planned
-    against what the previous ones left, then applied, under umask 022
-    whatever the caller's: new directories are 0755."""
+def install(
+    layout: Layout,
+    options: Options,
+    err: TextIO | None = None,
+    out: TextIO | None = None,
+    run: system.Run = subprocess.run,
+) -> None:
+    """Run ``install.sh``'s main() in its order, then print its summary.
+    Each file step is planned against what the previous ones left, then
+    applied, under umask 022 whatever the caller's: new directories are
+    0755."""
+    warn: TextIO = err or sys.stderr
     old = os.umask(0o022)
+    skipped: list[str] = []
     try:
-        for _name, plan in STEPS:
-            apply(plan(layout, options), err)
+        system.probe_or_refuse(options)
+        for name, plan in STEPS:
+            if name == "link_terminal_config":
+                system.apt_install(options, run)
+                if not options.image_build:
+                    system.probe_userns_or_refuse(options, run)
+            actions = plan(layout, options)
+            if any(isinstance(a, Warn) for a in actions):
+                skipped.append(name)
+            apply(actions, warn)
+            if name == "link_terminal_config":
+                system.install_claude_binary(layout, options, run)
+                system.install_codex_binary(layout, options, warn, run)
+                system.install_pi_binary(layout, options, warn, run)
     finally:
         os.umask(old)
+    venv = f"{LIBEXEC}/venv"
+    print(system.summary(layout, options, skipped, venv), end="", file=out)

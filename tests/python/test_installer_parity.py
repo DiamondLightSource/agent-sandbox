@@ -110,7 +110,8 @@ def prepare(root: Path, sc: Scenario) -> tuple[Path, dict[str, str]]:
     return source, environment(root, sc.env)
 
 
-def run_bash(root: Path, sc: Scenario) -> tuple[int, str]:
+def run_bash(root: Path, sc: Scenario) -> tuple[int, str, str]:
+    """The exit status, stderr and stdout (main()'s summary)."""
     source, env = prepare(root, sc)
     done = subprocess.run(
         [BASH, str(DRIVER), str(source / INSTALL_SH), sc.step],
@@ -120,15 +121,17 @@ def run_bash(root: Path, sc: Scenario) -> tuple[int, str]:
         check=False,
         umask=0o022,  # what install() sets for itself
     )
-    return done.returncode, done.stderr
+    return done.returncode, done.stderr, done.stdout
 
 
 def run_python(root: Path, sc: Scenario) -> str:
+    """The warnings; main()'s summary follows them, after a NUL."""
     source, env = prepare(root, sc)
     layout, options = from_env(source, env)
-    err = io.StringIO()
+    err, out = io.StringIO(), io.StringIO()
     if sc.step == "main":
-        install(layout, options, err)
+        install(layout, options, err, out)
+        return err.getvalue() + "\0" + out.getvalue()
     else:
         old = os.umask(0o022)
         try:
@@ -157,8 +160,10 @@ def listing(root: Path) -> list[Entry]:
 
 def compare(tmp_path: Path, sc: Scenario) -> list[Entry]:
     a, b = tmp_path / "bash", tmp_path / "python"
-    code, bash_err = run_bash(a, sc)
+    code, bash_err, bash_out = run_bash(a, sc)
     assert code == 0, bash_err
+    if sc.step == "main":
+        bash_err += "\0" + bash_out
     py_err = run_python(b, sc)
     assert listing(b) == listing(a)
     assert normal(b, py_err) == normal(a, bash_err)
