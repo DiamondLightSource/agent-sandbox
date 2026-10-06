@@ -8,7 +8,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
-LAUNCHER="$HERE/../container/claude-container"
+# CLAUDE_SANDBOX_TEST_LAUNCHER runs the suite against another launcher, a
+# bash file (tests/python/test_bash_suites.py points it at the Python CLI).
+LAUNCHER="${CLAUDE_SANDBOX_TEST_LAUNCHER:-$HERE/../container/claude-container}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

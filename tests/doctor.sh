@@ -7,7 +7,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
 REPO="$HERE/.."
-CLI="$REPO/.devcontainer/claude-sandbox/claude-sandbox"
+# CLAUDE_SANDBOX_TEST_CLI runs the suite against another CLI, a bash file
+# (tests/python/test_bash_suites.py points it at the Python CLI).
+CLI="${CLAUDE_SANDBOX_TEST_CLI:-$REPO/.devcontainer/claude-sandbox/claude-sandbox}"
 
 TMP="$(mktemp -d)"
 register_cleanup "$TMP"
