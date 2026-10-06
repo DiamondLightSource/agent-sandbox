@@ -55,6 +55,14 @@ def _executable(path: str | Path) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+def _check(run: Run, argv: list[str], what: str, **kw: object) -> None:
+    """Run ``argv``; a failure stops the install with one line, not a
+    traceback."""
+    code = run(argv, check=False, **kw).returncode
+    if code:
+        raise InstallError(f"claude-sandbox: {what} failed (exit {code}).")
+
+
 def probe_or_refuse(options: Options) -> None:
     """``probe_or_refuse``: Debian and Ubuntu only."""
     if not options.smoke and find_tool("apt-get") is None:
@@ -70,9 +78,9 @@ def apt_install(options: Options, run: Run = subprocess.run) -> None:
         return
     apt = _tool("apt-get")
     env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
-    run([apt, "update", "-qq"], env=env, check=True)
+    _check(run, [apt, "update", "-qq"], "apt-get update", env=env)
     quiet = [apt, "install", "-y", "-qq", "--no-install-recommends"]
-    run([*quiet, *APT_PACKAGES], env=env, check=True)
+    _check(run, [*quiet, *APT_PACKAGES], "apt-get install", env=env)
     run([*quiet, "glab"], env=env, check=False, stderr=subprocess.DEVNULL)
 
 
@@ -112,7 +120,7 @@ def install_claude_binary(
     script = _fetch("https://claude.ai/install.sh", run)
     if script is None:
         raise InstallError("claude-sandbox: could not fetch the Claude installer.")
-    run([_tool("bash")], input=script, check=True)
+    _check(run, [_tool("bash")], "the Claude installer", input=script)
     if not _executable(unwrapped):
         raise InstallError(
             "claude-sandbox: official installer did not produce $HOME/.local/bin/claude"

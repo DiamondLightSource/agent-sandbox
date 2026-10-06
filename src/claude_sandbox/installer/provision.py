@@ -314,7 +314,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     owner = (0, 0) if os.geteuid() == 0 else None
     # uv runs from /, so a relative path would not resolve.
     package = os.path.abspath(args.package)
-    python = provision(args.uv, package, args.root, owner=owner)
+    try:
+        python = provision(args.uv, package, args.root, owner=owner)
+    except ProvisionError as exc:
+        sys.exit(f"claude-sandbox: {exc}")
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f"claude-sandbox: {exc.cmd[0]} failed (exit {exc.returncode}).")
     print(f"{python}: {size(args.root / 'python') / 1e6:.1f} MB interpreter")
 
 

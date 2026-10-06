@@ -48,12 +48,13 @@ def reply(code: int = 0, out: bytes = b"") -> Handler:
     return handler
 
 
+def present(name: str) -> str:
+    return f"/usr/bin/{name}"
+
+
 @pytest.fixture(autouse=True)
 def tools(monkeypatch: pytest.MonkeyPatch) -> None:
-    def find_tool(name: str) -> str:
-        return f"/usr/bin/{name}"
-
-    monkeypatch.setattr(system, "find_tool", find_tool)
+    monkeypatch.setattr(system, "find_tool", present)
 
 
 def setup(tmp_path: Path) -> tuple[Layout, Options]:
@@ -93,7 +94,11 @@ def test_platform_checks_and_apt(
         system.probe_or_refuse(options)
     with pytest.raises(InstallError, match="apt-get is not installed"):
         system.apt_install(options, run)
+    monkeypatch.setattr(system, "find_tool", present)
+    with pytest.raises(InstallError, match="apt-get update failed .exit 100"):
+        system.apt_install(options, FakeRun(**{"/usr/bin/apt-get": reply(100)}))
     smoke = replace(options, smoke=True)
+
     system.probe_or_refuse(smoke)
     system.apt_install(smoke, run)
     system.probe_userns_or_refuse(smoke, run)

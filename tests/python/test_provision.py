@@ -8,6 +8,7 @@ for, what it removes, and when it refuses.
 import os
 import shutil
 import struct
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -246,6 +247,18 @@ def test_main(
     p.main(["w.whl", "--uv", "/opt/uv", "--root", "/nonexistent"])
     assert seen == [("/opt/uv", f"{tmp_path}/w.whl", Path("/nonexistent"))]
     assert "MB interpreter" in capsys.readouterr().out
+    # A failure is one line, not a traceback.
+    for error in (
+        p.ProvisionError("uv found /x, outside /y"),
+        subprocess.CalledProcessError(2, ["/opt/uv", "venv"]),
+    ):
+
+        def failing(*args: object, error: Exception = error, **kw: object) -> Path:
+            raise error
+
+        monkeypatch.setattr(p, "provision", failing)
+        with pytest.raises(SystemExit, match="claude-sandbox: "):
+            p.main(["w.whl", "--uv", "/opt/uv"])
     for argv in (["w.whl"], ["w.whl", "--uv", "uv"]):  # never from PATH
         with pytest.raises(SystemExit):
             p.main(argv)
