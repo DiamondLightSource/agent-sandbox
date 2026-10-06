@@ -29,7 +29,8 @@ LAUNCH_PATH = (
     "tools",
 )
 
-# Stub execvpe, run main(), then import every module of the package and report
+# Stub execvpe, run main(), then import every module of the package (but
+# __main__, which runs when imported; the shadow test below covers it) and report
 # what main would exec, where the package was imported from, and every
 # top-level module that all this added which is neither the stdlib nor the
 # package (ADR 26: the package has no runtime dependencies). Site-packages stay
@@ -42,7 +43,8 @@ before = set(sys.modules)
 def execvpe(file, args, env):
     import claude_sandbox
     for mod in pkgutil.walk_packages(claude_sandbox.__path__, "claude_sandbox."):
-        importlib.import_module(mod.name)
+        if mod.name != "claude_sandbox.__main__":  # importing it runs it
+            importlib.import_module(mod.name)
     foreign = sorted({
         name.partition(".")[0] for name in set(sys.modules) - before
     } - set(sys.stdlib_module_names) - {"__main__", "claude_sandbox"})
@@ -123,7 +125,7 @@ def test_wheel_imports_only_the_stdlib(site: Path) -> None:
     assert result["file"] == "bash"
     assert Path(result["args"][1]).resolve() == launcher.resolve()
     # ADR 26: no runtime dependencies, so no third-party import anywhere.
-    modules = {f"claude_sandbox.{m}" for m in (*LAUNCH_PATH, "cli", "__main__")}
+    modules = {f"claude_sandbox.{m}" for m in (*LAUNCH_PATH, "cli")}
     assert modules <= set(result["modules"])
     assert result["foreign"] == []
 
