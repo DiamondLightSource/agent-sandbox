@@ -5,10 +5,10 @@
 # Python port. Runs in the environment the test gives it: everything the
 # shadow reads comes from that environment or from the arguments below.
 #
-#   argv_driver.sh SHADOW argv AGENT SKILLS_DIR CONF VERIFY WORKSPACE REAL [ARG...]
+#   argv_driver.sh SHADOW argv AGENT SKILLS_DIR CONF VERIFY GITCONFIG WORKSPACE REAL [ARG...]
 #       bwrap_argv_build's argv for profile AGENT, with SHIPPED_SKILLS_DIR set
-#       to SKILLS_DIR, CONF (if non-empty) applied by parse_config first, and
-#       SANDBOX_VERIFY=VERIFY.
+#       to SKILLS_DIR, CONF (if non-empty) applied by parse_config first,
+#       SANDBOX_VERIFY=VERIFY and the git config path GITCONFIG.
 #   argv_driver.sh SHADOW config CONF PWD
 #       parse_config CONF, then every knob it set and what the port, jail
 #       and workspace helpers make of them.
@@ -23,9 +23,6 @@ set -euo pipefail
 _drv_shadow="$1" _drv_mode="$2"
 shift 2
 
-# Sourcing re-exports CLAUDE_SANDBOX_GITCONFIG_PATH to the shadow's constant;
-# keep a scenario's own value, as bwrap_argv.sh does by setting it per call.
-_drv_gitconfig="${CLAUDE_SANDBOX_GITCONFIG_PATH-}"
 # The shadow reads these globals; shellcheck cannot see into a sourced
 # file named at run time.
 # shellcheck disable=SC2034
@@ -33,9 +30,6 @@ CLAUDE_SHADOW_SOURCE_ONLY=1
 # shellcheck source=/dev/null
 source "$_drv_shadow"
 unset CLAUDE_SHADOW_SOURCE_ONLY
-if [ -n "$_drv_gitconfig" ]; then
-    CLAUDE_SANDBOX_GITCONFIG_PATH="$_drv_gitconfig"
-fi
 
 _drv_flag() { if "$@"; then printf 1; else printf 0; fi; }
 
@@ -47,7 +41,11 @@ case "$_drv_mode" in
         if [ -n "$3" ]; then parse_config "$3"; fi
         # shellcheck disable=SC2034
         SANDBOX_VERIFY="$4"
-        shift 4
+        # Stands in for bwrap_argv's gitconfig_path parameter. Not an env
+        # seam: sourcing has just exported the shadow's constant over any
+        # value the environment had, as it does on every real launch.
+        CLAUDE_SANDBOX_GITCONFIG_PATH="$5"
+        shift 5
         _drv_argv=()
         bwrap_argv_build _drv_argv "$@"
         printf '%s\0' "${_drv_argv[@]}"
@@ -81,6 +79,7 @@ case "$_drv_mode" in
         "$@"
         ;;
     gitconfig)
+        # shellcheck disable=SC2034  # read by render_gitconfig
         CLAUDE_SANDBOX_GITCONFIG_PATH="$1"
         render_gitconfig
         ;;

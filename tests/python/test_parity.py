@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_sandbox.bwrap import bwrap_argv
+from claude_sandbox.bwrap import GITCONFIG_PATH, bwrap_argv
 from claude_sandbox.config import (
     KNOBS,
     Config,
@@ -138,6 +138,7 @@ class Scenario:
     args: tuple[str, ...] = ()
     conf: str | None = None
     verify: bool = False
+    gitconfig: str = GITCONFIG_PATH
 
 
 REAL_ROOT = {"HOME": "/root"}  # bwrap_argv.sh's HOME=/root, read from the host
@@ -421,8 +422,9 @@ SCENARIOS = [
     ),
     Scenario(
         "gitconfig-path",
-        "none: CLAUDE_SANDBOX_GITCONFIG_PATH",
-        {"CLAUDE_SANDBOX_GITCONFIG_PATH": "/x/gitconfig"},
+        "none: the path is a parameter; the environment cannot move it",
+        {"CLAUDE_SANDBOX_GITCONFIG_PATH": "/evil/gitconfig"},
+        gitconfig="/x/gitconfig",
     ),
     Scenario(
         "home-unset",
@@ -513,6 +515,7 @@ def py_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
             sc.args,
             verify=sc.verify,
             shipped_skills_dir=str(root / "shipped"),
+            gitconfig_path=sc.gitconfig,
         )
     except SandboxError as e:
         return [REFUSED, str(e)]
@@ -528,6 +531,7 @@ def sh_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
         str(root / "shipped"),
         conf,
         "1" if sc.verify else "0",
+        sc.gitconfig,
         sc.workspace.replace("{root}", str(root)),
         sc.real,
         *sc.args,

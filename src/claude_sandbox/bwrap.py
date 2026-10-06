@@ -172,6 +172,7 @@ def bwrap_argv(
     *,
     verify: bool = False,
     shipped_skills_dir: str = SHIPPED_SKILLS_DIR,
+    gitconfig_path: str = GITCONFIG_PATH,
     probe: Probe = HOST,
 ) -> list[str]:
     """The full ``bwrap ... -- agent args`` command.
@@ -180,11 +181,13 @@ def bwrap_argv(
     ``config.parse_config`` returns) and ``config`` is
     ``Config.from_env(env)``. ``real_agent`` is the host binary bound back
     for a ``bind_back`` profile. ``verify`` runs the integrity battery in
-    place of the agent. Raises SandboxError for an allow-device entry that
+    place of the agent. ``shipped_skills_dir`` and ``gitconfig_path`` are
+    constants a caller overrides only in tests; the git config path is not
+    read from the environment (in the bash, the shadow exports its constant
+    before the builder runs). Raises SandboxError for an allow-device entry that
     is not a device node under /dev.
     """
     home = env.get("HOME") or "/root"
-    gitconfig_path = env.get("CLAUDE_SANDBOX_GITCONFIG_PATH") or GITCONFIG_PATH
 
     argv = [
         "bwrap",
