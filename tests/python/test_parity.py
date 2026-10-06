@@ -14,12 +14,15 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
+from claude_sandbox import shadow
 from claude_sandbox.bwrap import GITCONFIG_PATH, bwrap_argv
 from claude_sandbox.config import (
     KNOBS,
@@ -35,7 +38,7 @@ from claude_sandbox.config import (
     validate_local_model_port,
 )
 from claude_sandbox.errors import SandboxError
-from claude_sandbox.profiles import PROFILES, agent_profile
+from claude_sandbox.profiles import LIBEXEC, PROFILES, agent_profile
 
 REPO = Path(__file__).resolve().parents[2]
 SHADOW = REPO / ".devcontainer" / "claude-sandbox" / "claude-shadow"
@@ -536,7 +539,28 @@ def _drop_lines(*prefixes: str) -> Callable[[list[str]], list[str]]:
 # - The bash's pass-env reads shell variables as well as the environment
 #   (PPID, RANDOM, HOSTNAME, the shadow's own globals); the port reads only
 #   the environment, apart from TERM=dumb (bwrap.SHELL_DEFAULTS).
+# - The bash shadow exports CLAUDE_SANDBOX_GITCONFIG_PATH into script's
+#   environment; the Python shadow passes the path to bwrap_argv and exports
+#   nothing. Outside the jail only (bwrap clears the environment), so the
+#   launch scenarios leave the key out of the environment they compare.
+# - With no git on PATH the bash shadow's render_gitconfig fails and the
+#   launch aborts; the Python shadow writes the file with an empty identity.
+# - The bash shadow refuses a real binary identical to itself ($0); the
+#   Python shadow, which never sees the shim's path, refuses one identical
+#   to the shim (shadow.SHIM; test_shadow.py).
+# - The bash shadow quotes the bwrap argv for script -c with printf %q, the
+#   Python shadow with shlex; the launch scenarios compare the words bash
+#   reads back, not the text.
 KNOWN_DIVERGENCES: dict[str, Divergence] = {
+    "launch-bad-model-port": Divergence(
+        "The bash validates local-model-port only on the jailed path "
+        "(netns_launch), so a jail-off launch forwards any value into the "
+        "jail with --setenv; the Python shadow refuses it on every launch.",
+        bash_shows=lambda out: "status=0" in out,
+        python_shows=lambda out: "status=1" in out,
+        # The refusal replaces the whole launch: nothing else to compare.
+        same_after=lambda out: [],
+    ),
     "pass-env-glob": Divergence(
         "The bash expands each pass-env word as a glob against the cwd, the "
         "jail-writable workspace; the port only splits (config.words).",
@@ -827,9 +851,303 @@ def test_config_matches_bash(
     compare(case.name, py, nul_split(proc.stdout))
 
 
+# --- The launch body (phase 2a): bash shadow vs shadow.run --------------------
+#
+# Each side runs a whole launch against its own copy of the same fixture tree:
+# the bash shadow installed under the fixture by launch_driver.sh (installed
+# paths rewritten, as tests/verify.sh does), the Python shadow with a Host of
+# the same paths. Both end by exec'ing the fixture's `script` (or, inside a
+# sandbox, the agent), which records what it was given; the Python side's
+# execve records the same in-process. Compared: exit status, stderr, what was
+# exec'd and with which arguments (the script -c command as the words bash
+# reads back), the sandbox's own environment variables, the git config, and
+# every path the launch created under the fixture.
+
+LAUNCH_DRIVER = Path(__file__).with_name("launch_driver.sh")
+RECORDER = """#!/bin/bash
+printf '%s\\0' "$0" "$@" > "$PARITY_CAPTURE/argv"
+env -0 > "$PARITY_CAPTURE/env"
+"""
+LAUNCH_TREE = (
+    "home/",
+    "work/",
+    "capture/",
+    "libexec/skills/alpha/SKILL.md",
+    "libexec/skills/beta/SKILL.md",
+)
+RECORDERS = (
+    "bin/script",
+    "home/.local/bin/claude",
+    "libexec/claude",
+    "libexec/codex-dist/bin/codex",
+    "libexec/codex-launch",
+    "libexec/pi-run",
+    "libexec/verify-sandbox-battery.sh",
+)
+
+
+@dataclass(frozen=True)
+class Launch:
+    name: str
+    maps: str  # the bash suites' cases this one stands for
+    argv0: str = "claude"
+    args: tuple[str, ...] = ()
+    env: Mapping[str, str] = field(default_factory=dict[str, str])
+    conf: str = "egress-jail = 0\n"
+    tree: tuple[str, ...] = ()
+    absent: tuple[str, ...] = ()  # recorders to leave out (an uninstalled agent)
+
+
+LAUNCHES = [
+    Launch(
+        "launch-claude", "verify.sh, shadow_launch.sh", args=("--chrome", "a b", "")
+    ),
+    Launch("launch-codex", "verify.sh (codex)", argv0="codex", args=("exec", "x")),
+    Launch("launch-pi", "verify.sh (pi), pi.sh", argv0="pi"),
+    Launch("launch-no-forge", "9 (launch body)", conf="egress-jail = 0\nno-forge\n"),
+    Launch(
+        "launch-skills-warn",
+        "15-warn",
+        tree=(
+            "home/.claude/skills/alpha/",
+            "home/.claude/skills/beta/SKILL.md",
+            "home/.claude/skills/gamma/SKILL.md",
+        ),
+    ),
+    Launch("launch-skills-fresh", "15-warn-fresh, 15-mkdir"),
+    Launch(
+        "launch-skills-masked-by-file-and-link",
+        "15-warn (non-directories)",
+        tree=(
+            "home/.claude/skills/alpha",
+            "home/.claude/skills/gamma/",
+            "home/.claude/skills/beta -> gamma",
+        ),
+    ),
+    Launch(
+        "launch-shared-skills-dangling",
+        "none: a shared store that has gone away",
+        tree=("home/.agents -> {root}/gone",),
+    ),
+    Launch(
+        "launch-persistent-config",
+        "none: a symlinked config dir does not warn",
+        tree=("shared/", "home/.claude -> {root}/shared"),
+    ),
+    Launch("launch-verify", "verify.sh", args=("--sandbox-verify",)),
+    Launch(
+        "launch-verify-args", "none: takes no arguments", args=("--sandbox-verify", "x")
+    ),
+    Launch(
+        "launch-nested",
+        "codex_launch.sh nested-launch",
+        args=("--chrome", "-p", "hi"),
+        env={"IS_SANDBOX": "1"},
+    ),
+    Launch(
+        "launch-nested-codex",
+        "codex_launch.sh nested-launch",
+        argv0="codex",
+        args=("agents", "--no-alt-screen"),
+        env={"IS_SANDBOX": "1"},
+    ),
+    Launch(
+        "launch-nested-verify",
+        "verify.sh (inside a sandbox)",
+        argv0="pi",
+        args=("--sandbox-verify",),
+        env={"IS_SANDBOX": "1"},
+    ),
+    Launch(
+        "launch-unknown-name", "none: an unrecognised argv[0] warns", argv0="claude-dev"
+    ),
+    Launch(
+        "launch-agent-override",
+        "verify.sh --agent",
+        argv0="claude-dev",
+        env={"CLAUDE_SANDBOX_AGENT": "codex"},
+    ),
+    Launch(
+        "launch-bad-agent",
+        "none: CLAUDE_SANDBOX_AGENT is a closed set",
+        env={"CLAUDE_SANDBOX_AGENT": "sh"},
+    ),
+    Launch(
+        "launch-missing-binary",
+        "smoke.sh (an unbacked shadow loud-fails)",
+        argv0="pi",
+        absent=("libexec/pi-run",),
+    ),
+    Launch(
+        "launch-bad-device",
+        "11 invalid sandbox device (launch body)",
+        conf="egress-jail = 0\nallow-device = /etc/passwd\n",
+    ),
+    Launch(
+        "launch-bad-model-port",
+        "none: a known divergence (KNOWN_DIVERGENCES)",
+        conf="egress-jail = 0\nlocal-model-port = 99999\n",
+    ),
+    Launch(
+        "launch-env-and-conf",
+        "11 (parse_config feeding the launch)",
+        env={"CLAUDE_SANDBOX_LOCAL_PORTS": "8080", "DOCKER_HOST": "tcp://d"},
+        conf="egress-jail = 0\nworkspace-root = {root}/work\npass-env = DOCKER_HOST\n",
+    ),
+]
+
+
+def launch_fixture(root: Path, sc: Launch) -> dict[str, str]:
+    """Build the fixture under ``root``; return the launch environment."""
+    build_tree(root, LAUNCH_TREE)
+    for rel in RECORDERS:
+        if rel not in sc.absent:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(RECORDER)
+            (root / rel).chmod(0o755)
+    build_tree(root, sc.tree)
+    (root / "etc").mkdir(exist_ok=True)
+    (root / "etc/claude-sandbox.conf").write_text(sc.conf.replace("{root}", str(root)))
+    (root / "etc/git-identity").write_text("[user]\n\tname = Parity Person\n")
+    return {
+        "HOME": str(root / "home"),
+        "PATH": f"{root / 'bin'}:{SYSTEM_PATH}",
+        "PWD": str(root / "work"),
+        "GIT_CONFIG_GLOBAL": str(root / "etc/git-identity"),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "PARITY_CAPTURE": str(root / "capture"),
+        **{k: v.replace("{root}", str(root)) for k, v in sc.env.items()},
+    }
+
+
+def bash_words(command: str) -> list[str]:
+    """The words bash reads from a script -c command that runs bwrap."""
+    proc = subprocess.run(
+        [BASH, "-c", 'bwrap() { printf "%s\\0" "$@"; }; ' + command],
+        capture_output=True,
+        check=True,
+    )
+    return nul_split(proc.stdout)
+
+
+def launch_report(
+    root: Path,
+    status: int,
+    stderr: str,
+    argv: list[str] | None,
+    env: Mapping[str, str],
+) -> list[str]:
+    """One side's outcome, with the fixture root and libexec normalised."""
+    out = [f"status={status}", f"stderr={stderr}"]
+    if argv is not None:
+        if "-c" in argv:
+            i = argv.index("-c") + 1
+            out += ["command:", *bash_words(argv[i])]
+            argv = [*argv[:i], "<command>", *argv[i + 1 :]]
+        out += ["exec:", *argv]
+        out += sorted(
+            f"env {k}={v}"
+            for k, v in env.items()
+            if (k.startswith("CLAUDE_SANDBOX_") or k == "SHELL")
+            and k != "CLAUDE_SANDBOX_GITCONFIG_PATH"
+        )
+    gitconfig = root / "etc/claude-gitconfig"
+    if gitconfig.exists():
+        out += ["gitconfig:", gitconfig.read_text()]
+    out += ["created:", *snapshot(root / "home")]
+    return [
+        line.replace(f"{root}/libexec", LIBEXEC).replace(str(root), "{root}")
+        for line in out
+    ]
+
+
+def sh_launch(root: Path, sc: Launch) -> list[str]:
+    env = launch_fixture(root, sc)
+    proc = subprocess.run(
+        [BASH, str(LAUNCH_DRIVER), str(SHADOW), str(root), sc.argv0, *sc.args],
+        env=env,
+        cwd=root / "work",
+        capture_output=True,
+        check=False,
+    )
+    recorded = root / "capture/argv"
+    argv = nul_split(recorded.read_bytes()) if recorded.exists() else None
+    exec_env: dict[str, str] = {}
+    if recorded.exists():
+        for entry in nul_split((root / "capture/env").read_bytes()):
+            name, _, value = entry.partition("=")
+            exec_env[name] = value
+    return launch_report(
+        root, proc.returncode, os.fsdecode(proc.stderr), argv, exec_env
+    )
+
+
+class Recorded(Exception):
+    def __init__(self, path: str, argv: list[str], env: Mapping[str, str]) -> None:
+        super().__init__(path)
+        self.path, self.argv, self.env = path, argv, env
+
+
+def record(path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:
+    if not os.access(path, os.X_OK):  # what the kernel would refuse
+        raise FileNotFoundError(2, "No such file or directory")
+    raise Recorded(path, argv, env)
+
+
+def py_launch(root: Path, sc: Launch, capsys: pytest.CaptureFixture[str]) -> list[str]:
+    env = launch_fixture(root, sc)
+    libexec = str(root / "libexec")
+
+    def moved(path: str) -> str:
+        return path.replace(LIBEXEC, libexec)
+
+    host = shadow.Host(
+        config_path=str(root / "etc/claude-sandbox.conf"),
+        gitconfig_path=str(root / "etc/claude-gitconfig"),
+        shipped_skills_dir=f"{libexec}/skills",
+        profiles={
+            n: replace(p, real=moved(p.real), exec_via=moved(p.exec_via))
+            for n, p in PROFILES.items()
+        },
+        execve=record,
+    )
+    status, argv = 0, None
+    exec_env: Mapping[str, str] = {}
+    capsys.readouterr()
+    try:
+        shadow.run(sc.argv0, sc.args, env, host)
+    except Recorded as e:
+        # A recorder run as `/bin/bash FILE` sees FILE as its $0.
+        argv = e.argv[1:] if e.path == "/bin/bash" else [e.path, *e.argv[1:]]
+        exec_env = e.env
+    except SystemExit as e:
+        assert isinstance(e.code, int)
+        status = e.code
+    except SandboxError as e:  # main() prints it and exits 1
+        print(e, file=sys.stderr)
+        status = 1
+    return launch_report(root, status, capsys.readouterr().err, argv, exec_env)
+
+
+@pytest.mark.parametrize("sc", LAUNCHES, ids=[s.name for s in LAUNCHES])
+def test_launch_matches_bash(
+    sc: Launch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sh = sh_launch(tmp_path / "sh", sc)
+    (tmp_path / "py/work").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "py/work")
+    compare(sc.name, py_launch(tmp_path / "py", sc, capsys), sh)
+
+
 # A divergence entry that names no scenario would silently check nothing.
 _unmatched = (
-    set(KNOWN_DIVERGENCES) - {s.name for s in SCENARIOS} - {c.name for c in CONF_CASES}
+    set(KNOWN_DIVERGENCES)
+    - {s.name for s in SCENARIOS}
+    - {c.name for c in CONF_CASES}
+    - {s.name for s in LAUNCHES}
 )
 if _unmatched:
     raise AssertionError(f"KNOWN_DIVERGENCES names no scenario: {_unmatched}")
