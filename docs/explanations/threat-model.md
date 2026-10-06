@@ -33,6 +33,11 @@ See [Deliberately exposed](../reference/deliberately-exposed.md) for the path li
 A compromised session can alter its writable settings and skills. Shared
 `~/.agents/skills` extends that persistence to other agents and projects using
 the same terminal config. Review those files after an untrusted session.
+<!-- TODO(phase5): confirm against fix/entry-point-guard -->
+Executables a session adds ahead of system commands on PATH, and new Git
+hooks, are quarantined while it runs, so they do not run in your next
+outer shell or commit; see the
+[entry-point guard](sandbox-internals.md#the-entry-point-guard).
 
 Custom mounts and tools can introduce credentials outside the masked paths.
 In particular, `.local/share` and `.cache` are available to agents; credentials
@@ -96,7 +101,8 @@ If that is required, apply an egress policy at the container boundary.
 Claude Code's native domain controls are a separate layer; they do not replace
 this sandbox's credential isolation or IP-based lab-device access rules.
 
-The wrapper refuses to launch if `/dev/net/tun`, `pasta` or `unshare` is missing.
+The wrapper refuses to launch if `/dev/net/tun`, `pasta`, `unshare` or `ip` is
+missing, and if `socat` or `ss` is missing when loopback relays are configured.
 Setting `CLAUDE_SANDBOX_EGRESS_JAIL=0` disables the network jail and restores
 access through the outer container's network. Ordinary container shells are
 also outside this jail. See [network configuration](../how-to/network-egress-jail.md).
