@@ -11,13 +11,14 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
-# The modules the launch path will import (ADR 26: standard library only).
-LAUNCH_PATH = ("bwrap", "config", "errors", "gitconfig", "profiles")
+# The modules the launch path imports (ADR 26: standard library only).
+LAUNCH_PATH = ("bwrap", "config", "errors", "gitconfig", "jail", "profiles", "shadow")
 
 # Stub execvpe, run main(), then report what it would exec, where the package
 # was imported from, and every top-level module that importing and running it,
@@ -45,13 +46,37 @@ import claude_sandbox
 claude_sandbox.main()
 """
 
+# The shim's own route: `python -I -m claude_sandbox _shadow pi -- x`, run
+# through __main__ as -m runs it, inside a sandbox (IS_SANDBOX=1) so the
+# recursion guard execs the agent at once. execve is stubbed to report every
+# top-level module loaded by then that is neither the stdlib nor the package,
+# and which of the package's modules were loaded.
+SHADOW_DRIVER = """
+import json, os, runpy, sys
+before = set(sys.modules)
+def execve(path, argv, env):
+    loaded = set(sys.modules) - before
+    foreign = sorted({name.partition(".")[0] for name in loaded}
+                     - set(sys.stdlib_module_names) - {"__main__", "claude_sandbox"})
+    own = sorted(n for n in loaded if n.startswith("claude_sandbox"))
+    import claude_sandbox
+    print(json.dumps({"argv": argv, "foreign": foreign, "own": own,
+                      "pkg": claude_sandbox.__file__}))
+    sys.stdout.flush()
+    os._exit(0)
+os.execve = execve
+sys.argv = ["claude_sandbox", "_shadow", "pi", "--", "x"]
+runpy.run_module("claude_sandbox", run_name="__main__", alter_sys=True)
+"""
 
-def test_wheel_launch_path_uses_only_the_stdlib(
-    tmp_path: Path,
-) -> None:
+
+@pytest.fixture(scope="module")
+def site(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The built wheel, unpacked."""
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("uv is needed to build the wheel")
+    tmp_path = tmp_path_factory.mktemp("wheel")
     subprocess.run(
         [uv, "build", "--wheel", "--quiet", "-o", str(tmp_path), str(REPO)],
         check=True,
@@ -60,25 +85,40 @@ def test_wheel_launch_path_uses_only_the_stdlib(
     site = tmp_path / "site"
     with zipfile.ZipFile(wheel) as zf:
         zf.extractall(site)
+    return site
 
+
+def run_isolated(site: Path, driver: str, env: dict[str, str]) -> dict[str, Any]:
     out = subprocess.run(
         [
             sys.executable,
             "-I",
             "-c",
-            f"import sys; sys.path.insert(0, {str(site)!r})\n" + DRIVER,
+            f"import sys; sys.path.insert(0, {str(site)!r})\n" + driver,
         ],
         check=True,
         capture_output=True,
         text=True,
-        env={"PATH": os.environ.get("PATH", "")},
+        env={"PATH": os.environ.get("PATH", ""), **env},
     ).stdout
-    result = json.loads(out)
+    result: dict[str, Any] = json.loads(out)
+    assert Path(result["pkg"]).resolve().is_relative_to(site.resolve())
+    return result
 
+
+def test_wheel_launch_path_uses_only_the_stdlib(site: Path) -> None:
+    result = run_isolated(site, DRIVER, {})
     launcher = site / "claude_sandbox" / "tree" / "container" / "claude-container"
     assert launcher.is_file()
-    assert Path(result["pkg"]).resolve().is_relative_to(site.resolve())
     assert result["file"] == "bash"
     assert Path(result["args"][1]).resolve() == launcher.resolve()
     # ADR 26: no third-party import on the launch path.
+    assert result["foreign"] == []
+
+
+def test_shadow_entry_uses_only_the_stdlib(site: Path) -> None:
+    result = run_isolated(site, SHADOW_DRIVER, {"IS_SANDBOX": "1", "HOME": "/h"})
+    assert result["argv"] == ["/usr/libexec/claude-sandbox/pi-run", "x"]
+    # The whole launch path was imported on the way, and nothing else.
+    assert {f"claude_sandbox.{m}" for m in LAUNCH_PATH} <= set(result["own"])
     assert result["foreign"] == []
