@@ -31,19 +31,21 @@ REPO = Path(__file__).resolve().parents[2]
 TOOLS = ("unshare", "pasta", "socat", "ip", "ss", "script", "getent")
 
 # Stands in for the shadow: stage DNS (DRIVER_STAGE_DNS=1), wrap the command
-# in script(1) (DRIVER_SCRIPT=1), then hand over to jail.launch.
+# in script(1) (DRIVER_SCRIPT=1), then hand over to jail.launch, with the
+# command's tools absolute as the shadow makes them.
 DRIVER = """\
 import os, shlex, sys
 from claude_sandbox import jail
 from claude_sandbox.config import Config
+from claude_sandbox.tools import find_tool
 env = dict(os.environ)
 if env.get("DRIVER_STAGE_DNS") == "1":
     staged = jail.stage_dns()
     env[jail.JAIL_RESOLV] = staged.path
-command = sys.argv[1:]
+command = [find_tool(sys.argv[1]), *sys.argv[2:]]
 if env.get("DRIVER_SCRIPT") == "1":
     env["SHELL"] = "/bin/bash"
-    command = ["script", "--return", "-q", "-E", "never", "-c",
+    command = [find_tool("script"), "--return", "-q", "-E", "never", "-c",
                shlex.join(command), "/dev/null"]
 jail.launch(Config.from_env(env), env, command)
 """

@@ -25,7 +25,16 @@ PY = "/usr/libexec/claude-sandbox/venv/bin/python"
 JAIL_DIR = "/tmp/claude-jail.T"
 READY = f"{JAIL_DIR}/ready"
 RELAY = f"{JAIL_DIR}/relay"
-COMMAND = ["script", "--return", "-q", "-E", "never", "-c", "agent", "/dev/null"]
+COMMAND = [
+    "/usr/bin/script",
+    "--return",
+    "-q",
+    "-E",
+    "never",
+    "-c",
+    "agent",
+    "/dev/null",
+]
 DEFAULT_ROUTE = "default via 10.0.2.2 dev eth0 proto static metric 100\n"
 LINK_ROUTES = "10.0.2.0/24 proto kernel scope link src 10.0.2.15\n\n"
 
@@ -82,7 +91,7 @@ class FakeOps(Ops):
         self.env: dict[str, str] = {}
         self.netns_ready = True
 
-    def which(self, name: str, env: Mapping[str, str]) -> str | None:
+    def find_tool(self, name: str) -> str | None:
         return None if name in self.missing else f"/usr/bin/{name}"
 
     def exists(self, path: str) -> bool:
@@ -110,10 +119,11 @@ class FakeOps(Ops):
         stderr_to: str | None = None,
     ) -> tuple[int, str]:
         self.log.append(("run", *argv))
-        line = " ".join(argv)
+        # Tools are absolute; match on their names.
+        line = " ".join([os.path.basename(argv[0]), *argv[1:]])
         if line in self.fail:
             return 1, ""
-        if argv[:2] == ["ss", "-H"]:
+        if argv[:2] == ["/usr/bin/ss", "-H"]:
             port = argv[-1].rpartition(":")[2]
             return 0, f"LISTEN 0 5 127.0.0.1:{port}\n" * (port in self.listening)
         if line == "ip route show default":
@@ -133,7 +143,7 @@ class FakeOps(Ops):
         proc = self.procs[pid] = FakeProc(pid, self.next_rc, self.next_polls)
         return proc
 
-    def execvpe(self, argv: Sequence[str], env: Mapping[str, str]) -> NoReturn:
+    def execve(self, argv: Sequence[str], env: Mapping[str, str]) -> NoReturn:
         self.log.append(("exec", *argv))
         if argv[0] in self.spawn_error:
             raise FileNotFoundError(2, "No such file or directory")
@@ -314,6 +324,11 @@ def test_callback_relay_that_never_listens_fails_soft() -> None:
             "needs socat for loopback relays",
         ),
         (
+            given(lambda o: o.missing.add("ss")),
+            {"callback_port_entries": "1455"},
+            "needs ss (iproute2) for loopback relays",
+        ),
+        (
             given(lambda o: o.missing.add(f"{RELAY}/1920.sock")),
             {"local_model_port": "1920"},
             "— loopback relay for port 1920 failed to start",
@@ -334,7 +349,7 @@ def test_callback_relay_that_never_listens_fails_soft() -> None:
             "— holder netns never appeared",
         ),
         (
-            given(lambda o: o.fail.add(" ".join(PASTA))),
+            given(lambda o: o.fail.add(" ".join(["pasta", *PASTA[1:]]))),
             {},
             "— pasta failed to attach to the netns (see /tmp/claude-pasta.log)",
         ),
@@ -390,6 +405,17 @@ def test_signal_before_the_holder_is_ready() -> None:
     assert ops.kinds("kill") == [("kill", 100, signal.SIGTERM, False)]
 
 
+def test_a_relative_command_is_refused() -> None:
+    ops = FakeOps()
+    with pytest.raises(SystemExit) as e:
+        jail.launch(Config(), {}, ["script", "-c", "x"], ops=ops)
+    assert e.value.code == 1
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — the command to run must be an absolute path"
+    ]
+    assert ops.kinds("mkdtemp", "spawn") == []
+
+
 def test_holder_killed_by_a_signal_reports_128_plus_n() -> None:
     ops = FakeOps()
     ops.next_rc, ops.next_polls = -signal.SIGKILL, 2
@@ -428,7 +454,10 @@ def hold(ops: FakeOps, *argv: str) -> int:
 
 
 def runs(ops: FakeOps) -> list[str]:
-    return [" ".join(str(a) for a in entry[1:]) for entry in ops.kinds("run")]
+    return [
+        " ".join([os.path.basename(str(entry[1])), *map(str, entry[2:])])
+        for entry in ops.kinds("run")
+    ]
 
 
 def test_holder_locks_routes_then_execs() -> None:
@@ -490,6 +519,7 @@ def test_holder_soft_failures_still_launch() -> None:
 @pytest.mark.parametrize(
     ("setup", "message"),
     [
+        (given(lambda o: o.missing.add("ip")), "needs ip (iproute2)"),
         (
             given(lambda o: o.fail.add("ip link set lo up")),
             "— could not bring up loopback",
@@ -524,9 +554,9 @@ def test_holder_usage_and_exec_failure() -> None:
     assert hold(ops, "true") == 2
     ops = FakeOps()
     ops.env = {"CLAUDE_JAIL_READY": READY}
-    ops.spawn_error.add("nonesuch")
-    assert hold(ops, "--", "nonesuch") == 127
-    assert ops.errors() == ["claude-sandbox: nonesuch: No such file or directory"]
+    ops.spawn_error.add("/nonesuch")
+    assert hold(ops, "--", "/nonesuch") == 127
+    assert ops.errors() == ["claude-sandbox: /nonesuch: No such file or directory"]
 
 
 def holder_with_relays(ops: FakeOps) -> None:
@@ -547,17 +577,17 @@ def test_holder_runs_inner_relays_and_the_agent() -> None:
     assert hold(ops, "--", *COMMAND) == 130
     assert ops.kinds("spawn") == [
         (
-            "spawn", 100, True, "socat",
+            "spawn", 100, True, "/usr/bin/socat",
             "TCP4-LISTEN:1920,bind=127.0.0.1,reuseaddr,fork",
             f"UNIX-CONNECT:{RELAY}/1920.sock",
         ),
         (
-            "spawn", 101, True, "socat",
+            "spawn", 101, True, "/usr/bin/socat",
             "TCP4-LISTEN:8000,bind=127.0.0.1,reuseaddr,fork",
             f"UNIX-CONNECT:{RELAY}/8000.sock",
         ),
         (
-            "spawn", 102, True, "socat",
+            "spawn", 102, True, "/usr/bin/socat",
             f"UNIX-LISTEN:{RELAY}/in-1455.sock,mode=0600,fork", "TCP4:127.0.0.1:1455",
         ),
         ("spawn", 103, False, *COMMAND),
@@ -581,12 +611,16 @@ def test_holder_interrupted_stops_the_agent() -> None:
             "— loopback listener for port 8000 failed to start",
         ),
         (
-            given(lambda o: o.spawn_error.add("socat")),
+            given(lambda o: o.spawn_error.add("/usr/bin/socat")),
             "— loopback listener for port 1920 failed to start",
         ),
         (
             given(lambda o: o.missing.add(f"{RELAY}/in-1455.sock")),
             "— callback relay for port 1455 failed to start",
+        ),
+        (
+            given(lambda o: o.missing.add("ss")),
+            "needs ss (iproute2) for loopback relays",
         ),
     ],
 )
@@ -706,7 +740,7 @@ def test_route_field_and_status() -> None:
 def test_real_ops(tmp_path: Path) -> None:
     ops = Ops()
     env = {"PATH": "/usr/bin:/bin"}
-    assert ops.which("sh", env) is not None
+    assert ops.find_tool("sh") == "/usr/bin/sh"
     assert ops.run(["sh", "-c", "echo hi; echo err >&2"], env, quiet=True) == (
         0,
         "hi\n",
@@ -756,7 +790,7 @@ def test_real_ops_dirs_signals_and_exec() -> None:
     code = (
         "from claude_sandbox.jail import OS\n"
         "OS.stderr('to stderr')\n"
-        "OS.execvpe(['sh', '-c', 'exit 5'], {'PATH': '/usr/bin:/bin'})\n"
+        "OS.execve(['/bin/sh', '-c', 'exit 5'], {})\n"
     )
     done = subprocess.run(
         [ops.executable, "-c", code], capture_output=True, text=True, check=False

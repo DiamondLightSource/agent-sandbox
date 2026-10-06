@@ -26,9 +26,10 @@ The holder owns the netns from an ANCESTOR user namespace, so the caps bwrap
 leaves the agent in its own nested userns confer no authority over the routes.
 Ancestor-userns ownership is the boundary, not caplessness.
 
-External tools are found on PATH, as the bash finds them: ``unshare``,
-``pasta`` and ``socat`` (checked up front), ``ip`` and ``ss`` (in use). The
-interpreter is never found on PATH: the holder re-enters ``sys.executable``.
+No executable is found through PATH (ADR 26). ``unshare``, ``pasta``,
+``socat``, ``ip`` and ``ss`` come from ``tools.TOOL_PATH`` as absolute paths,
+and a missing one is a fail-closed refusal; the command to run must already
+be absolute; the holder re-enters ``sys.executable``.
 
 Deliberate differences from the bash:
 
@@ -46,6 +47,8 @@ Deliberate differences from the bash:
 - The staged resolv.conf is removed after every failure, including a
   missing tool, and is always staged under /tmp (see ``stage_dns``).
 - A holder that cannot bring up loopback or exec the command says so.
+- Tools come from the fixed tool path, never PATH, and a missing ``ss`` or
+  ``ip`` is refused up front (the bash finds them on PATH).
 
 Every side effect goes through ``Ops`` so tests can replace it. Standard
 library only: this module is on the launch path (ADR 26).
@@ -75,6 +78,7 @@ from .config import (
     validate_local_model_port,
 )
 from .errors import SandboxError
+from .tools import find_tool
 
 # In-netns DNS forwarder (issues #60, #11). ALL of the agent's DNS goes here.
 # pasta's --dns-forward listens on it INSIDE the netns and relays to the
@@ -161,9 +165,9 @@ class Ops:
 
     executable = sys.executable
 
-    def which(self, name: str, env: Mapping[str, str]) -> str | None:
-        """``command -v``, searching the launch environment's PATH."""
-        return shutil.which(name, path=env.get("PATH", os.defpath))
+    def find_tool(self, name: str) -> str | None:
+        """The tool's absolute path on the fixed tool path, never PATH."""
+        return find_tool(name)
 
     def exists(self, path: str) -> bool:
         return os.path.exists(path)
@@ -236,8 +240,8 @@ class Ops:
             )
         return subprocess.Popen(argv, env=dict(env))
 
-    def execvpe(self, argv: Sequence[str], env: Mapping[str, str]) -> NoReturn:
-        os.execvpe(argv[0], list(argv), dict(env))
+    def execve(self, argv: Sequence[str], env: Mapping[str, str]) -> NoReturn:
+        os.execve(argv[0], list(argv), dict(env))
 
     def kill(self, pid: int, sig: int, *, group: bool = False) -> None:
         try:
@@ -362,19 +366,27 @@ def start_relay(
     return True
 
 
-def _ss(port: str, env: Mapping[str, str], ops: Ops) -> str:
-    return ops.run(["ss", "-H", "-ltn", f"sport = :{port}"], env)[1]
+def need(ops: Ops, name: str, why: str) -> str:
+    """The absolute path of tool ``name``, or a fail-closed refusal."""
+    path = ops.find_tool(name)
+    if path is None:
+        raise JailError(f"needs {name} {why}")
+    return path
 
 
-def port_in_use(port: str, env: Mapping[str, str], ops: Ops) -> bool:
+def _ss(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> str:
+    return ops.run([ss, "-H", "-ltn", f"sport = :{port}"], env)[1]
+
+
+def port_in_use(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> bool:
     """Something listens on TCP ``port`` (in this netns)."""
-    return bool(_ss(port, env, ops))
+    return bool(_ss(ss, port, env, ops))
 
 
-def loopback_listening(port: str, env: Mapping[str, str], ops: Ops) -> bool:
+def loopback_listening(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> bool:
     """A listener on 127.0.0.1:``port``. Reads the kernel's listener table:
     it never connects to the service, which need not be running."""
-    return "127.0.0.1:" in _ss(port, env, ops)
+    return "127.0.0.1:" in _ss(ss, port, env, ops)
 
 
 # --- DNS ---------------------------------------------------------------------
@@ -501,19 +513,18 @@ def _start(
 ) -> int:
     # Fail-closed: no unjailed fallback. The messages deliberately do not
     # name the CLAUDE_SANDBOX_EGRESS_JAIL=0 escape hatch.
-    unshare = ops.which("unshare", env)
-    if unshare is None:
-        raise JailError("needs unshare (util-linux)")
-    pasta = ops.which("pasta", env)
-    if pasta is None:
-        raise JailError("needs pasta (apt-get install passt)")
+    unshare = need(ops, "unshare", "(util-linux)")
+    pasta = need(ops, "pasta", "(apt-get install passt)")
     if not ops.exists("/dev/net/tun"):
         raise JailError(
             "needs /dev/net/tun — add --device=/dev/net/tun to the container"
         )
-    # The holder must be this interpreter, by absolute path, never PATH's.
+    # The holder must be this interpreter, by absolute path, never PATH's,
+    # and the holder runs the command as given, never searching PATH.
     if not os.path.isabs(ops.executable):
         raise JailError("— cannot locate the sandbox's own Python interpreter")
+    if not command or not os.path.isabs(command[0]):
+        raise JailError("— the command to run must be an absolute path")
 
     # Every port is checked before anything starts.
     errors = validate_local_model_port(config) + validate_callback_ports(config)
@@ -536,9 +547,7 @@ def _start(
         holder_env[ALLOW_IP] = config.allow_ip
 
     if outbound or inbound:
-        socat = ops.which("socat", env)
-        if socat is None:
-            raise JailError("needs socat for loopback relays")
+        socat = need(ops, "socat", "for loopback relays")
         relay_dir = f"{state.jail_dir}/relay"
         ops.mkdir(relay_dir)
         holder_env[JAIL_RELAY_DIR] = relay_dir
@@ -546,8 +555,9 @@ def _start(
             _outbound_relays(socat, relay_dir, outbound, env, ops, signals, state)
             holder_env[JAIL_LOCAL_PORTS] = "".join(f"{p} " for p in outbound)
         if inbound:
+            ss = need(ops, "ss", "(iproute2) for loopback relays")
             started = _callback_relays(
-                socat, relay_dir, inbound, env, ops, signals, state
+                socat, ss, relay_dir, inbound, env, ops, signals, state
             )
             holder_env[JAIL_CALLBACK_PORTS] = "".join(f"{p} " for p in started)
 
@@ -617,6 +627,7 @@ def _outbound_relays(
 
 def _callback_relays(
     socat: str,
+    ss: str,
     relay_dir: str,
     ports: list[str],
     env: Mapping[str, str],
@@ -630,7 +641,7 @@ def _callback_relays(
     only ones the holder should wait on."""
     started: list[str] = []
     for port in ports:
-        if port_in_use(port, env, ops):
+        if port_in_use(ss, port, env, ops):
             ops.stderr(
                 f"claude-sandbox: callback-port {port} is already in use on this"
                 " host; browser logins on that port will not reach this session."
@@ -642,7 +653,7 @@ def _callback_relays(
             f"UNIX-CONNECT:{relay_dir}/in-{port}.sock",
         ]
         if start_relay(argv, env, ops, state.relays) and wait_for(
-            partial(port_in_use, port, env, ops), ops, signals
+            partial(port_in_use, ss, port, env, ops), ops, signals
         ):
             started.append(port)
         else:
@@ -680,7 +691,7 @@ def _hold(argv: Sequence[str], ops: Ops) -> int:
         return 1
     if not env.get(JAIL_LOCAL_PORTS, "") + env.get(JAIL_CALLBACK_PORTS, ""):
         try:
-            ops.execvpe(command, env)
+            ops.execve(command, env)
         except OSError as e:
             ops.stderr(f"claude-sandbox: {command[0]}: {e.strerror}")
             return 126 if isinstance(e, PermissionError) else 127
@@ -711,8 +722,10 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     Raises JailError at any load-bearing failure, before the agent starts.
     """
 
+    ip_tool = need(ops, "ip", "(iproute2)")
+
     def ip(*args: str, quiet: bool = False) -> tuple[int, str]:
-        return ops.run(["ip", *args], env, quiet=quiet)
+        return ops.run([ip_tool, *args], env, quiet=quiet)
 
     def must(message: str, *args: str) -> None:
         if ip("route", "replace", *args)[0] != 0:
@@ -775,20 +788,22 @@ def _hold_with_relays(command: Sequence[str], env: Mapping[str, str], ops: Ops) 
     child: Proc | None = None
     relay_dir = env.get(JAIL_RELAY_DIR, "")
     try:
+        socat = need(ops, "socat", "for loopback relays")
+        ss = need(ops, "ss", "(iproute2) for loopback relays")
         for port in env.get(JAIL_LOCAL_PORTS, "").split():
             argv = [
-                "socat",
+                socat,
                 f"TCP4-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork",
                 f"UNIX-CONNECT:{relay_dir}/{port}.sock",
             ]
             if not start_relay(argv, env, ops, relays) or not wait_for(
-                partial(loopback_listening, port, env, ops), ops, signals
+                partial(loopback_listening, ss, port, env, ops), ops, signals
             ):
                 raise JailError(f"— loopback listener for port {port} failed to start")
         for port in env.get(JAIL_CALLBACK_PORTS, "").split():
             sock = f"{relay_dir}/in-{port}.sock"
             argv = [
-                "socat",
+                socat,
                 f"UNIX-LISTEN:{sock},mode=0600,fork",
                 f"TCP4:127.0.0.1:{port}",
             ]
