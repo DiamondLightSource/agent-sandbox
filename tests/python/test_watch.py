@@ -266,6 +266,16 @@ def wait_until(check: Callable[[], bool], seconds: float = 3.0) -> float:
     return time.monotonic() - start
 
 
+class CountedInotify(watch.Inotify):
+    """Records whether each instance got an inotify descriptor."""
+
+    made: list[bool] = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        CountedInotify.made.append(self.available)
+
+
 class NoInotify(watch.Inotify):
     """A host without inotify: the watcher polls."""
 
@@ -279,15 +289,20 @@ def test_watching_in_a_thread(
     lay: Layout, monkeypatch: pytest.MonkeyPatch, inotify: bool
 ) -> None:
     if inotify:
-        assert watch.Inotify().available
         # A tick far longer than the test: only inotify can wake it in time.
         monkeypatch.setattr(watch, "TICK", 60.0)
+        monkeypatch.setattr(watch, "Inotify", CountedInotify)
+        CountedInotify.made.clear()
     else:
         monkeypatch.setattr(watch, "Inotify", NoInotify)
         monkeypatch.setattr(watch, "TICK", 0.2)
     reports: list[str] = []
     with watch.watching(lay.session(), reports.append):
         time.sleep(0.05)  # the thread has taken its first look
+        if inotify and not all(CountedInotify.made):
+            # This user's inotify instances (max_user_instances) ran out, so
+            # the watcher polls, and this test cannot wait a minute's tick.
+            pytest.skip("no inotify instance free on this host")
         executable(lay.venv / "git")
         took = wait_until(lambda: mode(lay.venv / "git") == 0o644)
         executable(lay.hooks / "pre-commit")
@@ -450,3 +465,4 @@ def test_prompt_hook(tmp_path: Path, shell: str) -> None:
         "  three",
         "-- 3",
     ], proc.stderr
+
