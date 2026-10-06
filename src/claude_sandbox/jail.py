@@ -42,7 +42,9 @@ Deliberate differences from the bash:
   SIGQUIT ignored. Here they keep the defaults, as on the unjailed path, so
   ^C reaches the child's own terminal as it does there.
 - Signal handlers only record the signal (see ``Signals``), so cleanup
-  always runs whole; a second signal does not cut it short.
+  always runs whole; a second signal does not cut it short. So a second ^C
+  during a cleanup that hangs is recorded, not acted on: only SIGKILL
+  stops it (the bash exits on it).
 - Relays get their own session from ``start_new_session``, not ``setsid``.
 - The staged resolv.conf is removed after every failure, including a
   missing tool, and is always staged under /tmp (see ``stage_dns``).
