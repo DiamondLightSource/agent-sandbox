@@ -17,9 +17,10 @@ To install the checkout you are editing:
 Without `--here`, the installer selects a release and refuses a pinned,
 non-default or modified checkout.
 
-The sandbox implementation is Bash. Python is limited to the docs toolchain,
-the test socket fixture, and the PyPI entry point that bundles and executes
-the Bash files. See `CLAUDE.md` for the project boundaries.
+The sandbox is migrating from Bash to a Python package
+({ref}`ADR 26 <adr-python-implementation>`, issue #72). Until that finishes,
+the Bash is what runs: the wheel bundles it and its entry point executes it.
+See `CLAUDE.md` for the project boundaries and the Python guardrails.
 The repository's `.claude/` holds the skills, commands and hooks for developing
 this repo; only the top-level `skills/` tree ships to users (see the
 `claude-sandbox-shipped-skills` skill).
@@ -45,7 +46,21 @@ The smoke flag confines fixture installations to temporary directories.
 Network tests need namespaces and capabilities unavailable inside an agent
 sandbox; run those from an ordinary container terminal as described in CI.
 
-For packaging changes:
+## Python development
+
+The package lives in `src/claude_sandbox/` with a root `pyproject.toml`.
+The development tools (pytest, ruff, pyright) are pinned in `uv.lock`:
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check
+uv run ruff format --check
+uv run pyright
+```
+
+pytest collects `tests/python/` only; the shell suites above run directly.
+Build the wheel with:
 
 ```bash
 uv build --wheel -o dist

@@ -59,8 +59,8 @@ RUN bash .devcontainer/claude-sandbox/install.sh --image-build \
     && rm -rf /var/lib/apt/lists/*
 
 # Python for the agent — IMAGE-ONLY by design. The devcontainer stage and
-# clone+install guests get none of this (the sandbox itself is bash-only;
-# a venv is the guest project's business). Here there is no project
+# clone+install guests get none of this (the agent's venv is the guest
+# project's business). Here there is no project
 # devcontainer to supply one, so the image does: a uv-managed interpreter
 # baked into the read-only root, and a shared venv + uv cache + tool dir
 # under /cache, which the shipped conf already binds rw (allow-write =

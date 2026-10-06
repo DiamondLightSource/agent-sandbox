@@ -78,8 +78,8 @@ for the implementation.
 guides, configuration reference and design decisions.
 [DLS users start here](https://diamondlightsource.github.io/claude-sandbox/dls/claude-at-dls.html).
 
-The sandbox implementation is Bash; the PyPI package bundles its launcher and
-installer. See the [contributing guide](https://diamondlightsource.github.io/claude-sandbox/how-to/contribute.html)
+The sandbox implementation is Bash, migrating to Python (ADR 26); the PyPI
+package bundles its launcher and installer. See the [contributing guide](https://diamondlightsource.github.io/claude-sandbox/how-to/contribute.html)
 for tests and the isolated documentation toolchain.
 
 ## License
