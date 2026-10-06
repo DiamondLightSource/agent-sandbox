@@ -98,6 +98,32 @@ jobs:
       - name: Run shadow Git configuration tests
         run: bash tests/shadow_git.sh
 
+  python:
+    # The Python package (ADR 26): lint, type-check and test against the
+    # committed dev lockfile. pytest collects tests/python only; the bash
+    # suites above stay as they are.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs: version from git tags
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install the dev environment from uv.lock
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check
+
+      - name: ruff format --check
+        run: uv run ruff format --check
+
+      - name: pyright
+        run: uv run pyright
+
+      - name: pytest
+        run: uv run pytest
+
   wheel:
     # The PyPI front door (ADR 23): build the wheel from the root
     # pyproject.toml, prove the entry point execs the bundled bash, and prove
@@ -235,14 +261,14 @@ jobs:
     uses: ./.github/workflows/_dist.yml
 
   pypi:
-    needs: [dist, test, wheel, egress-jail, lint]
+    needs: [dist, test, python, wheel, egress-jail, lint]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_pypi.yml
     permissions:
       id-token: write
 
   release:
-    needs: [dist, test, wheel, egress-jail, lint]
+    needs: [dist, test, python, wheel, egress-jail, lint]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_release.yml
     permissions:
