@@ -26,12 +26,15 @@ class FakeUv:
         self.root, self.calls = root, list[tuple[list[str], dict[str, str]]]()
         self.found: str | None = None
         self.home_in_venv = home_in_venv
+        self.version = f"uv {p.UV_VERSION} (x86_64-unknown-linux-gnu)\n"
 
     def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> str:
         self.calls.append((list(argv), dict(env)))
         store = Path(env["UV_PYTHON_INSTALL_DIR"])
         home = store / NAME
         match list(argv[1:3]):
+            case ["--version"]:
+                return self.version
             case ["python", "install"]:
                 for d in ("include", "share/man", "lib/tcl9.0", "lib/python3.13/test"):
                     (home / d).mkdir(parents=True)
@@ -80,10 +83,14 @@ def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
     root.mkdir(mode=0o777)
     root.chmod(0o777)
     uv = FakeUv(root)
+    pkg = tmp_path / "src/claude_sandbox"
+    for f in ("__init__.py", "__pycache__/x.pyc", "tree/install"):
+        (pkg / f).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / f).write_text("")
     env = {"PATH": "/usr/bin", "UV_CACHE_DIR": "/home/u/.cache/uv", "PYTHONPATH": "x"}
     python = p.provision(
         "/usr/bin/uv",
-        "/w.whl",
+        str(pkg),
         root,
         environ=env,
         owner=(os.getuid(), os.getgid()),
@@ -92,11 +99,12 @@ def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
     home = root / "python" / NAME
     assert python == root / "venv/bin/python"
     argvs = [argv for argv, _ in uv.calls]
-    assert argvs[:2] == [
+    assert argvs[:3] == [
+        ["/usr/bin/uv", "--version"],
         ["/usr/bin/uv", "python", "install", "--no-bin", "3.13.16"],
         ["/usr/bin/uv", "python", "find", "3.13.16"],
     ]
-    assert argvs[2] == [
+    assert argvs[3] == [
         "/usr/bin/uv",
         "venv",
         "--clear",
@@ -104,7 +112,6 @@ def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
         "3.13.16",
         f"{root}/venv",
     ]
-    assert argvs[3][-3:] == ["--no-deps", "--reinstall", "/w.whl"]
     assert argvs[4][:6] == [
         f"{home}/bin/python3.13",
         "-I",
@@ -136,6 +143,8 @@ def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
         "venv/lib",
         "venv/lib/python3.13",
         "venv/lib/python3.13/site-packages",
+        "venv/lib/python3.13/site-packages/claude_sandbox",
+        "venv/lib/python3.13/site-packages/claude_sandbox/__init__.py",
         "venv/pyvenv.cfg",
     ]
     assert (home / "lib/python3.13/os.py").stat().st_mode & 0o777 == 0o644
@@ -160,20 +169,26 @@ def test_libpython_stays_when_something_links_it(
 
 
 @pytest.mark.parametrize(
-    ("found", "home_in_venv", "message"),
+    ("found", "home_in_venv", "version", "message"),
     [
-        ("/root/.cache/uv/python/bin/python3.13", None, "outside"),
-        (None, "/elsewhere/bin", "the venv runs /elsewhere/bin"),
-        (None, "", "names no home"),
+        ("/root/.cache/uv/python/bin/python3.13", None, None, "outside"),
+        (None, "/elsewhere/bin", None, "the venv runs /elsewhere/bin"),
+        (None, "", None, "names no home"),
+        (None, None, "uv 0.8.15", "is not uv"),
     ],
 )
 def test_provision_refuses_an_interpreter_it_did_not_place(
-    tmp_path: Path, found: str | None, home_in_venv: str | None, message: str
+    tmp_path: Path,
+    found: str | None,
+    home_in_venv: str | None,
+    version: str | None,
+    message: str,
 ) -> None:
     uv = FakeUv(tmp_path, home_in_venv)
     uv.found = found
+    uv.version = version or uv.version
     with pytest.raises(p.ProvisionError, match=message):
-        p.provision("uv", "w.whl", tmp_path, environ={}, owner=None, runner=uv)
+        p.provision("uv", "pkg", tmp_path, environ={}, owner=None, runner=uv)
 
 
 def elf(phnum: int, *segments: tuple[int, int, int, int]) -> bytes:

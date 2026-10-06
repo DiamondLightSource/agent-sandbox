@@ -15,6 +15,7 @@ part of issue #72 phase 4.
 import argparse
 import mmap
 import os
+import shutil
 import stat
 import struct
 import subprocess
@@ -25,9 +26,13 @@ from pathlib import Path
 from .actions import Owner, Remove, apply
 
 PYTHON_VERSION = "3.13.16"
-# The uv the bootstrap must fetch: uv only installs the CPython releases it
+# The uv the bootstrap fetches: uv only installs the CPython releases it
 # knows, and 0.12.23 knows 3.13.16 (0.8.15 does not). Bump them together.
+# install.sh reads these four lines; the checksums are of astral-sh/uv's
+# release archives uv-<arch>-unknown-linux-gnu.tar.gz.
 UV_VERSION = "0.12.23"
+UV_SHA256_X86_64 = "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6"
+UV_SHA256_AARCH64 = "6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f"
 ROOT = Path("/usr/libexec/claude-sandbox")
 
 # The installed interpreter is checked against what the package imports
@@ -83,7 +88,8 @@ for py in pkg.rglob("*.py"):
             names.add(node.module)
 stdlib = {n for n in names if n.partition(".")[0] in sys.stdlib_module_names}
 own = {m.name for m in pkgutil.walk_packages([str(pkg)], "claude_sandbox.")}
-for name in sorted(stdlib) + sorted(own - {"claude_sandbox.__main__"}):
+own = {m for m in own if not m.endswith(".__main__")}
+for name in sorted(stdlib) + sorted(own):
     importlib.import_module(name)
 assert sys.flags.isolated and "_virtualenv" not in sys.modules
 assert sys.prefix != sys.base_prefix, "not running in the venv"
@@ -214,7 +220,8 @@ def provision(
     owner: Owner = (0, 0),
     runner: Run = run,
 ) -> Path:
-    """Install CPython ``version`` and a venv holding ``package`` (a wheel)
+    """Install CPython ``version`` and a venv holding a copy of ``package``
+    (the ``claude_sandbox`` directory of a clone or of an installed wheel)
     under ``root``; return the venv's interpreter."""
     old = os.umask(0o022)
     try:
@@ -233,6 +240,9 @@ def _provision(
     runner: Run,
 ) -> Path:
     env = uv_env(environ, root)
+    reported = runner([uv, "--version"], env).split()
+    if reported[1:2] != [UV_VERSION]:
+        raise ProvisionError(f"{uv} is not uv {UV_VERSION}: {' '.join(reported)}")
     runner([uv, "python", "install", "--no-bin", version], env)
     found = runner([uv, "python", "find", version], env).strip()
     interpreter = Path(os.path.realpath(found))
@@ -247,12 +257,15 @@ def _provision(
     if venv_home != interpreter.parent:
         raise ProvisionError(f"the venv runs {venv_home}, not {interpreter.parent}")
     python = venv / "bin" / "python"
-    # Stdlib only, no runtime dependencies: nothing else may come along.
-    runner(
-        [uv, "pip", "install", "--python", str(python), "--no-deps", "--reinstall"]
-        + [package],
-        env,
-    )
+    # Standard library only, with no dependencies, so a copy is the whole
+    # install: no build, no index. The wheel's bundled bash (tree/) and any
+    # bytecode stay behind.
+    for site in venv.glob("lib/python3.*/site-packages"):
+        shutil.copytree(
+            package,
+            site / "claude_sandbox",
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tree"),
+        )
     # uv's _virtualenv.pth costs every start a few ms; the console script
     # and activate scripts would run the venv without -I.
     for extra in [
@@ -287,7 +300,7 @@ def _venv_home(cfg: Path) -> Path:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Install the pinned interpreter.")
-    parser.add_argument("package", help="the claude-sandbox wheel to install")
+    parser.add_argument("package", help="the claude_sandbox package directory")
     # ADR 26: nothing run as root is found through PATH or the environment.
     parser.add_argument("--uv", required=True, help="absolute path to uv")
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -295,7 +308,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not os.path.isabs(args.uv):
         parser.error("--uv must be an absolute path")
     owner = (0, 0) if os.geteuid() == 0 else None
-    # uv runs from /, so a relative wheel path would not resolve.
+    # uv runs from /, so a relative path would not resolve.
     package = os.path.abspath(args.package)
     python = provision(args.uv, package, args.root, owner=owner)
     print(f"{python}: {size(args.root / 'python') / 1e6:.1f} MB interpreter")
