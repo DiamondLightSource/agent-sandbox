@@ -85,8 +85,9 @@ Phase 2 adds the launch path that uses them:
 | Module | Ported from | What it holds |
 |---|---|---|
 | `shadow.py` | the launch body, `configure_launch`, `sandbox_launch` | One launch, top to bottom: the recursion guard, the refusals, the conf and git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
-| `jail.py` | `netns_launch` and its helpers | The egress jail. In phase 2a a stub that refuses; phase 2b ports it |
-| `__main__.py` | | Dispatches the shim's `_shadow` call before importing anything outside the standard library |
+| `jail.py` | `netns_launch`, `netns_holder`, `jail_stage_dns` and the relay helpers | The egress jail: the namespace holder, pasta, DNS forwarding and the loopback relays |
+| `tools.py` | | The fixed system directories the launch path runs its tools from; nothing is found through `PATH` |
+| `__main__.py` | | Dispatches the shim's `_shadow` call and the jail's `_jail_holder` before importing anything outside the standard library |
 
 By default nothing calls these modules: the installer, the shadow and the
 `uvx claude-sandbox` front door still run the bash, so the modules don't
@@ -152,13 +153,30 @@ from, then rebuild the container. `devcontainer.json` passes the variable to
 the variable, or rebuild without it. The installer then puts the bash shadow
 back and removes the interpreter.
 
-Phase 2a does not include the egress jail. While the jail is enabled, which
-is the default, the Python shadow refuses to launch rather than start an
-agent without it. To try the Python shadow, turn the jail off for that
-session as an operator would (see the
-[threat model](../explanations/threat-model.md#the-egress-jail-and-the-native-sandbox)).
-Use it only for development: an agent started this way can reach your
-internal network. Phase 2b ports the jail.
+The Python shadow runs the egress jail by default, as the bash shadow does,
+and refuses to launch if the jail cannot start.
+
+### The egress jail in Python
+
+`jail.py` ports `netns_launch`, `netns_holder`, `jail_stage_dns` and the
+relay helpers. The shadow calls `stage_dns` before it builds the bwrap argv,
+because `bwrap.py` binds the staged resolver, and then hands the `script(1)`
+command to `launch`, which runs it in the jail and exits with its status.
+The bash ran the namespace holder as `unshare -rn bash -c` with `export -f`.
+The Python holder re-enters the package instead:
+`unshare -rn <sys.executable> -I -m claude_sandbox _jail_holder -- COMMAND`,
+so it runs the same root-owned interpreter, in isolated mode, that launched
+it, and `__main__.py` dispatches `_jail_holder` before importing anything
+else. The holder inherits stdin and the process group, so it, `script` and
+`bwrap` stay in the terminal's foreground group.
+
+Every side effect in `jail.py` goes through an `Ops` object, so the unit
+tests in `tests/python/test_jail.py` replace it and check the argv, the fail-closed
+paths, the cleanup and the exit status after each signal. Real namespaces
+need `/dev/net/tun` and unprivileged user namespaces, so
+`tests/python/test_jail_netns.py` skips elsewhere. Run it in this
+repository's image with `tests/jail_python.sh`; the comment at its top gives
+the `podman run` command.
 
 ## Build the docs locally
 
