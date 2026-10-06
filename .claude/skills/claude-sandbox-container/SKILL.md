@@ -82,7 +82,9 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   `install` OUTSIDE one (`CLAUDE_SANDBOX_HOST_INSTALL=1` overrides).
   `install.sh` stamps `/usr/libexec/claude-sandbox/installer` = `uvx` so
   `claude-sandbox update` points back at uvx instead of cloning past the
-  pin. **Refuse:** logic in the Python module beyond locate + env + exec;
+  pin. **Refuse:** sandbox logic in the entry point beyond locate + env +
+  exec while bash is the default (new Python logic goes in its own ADR 26
+  modules, behind the opt-in switch, not into the front door);
   a second console script or package (reopens `--from` for `@latest`);
   an sdist (a second copy of the tree); a devcontainer *feature* as the
   guest path (considered, slow to start, and useless for the host
@@ -108,7 +110,9 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   host's interpreter and the container's, and its `bin/python` symlink
   dangles on whichever side didn't build it last. Why not `install.sh`:
   dogfood ≈ guest would then push a venv into every clone+install
-  devcontainer, against the bash-only rule. **Refuse:** moving these
+  devcontainer, when the agent's Python is the guest project's business
+  (the sandbox's OWN root-owned interpreter under `/usr/libexec`, ADR 26,
+  is a different thing and never the agent's). **Refuse:** moving these
   steps into `install.sh` or the `developer` stage; pointing
   `UV_PROJECT_ENVIRONMENT` back into the workspace; binding `~/.cache`
   back "so Playwright persists" (home is ephemeral on purpose — the fix
