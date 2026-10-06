@@ -250,6 +250,19 @@ does.
 well as the bash: `tests/python/test_bash_suites.py` points them at a
 wrapper through `CLAUDE_SANDBOX_TEST_LAUNCHER` and `CLAUDE_SANDBOX_TEST_CLI`.
 
+### The Python installer
+
+`src/claude_sandbox/installer/` is the Python port of `install.sh`. It is not
+wired in yet: every install still runs the Bash. Each step in `steps.py` is a
+`plan_*` function that reads the filesystem and returns actions, and
+`actions.apply` performs them, so a second install writes nothing. The steps
+take an install prefix and a user home, like `INSTALL_PREFIX` and
+`INSTALL_USER_HOME`. `tests/python/test_installer_parity.py` runs each Bash
+step and its port on the same temporary tree and requires identical files,
+modes and warnings. `provision.py` installs the pinned CPython and the venv
+under `/usr/libexec/claude-sandbox/` with uv, prunes the interpreter to about
+55 MB and byte-compiles it. The bootstrap that will call it is not written yet.
+
 ## Build the docs locally
 
 The isolated docs dependencies are listed in `docs/requirements.txt`.
