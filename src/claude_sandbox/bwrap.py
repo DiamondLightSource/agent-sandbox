@@ -363,8 +363,13 @@ def bwrap_argv(
     # installMethod=native check) and agent-spawns-agent lookups see the path
     # they expect. Unconditional — the shadow's loud-fail upstream catches a
     # missing real binary.
+    #
+    # Read-only. The bash binds it read-write, which lets a session rewrite
+    # the binary every later session (and every other agent's session) runs:
+    # persistence across sessions. Nothing the agent does needs to write it;
+    # its updater is off by managed settings.
     if profile.bind_back:
-        argv += ["--bind", real_agent, f"{home}/{profile.inner_rel}"]
+        argv += ["--ro-bind", real_agent, f"{home}/{profile.inner_rel}"]
 
     if workspace and probe.is_dir(workspace):
         argv += ["--bind", workspace, workspace]

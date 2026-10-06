@@ -269,3 +269,13 @@ def test_entry_guard_with_nothing_writable_ahead() -> None:
 def test_entry_guard_under_an_allow_write_of_root() -> None:
     argv = guard_argv("/elsewhere/bin", allow_write="/")
     assert guard_binds(argv) == [f"/elsewhere/bin/{n}" for n in ENTRY_POINTS]
+
+
+def test_the_real_binary_is_bound_back_read_only() -> None:
+    """A session cannot rewrite the binary later sessions run."""
+    claude = agent_profile("claude")
+    argv = bwrap_argv(claude, Config(), {"HOME": "/h"}, "", "/real", [])
+    i = argv.index("/h/.local/bin/claude")
+    assert argv[i - 2 : i + 1] == ["--ro-bind", "/real", "/h/.local/bin/claude"]
+    for name in ("codex", "pi"):
+        assert not agent_profile(name).bind_back  # exec'd in place, under /usr

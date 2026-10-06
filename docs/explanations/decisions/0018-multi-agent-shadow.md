@@ -135,9 +135,10 @@ managed-settings path already makes.
     `/usr/libexec/claude-sandbox/codex-dist/`, and codex is exec'd **in place**
     from there with no bind-back: `/usr/libexec` is already visible via
     `--ro-bind / /`, the package's internal layout stays intact, and the binary
-    we exec is consequently **read-only** in the session. That is strictly
-    better than Claude's bind-back, where the rw bind means an in-session
-    self-update can rewrite the host's relocated binary.
+    we exec is consequently **read-only** in the session. That was strictly
+    better than Claude's bind-back, whose rw bind let a session rewrite the
+    host's relocated binary; the Python shadow now binds Claude's back
+    read-only too.
   - The real binary ships *inside* `~/.codex`, the directory we bind
     read-write because it is also `CODEX_HOME`. A writable copy of the agent's
     own binary inside its own session is a persistence foothold, so the shadow

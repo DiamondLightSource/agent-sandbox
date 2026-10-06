@@ -106,7 +106,9 @@ package, not a bare binary — see Invariant 0).
 `/usr/libexec/claude-sandbox/claude` (off the user's PATH). The
 shadow binds it back to `~/.local/bin/claude` *inside* the sandbox
 so Claude's `installMethod=native` self-check still sees the
-conventional path.
+conventional path. The Python shadow binds it **read-only**: the bash
+bound it read-write, which let a session rewrite the binary every later
+session runs.
 
 **Refuse as regressions:**
 - Any "simplification" that skips the relocate-after-curl step.
@@ -115,6 +117,8 @@ conventional path.
   `$HOME`, so don't gate it on the host file existing.
 - `tests/bwrap_argv.sh` scenarios 1 & 4a guard the bind pair; update
   both if you change the bind.
+- Making the Python shadow's bind-back read-write again
+  (`test_the_real_binary_is_bound_back_read_only`).
 - Dropping the Python shadow's entry-point guard, or moving its binds
   above the read-write binds they sit inside. It protects the sandbox's
   entry-point names: a session cannot create a command named claude,

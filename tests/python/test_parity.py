@@ -610,6 +610,12 @@ def _drop_lines(*prefixes: str) -> Callable[[list[str]], list[str]]:
 # - The bash shadow quotes the bwrap argv for script -c with printf %q, the
 #   Python shadow with shlex; the launch scenarios compare the words bash
 #   reads back, not the text.
+#
+# One divergence shows in every Claude scenario, so ``compare`` applies it to
+# the bash outcome everywhere rather than through this table:
+# - The bash binds Claude's real binary back to ~/.local/bin/claude
+#   read-write, so a session could rewrite the binary later sessions run;
+#   the port binds it read-only (``bind_back_read_only``).
 KNOWN_DIVERGENCES: dict[str, Divergence] = {
     "launch-bad-model-port": Divergence(
         "The bash validates local-model-port only on the jailed path "
@@ -671,8 +677,18 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
 }
 
 
+def bind_back_read_only(out: list[str]) -> list[str]:
+    """The bash outcome with its read-write bind-back made read-only."""
+    out = list(out)
+    for i in range(len(out) - 2):
+        if out[i] == "--bind" and out[i + 2].endswith("/.local/bin/claude"):
+            out[i] = "--ro-bind"
+    return out
+
+
 def compare(name: str, py: list[str], sh: list[str]) -> None:
     """Assert ``py`` matches ``sh``, or shows the divergence registered."""
+    sh = bind_back_read_only(sh)
     known = KNOWN_DIVERGENCES.get(name)
     if known is None:
         assert py == sh

@@ -33,7 +33,8 @@ esac
 [ "$(command -v claude)" = /usr/local/bin/claude ] || fail "claude is $(command -v claude)"
 
 # The probe, launched by a plain `claude` in place of the real binary: from
-# inside the jail, try to make each name in the venv's bin, any way it can.
+# inside the jail, try to make each name in the venv's bin, any way it can,
+# and to write the real binary through its bind-back.
 mv "$real" "$work/real"
 cat > "$real" <<EOF
 #!/bin/bash
@@ -48,6 +49,8 @@ for name in claude codex pi claude-sandbox; do
     chmod 755 "\$p" 2>/dev/null && echo "chmodded \$p" >> "\$out"
     [ -x "\$p" ] && echo "executable \$p" >> "\$out"
 done
+# This probe is the real binary, bound back read-only at ~/.local/bin/claude.
+{ : >> "\$HOME/.local/bin/claude"; } 2>/dev/null && echo "bind-back-writable" >> "\$out"
 [ -w "$venv_bin" ] && echo "venv-bin-writable" >> "\$out"
 printf '%s\n' "\$CLAUDE_SANDBOX_ENTRY_GUARD" >> "\$out"
 echo done >> "\$out"
@@ -61,7 +64,7 @@ claude < /dev/null
     || fail "the jail changed something it should not have: $(cat probe.out)"
 [ "$(sed -n 2p probe.out)" = "$venv_bin" ] \
     || fail "CLAUDE_SANDBOX_ENTRY_GUARD is '$(sed -n 2p probe.out)'"
-pass "inside the jail, no entry-point name in $venv_bin could be made"
+pass "inside the jail, no entry-point name in $venv_bin could be made, nor the bind-back written"
 
 for name in claude codex pi claude-sandbox; do
     [ -f "$venv_bin/$name" ] && [ ! -x "$venv_bin/$name" ] && [ ! -s "$venv_bin/$name" ] \
