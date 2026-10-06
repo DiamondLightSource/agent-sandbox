@@ -111,12 +111,18 @@ def bash_path(tmp_path_factory: pytest.TempPathFactory) -> str:
     Ubuntu 25.10, accepts it. The port follows GNU, so on a uutils host the
     bash is pointed at GNU's copy, which Ubuntu installs as gnurealpath.
     """
+    realpath = shutil.which("realpath", path=SYSTEM_PATH)
+    assert realpath is not None, f"no realpath on {SYSTEM_PATH}"
     version = subprocess.run(
-        ["realpath", "--version"], capture_output=True, text=True, check=False
+        [realpath, "--version"], capture_output=True, text=True, check=False
     ).stdout
-    gnu = shutil.which("gnurealpath")
-    if "uutils" not in version or gnu is None:
+    if "uutils" not in version:
         return SYSTEM_PATH
+    gnu = shutil.which("gnurealpath")
+    if gnu is None:
+        pytest.fail(
+            "realpath is uutils and gnurealpath is missing: install gnu-coreutils"
+        )
     shim = tmp_path_factory.mktemp("gnu-bin")
     (shim / "realpath").symlink_to(gnu)
     return f"{shim}:{SYSTEM_PATH}"
