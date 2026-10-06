@@ -185,17 +185,21 @@ def size(path: Path) -> int:
     return total
 
 
+def _harden(node: str, owner: Owner) -> None:
+    if owner is not None:
+        os.lchown(node, *owner)
+    st = os.lstat(node)
+    if not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022:
+        os.chmod(node, stat.S_IMODE(st.st_mode) & ~0o022)
+
+
 def harden(path: Path, owner: Owner) -> None:
-    """Give ``owner`` everything under ``path``, and take group and other
-    write away: the jail must not be able to change what it runs."""
+    """Give ``owner`` ``path`` and everything under it, and take group and
+    other write away: the jail must not be able to change what it runs."""
+    _harden(str(path), owner)
     for dirpath, dirnames, filenames in os.walk(path):
-        for name in [".", *dirnames, *filenames]:
-            node = os.path.join(dirpath, name)
-            if owner is not None:
-                os.lchown(node, *owner)
-            st = os.lstat(node)
-            if not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022:
-                os.chmod(node, stat.S_IMODE(st.st_mode) & ~0o022)
+        for name in [*dirnames, *filenames]:
+            _harden(os.path.join(dirpath, name), owner)
 
 
 def provision(
@@ -263,6 +267,7 @@ def _provision(
         + [str(p) for p in sources],
         env,
     )
+    _harden(str(root), owner)
     harden(store, owner)
     harden(venv, owner)
     runner([str(python), "-I", "-c", VERIFY, *MARGIN], env)

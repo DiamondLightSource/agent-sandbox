@@ -77,6 +77,8 @@ class FakeUv:
 
 def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
     root = tmp_path / "libexec"
+    root.mkdir(mode=0o777)
+    root.chmod(0o777)
     uv = FakeUv(root)
     env = {"PATH": "/usr/bin", "UV_CACHE_DIR": "/home/u/.cache/uv", "PYTHONPATH": "x"}
     python = p.provision(
@@ -137,6 +139,7 @@ def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
         "venv/pyvenv.cfg",
     ]
     assert (home / "lib/python3.13/os.py").stat().st_mode & 0o777 == 0o644
+    assert root.stat().st_mode & 0o777 == 0o755
 
 
 def test_libpython_stays_when_something_links_it(
