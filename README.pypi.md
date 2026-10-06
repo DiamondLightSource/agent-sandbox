@@ -24,7 +24,8 @@ Already inside a Debian/Ubuntu devcontainer? As root, run
 `uvx claude-sandbox install`, then `claude`. That container must expose
 `/dev/net/tun`.
 
-The package bundles the project's Bash launcher and installer; its version
-selects the matching container image.
+The package is the sandbox itself: the host launcher, the installer and the
+in-container wrapper, in Python with no dependencies beyond the standard
+library. Its version selects the matching container image.
 [Documentation](https://diamondlightsource.github.io/claude-sandbox/) ·
 [Source](https://github.com/DiamondLightSource/claude-sandbox)
