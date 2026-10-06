@@ -79,6 +79,7 @@ RUN bash .devcontainer/claude-sandbox/install.sh --image-build \
 # it. The shadow passes VIRTUAL_ENV and the UV_* vars through --clearenv
 # and appends $VIRTUAL_ENV/bin to the jail PATH (never prepends —
 # Invariant 1). Home stays ephemeral on purpose.
+# Keep requires-python in the root pyproject.toml <= this PYTHON_VERSION.
 ARG PYTHON_VERSION=3.13
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PROJECT_ENVIRONMENT=/cache/venv \

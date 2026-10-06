@@ -4,8 +4,6 @@ Builds the real wheel with `uv build`, unpacks it, and runs its entry point
 in a fresh `python -I` so neither the dev venv nor pytest's imports leak in.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import shutil

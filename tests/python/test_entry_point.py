@@ -4,8 +4,6 @@ Until issue #72 phase 5 the wheel's one module only hands over to the bash
 launcher and installer; these pin what it execs and with which environment.
 """
 
-from __future__ import annotations
-
 import os
 import sys
 from typing import NoReturn

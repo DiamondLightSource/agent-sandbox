@@ -16,7 +16,7 @@ description = "Sandboxed Claude Code, Codex and Pi: a bubblewrap jail with an eg
 # The PyPI page, kept apart from the repository README (README.md).
 readme = "README.pypi.md"
 license = "Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Environment :: Console",
     "Operating System :: POSIX :: Linux",
@@ -77,7 +77,7 @@ show_missing = true
 # Python only: ruff would otherwise also format code blocks in the Markdown.
 include = ["*.py", "*.pyi", "**/pyproject.toml"]
 src = ["src", "tests/python"]
-target-version = "py39"
+target-version = "py311"
 line-length = 88
 extend-exclude = ["docs"]
 
@@ -93,5 +93,5 @@ select = [
 
 [tool.pyright]
 include = ["src", "tests/python"]
-pythonVersion = "3.9"
+pythonVersion = "3.11"
 typeCheckingMode = "strict"
