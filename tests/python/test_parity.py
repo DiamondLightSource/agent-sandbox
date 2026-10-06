@@ -506,6 +506,17 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         bash_shows=lambda report: "local_ports=12" in report,
         python_shows=lambda report: "local_ports=1?" in report,
     ),
+    "ports-overlap-race": Divergence(
+        "The bash checks callback/local overlap with `local_ports | grep -qx` "
+        "under pipefail; when grep matches early in a long list the writer "
+        "dies of SIGPIPE and the overlap goes unreported. The port always "
+        "reports it.",
+        bash_shows=lambda report: True,
+        python_shows=lambda report: any(
+            "1455 is listed as both" in line for line in report
+        ),
+        racy=True,
+    ),
     "skills-locale-order": Divergence(
         "The bash orders glob results (shipped skills, GPU nodes) by the "
         "launching locale's collation; the port uses code-point order on "
@@ -697,6 +708,16 @@ CONF_CASES = [
         # SIGPIPE in the bash's `local_ports | grep -q` (reported).
         "local-model-port = 0\nlocal-port = 8080\nlocal-port = 1455\n"
         "callback-port = 1455\ncallback-port = 1455\n",
+    ),
+    ConfCase(
+        "ports-overlap-race",
+        "none: a known divergence (KNOWN_DIVERGENCES)",
+        None,
+        {
+            "CLAUDE_SANDBOX_LOCAL_MODEL_PORT": "1455",
+            "CLAUDE_SANDBOX_LOCAL_PORTS": ",".join(map(str, range(2000, 2400))),
+            "CLAUDE_SANDBOX_CALLBACK_PORTS": "1455",
+        },
     ),
     ConfCase(
         "ports-model-off",

@@ -254,6 +254,10 @@ def validate_callback_ports(config: Config) -> list[str]:
     A port cannot be relayed both ways: the outbound relay's in-jail listener
     would sit on the port the agent needs for its own server, and the inbound
     listener outside would sit on the host service's port.
+
+    This always reports an overlap. The bash can miss one: it checks with
+    ``local_ports | grep -qx`` under pipefail, so when grep matches early in
+    a long list and exits, the writer dies of SIGPIPE and the check fails.
     """
     errors: list[str] = []
     outbound = local_ports(config)
