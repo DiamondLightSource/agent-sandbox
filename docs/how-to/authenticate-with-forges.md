@@ -12,7 +12,8 @@ claude-sandbox glab-auth gitlab.example.com
 ```
 
 The helpers prompt for a token without placing it in shell history.
-The host launcher runs them inside the project's container.
+The host launcher runs them inside the project's container. Inside an agent
+session they refuse, because the agent shares that terminal.
 
 :::{note} DLS: Diamond GitLab
 Use `claude-sandbox glab-auth` with no hostname for `gitlab.diamond.ac.uk`.

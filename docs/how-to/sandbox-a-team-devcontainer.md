@@ -13,12 +13,14 @@ Add this to `.devcontainer/postCreate.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-uvx claude-sandbox==4.0.0 install
+uvx claude-sandbox==5.0.0 install
 ```
 
 Pin the release so upgrades are reviewed with the project.
-`uvx` is appropriate here: it runs the packaged installer once, which
-places the agent wrappers and administrative helper on the container's PATH.
+`uvx` is appropriate here: it runs the packaged installer once. The
+installer places the agent wrappers and the `claude-sandbox` command on the
+container's PATH, with a root-owned Python interpreter of their own under
+`/usr/libexec/claude-sandbox/`; the sandbox does not run from uv's cache.
 
 Merge these settings into `.devcontainer/devcontainer.json`:
 

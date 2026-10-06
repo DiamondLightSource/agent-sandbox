@@ -197,5 +197,5 @@ rootful Docker cannot host the default jail.
 
 ## Without uv
 
-The [clone fallback](install-without-uv.md#host-launcher) runs the same Bash
-launcher with manual version management.
+The launcher is an ordinary Python package; [install it with pipx or
+pip](install-without-uv.md#host-launcher) instead.

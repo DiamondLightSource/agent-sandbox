@@ -38,7 +38,7 @@ and Pi sessions, because those sessions cannot see Claude's config.
 
 ## Persistence
 
-When your devcontainer mounts `/user-terminal-config`, `./install` makes
+When your devcontainer mounts `/user-terminal-config`, the installer makes
 `~/.agents/skills` a link into it, so shared skills survive rebuilds and
 follow you into other devcontainers. Without that mount they last as long
 as the container.
