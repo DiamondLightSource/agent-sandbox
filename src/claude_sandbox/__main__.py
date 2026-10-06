@@ -5,7 +5,8 @@ The shim at /usr/local/bin/claude (and codex, pi) runs
 egress jail's holder is ``python -I -m claude_sandbox _jail_holder -- COMMAND``.
 Both are dispatched here before anything outside the standard library could be
 imported, so the launch path stays stdlib-only. Anything else is the
-``claude-sandbox`` front door (``claude_sandbox:main``).
+``claude-sandbox`` CLI (``claude_sandbox.cli``), without the front door's
+environment or its bash default.
 """
 
 import sys
@@ -27,6 +28,6 @@ elif len(sys.argv) > 1 and sys.argv[1] == "_shadow":
         sys.exit(2)
     shadow(sys.argv[2], sys.argv[4:])
 else:
-    from . import main as front_door
+    from .cli import main as cli
 
-    front_door()
+    sys.exit(cli())

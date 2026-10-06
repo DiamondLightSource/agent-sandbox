@@ -1,0 +1,375 @@
+"""The in-container helpers, driven through the CLI in the container context.
+
+tests/doctor.sh runs against the Python CLI too (test_bash_suites.py); the
+doctor cases here reach what it does not.
+"""
+
+import json
+import os
+import pty
+import subprocess
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from claude_sandbox import cli, context
+from claude_sandbox.context import CONTAINER, JAIL, Where
+from claude_sandbox.helpers import auth, commands, doctor, pi_local
+
+Main = Callable[..., int]
+
+
+@pytest.fixture
+def main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., int]:
+    """``main(*argv, where=CONTAINER)`` with HOME in a temp dir."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_SANDBOX_LOCAL_MODEL_PORT", raising=False)
+
+    def run(*argv: str, where: Where = CONTAINER) -> int:
+        monkeypatch.setattr(context, "current", lambda: where)
+        return cli.main(list(argv))
+
+    return run
+
+
+class Exec(Exception):
+    def __init__(self, path: str, argv: list[str]) -> None:
+        super().__init__(path)
+        self.path, self.argv = path, argv
+
+
+@pytest.fixture
+def execs(monkeypatch: pytest.MonkeyPatch) -> None:
+    def execv(path: str, argv: list[str]) -> None:
+        raise Exec(path, argv)
+
+    monkeypatch.setattr(os, "execv", execv)
+
+
+# --- verify, version, update, install, help ---------------------------------
+
+
+@pytest.mark.usefixtures("execs")
+@pytest.mark.parametrize(
+    ("argv", "where", "path", "args"),
+    [
+        (["verify"], CONTAINER, "/usr/local/bin/claude", ["--sandbox-verify"]),
+        (["verify", "--agent", "pi"], CONTAINER, "/usr/local/bin/pi",
+         ["--sandbox-verify"]),
+        (["verify"], JAIL, "/bin/bash",
+         ["/usr/libexec/claude-sandbox/verify-sandbox-battery.sh"]),
+    ],
+)  # fmt: skip
+def test_verify(
+    main: Main, argv: list[str], where: Where, path: str, args: list[str]
+) -> None:
+    with pytest.raises(Exec) as exc:
+        main(*argv, where=where)
+    assert (exc.value.path, exc.value.argv[1:]) == (path, args)
+
+
+def test_version(
+    main: Main, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:  # fmt: skip
+    stamp = tmp_path / "version"
+    monkeypatch.setenv("CLAUDE_SANDBOX_VERSION_FILE", str(stamp))
+    assert main("-v") == 1
+    assert "version unknown" in capsys.readouterr().err
+    stamp.write_text("4.7.2\n")
+    assert main("--version") == 0
+    assert capsys.readouterr().out == "claude-sandbox 4.7.2\n"
+
+
+@pytest.mark.usefixtures("execs")
+def test_update(
+    main: Main, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:  # fmt: skip
+    installer = tmp_path / "installer"
+    installer.write_text("uvx\n")
+    monkeypatch.setenv("CLAUDE_SANDBOX_INSTALLER_FILE", str(installer))
+    monkeypatch.setattr(commands, "IMAGE_INSTALL", str(tmp_path))
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert main("update") == 1
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert main("update") == 1
+    monkeypatch.setattr(commands, "IMAGE_INSTALL", str(tmp_path / "absent"))
+    assert main("update") == 1
+    err = capsys.readouterr().err
+    for text in ("as root", "published container image", "@latest install"):
+        assert text in err
+    installer.write_text("clone\n")
+    clones: list[list[str]] = []
+
+    def git(argv: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        clones.append(argv)
+        return subprocess.CompletedProcess(argv, len(clones) - 1)
+
+    monkeypatch.setattr(subprocess, "run", git)
+    with pytest.raises(Exec) as exc:
+        main("update")
+    assert clones[0][:3] == ["git", "clone", "--quiet"]
+    tmp = clones[0][-1].rsplit("/", 1)[0]
+    assert exc.value.argv[-2:] == ["claude-sandbox-update", tmp]
+    assert main("update") == 1  # the second clone fails
+
+
+@pytest.mark.parametrize(("installed", "rc"), [(True, 0), (False, 1)])
+def test_install(
+    main: Main, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    installed: bool, rc: int,
+) -> None:  # fmt: skip
+    monkeypatch.setattr(context, "SHADOW", "/bin/sh" if installed else "/nonexistent")
+    assert main("install", "--here") == rc
+    out = capsys.readouterr()
+    assert ("already installed" in out.out) == installed
+
+
+def test_help_lists_only_what_runs_here(
+    main: Main, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main("--help") == 0
+    out = capsys.readouterr().out
+    assert "    doctor " in out and "    shell " not in out
+    assert main(where=JAIL) == 1  # no command is `claude`, which runs on the host
+    assert main("gh-auth", where=JAIL) == 1
+    assert (
+        "refusing gh-auth inside a sandboxed agent session" in capsys.readouterr().err
+    )
+
+
+# --- doctor -------------------------------------------------------------------
+
+
+@pytest.fixture
+def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    lib = tmp_path / "libexec"
+    lib.mkdir()
+    (lib / "statusline-command.sh").write_text("echo tag\n")
+    (lib / "pi-sandbox-tag.ts").write_text("// tag\n")
+    rc = tmp_path / "rc"
+    rc.mkdir()
+    monkeypatch.setenv("CLAUDE_SANDBOX_LIBEXEC", str(lib))
+    monkeypatch.setenv("CLAUDE_SANDBOX_TAG_FILE", str(tmp_path / "no-tag"))
+    monkeypatch.setenv("USER_TERMINAL_CONFIG", str(rc))
+    return tmp_path
+
+
+def test_doctor_fix_then_ok(
+    main: Main, setup: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (setup / "rc" / "bashrc").write_text("# mine")  # no final newline
+    (setup / ".claude").mkdir()
+    (setup / ".claude" / "settings.json").write_text('{"statusLine": "odd", "x": "é"}')
+    assert main("doctor") == 1
+    assert main("doctor", "--fix", where=JAIL) == 1
+    assert main("doctor", "--fix") == 0
+    settings = json.loads((setup / ".claude" / "settings.json").read_text())
+    assert settings["statusLine"]["command"] == doctor.SL_CMD and settings["x"] == "é"
+    assert (setup / "rc" / "bashrc").read_text() == "# mine\n" + doctor.prompt_block(
+        "bash"
+    )
+    capsys.readouterr()
+    assert main("doctor") == 0
+    out = capsys.readouterr().out
+    assert "  skip     zsh prompt" in out and "  info     container tag" in out
+
+
+def test_doctor_skips_what_it_cannot_fix(
+    main: Main, setup: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (setup / "libexec" / "pi-sandbox-tag.ts").unlink()
+    (setup / ".claude").mkdir()
+    (setup / ".claude" / "settings.json").write_text("[]")
+    main("doctor", "--fix")
+    out = capsys.readouterr().out
+    assert "is not a JSON object; set statusLine by hand" in out
+    assert "pi-sandbox-tag.ts is missing" in out
+
+
+def test_doctor_replaces_every_old_block(
+    main: Main, setup: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old = f"{doctor.PROMPT_BEGIN}\nold\n{doctor.PROMPT_END}\n"
+    zshrc = setup / "rc" / "zshrc"
+    zshrc.write_text(f"a\n{old}b\n{doctor.PROMPT_BEGIN}\nunterminated\n")
+    main("doctor")
+    assert "has an older tag block" in capsys.readouterr().out
+    main("doctor", "--fix")
+    block = doctor.prompt_block("zsh")
+    assert zshrc.read_text() == f"a\n{block}b\n{block}"
+
+
+# --- pi-local -----------------------------------------------------------------
+
+
+@pytest.fixture
+def server(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """What the fake model server answers, by path; absent paths fail."""
+    answers: dict[str, object] = {}
+
+    def fetch(url: str) -> object:
+        return answers.get(url.split(":", 2)[2].split("/", 1)[1])
+
+    monkeypatch.setattr(pi_local, "fetch", fetch)
+    return answers
+
+
+def models(home: Path) -> dict[str, object]:
+    data: dict[str, object] = json.loads(
+        (home / ".pi" / "agent" / "models.json").read_text()
+    )
+    return data
+
+
+def test_pi_local_manual_then_discovered(
+    main: Main, tmp_path: Path, server: dict[str, object]
+) -> None:
+    assert main("pi-local", "first", "32768") == 0
+    path = tmp_path / ".pi" / "agent" / "models.json"
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    first = {
+        "id": "first", "name": "Local (lllm2): first",
+        "contextWindow": 32768, "maxTokens": 8192, "note": "kept on its own id",
+    }  # fmt: skip
+    assert models(tmp_path)["providers"] == {"lllm2": {
+        "baseUrl": "http://127.0.0.1:1920/v1", "api": "openai-completions",
+        "apiKey": "local",
+        "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
+        "models": [{k: v for k, v in first.items() if k != "note"}],
+    }}  # fmt: skip
+    custom = {"providers": {"other": {"apiKey": "keep"}, "lllm2": {
+        "apiKey": "", "compat": {"supportsDeveloperRole": True}, "models": [first],
+    }}}  # fmt: skip
+    path.write_text(json.dumps(custom))
+    server["v1/models"] = {"data": [{"id": "found"}]}
+    server["props"] = {"default_generation_settings": {"n_ctx": 262144.0}}
+    assert main("pi-local", "--port", "8080", where=JAIL) == 0
+    lllm2 = models(tmp_path)["providers"]
+    assert lllm2 == {
+        "other": {"apiKey": "keep"},
+        "lllm2": {
+            "baseUrl": "http://127.0.0.1:8080/v1", "api": "openai-completions",
+            "apiKey": "",
+            "compat": {"supportsDeveloperRole": True, "supportsReasoningEffort": False},
+            "models": [{"id": "found", "name": "Local (lllm2): found",
+                        "contextWindow": 262144, "maxTokens": 32000}],
+        },
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("argv", "models_answer", "props_answer", "rc"),
+    [
+        (["a"], None, None, 2),
+        (["m", "4096", "0"], None, None, 2),
+        (["", "4096"], None, None, 2),
+        (["m", "100"], None, None, 2),
+        ([], {"data": []}, None, 1),
+        ([], {"data": [{"id": ""}]}, None, 1),
+        (
+            [],
+            {"data": [{"id": "m"}]},
+            {"default_generation_settings": {"n_ctx": 12.5}},
+            1,
+        ),
+        (
+            [],
+            {"data": [{"id": "m"}]},
+            {"default_generation_settings": {"n_ctx": True}},
+            1,
+        ),
+        ([], {"data": [{"id": "m"}]}, {}, 1),
+    ],
+)
+def test_pi_local_refusals(
+    main: Main, server: dict[str, object], argv: list[str],
+    models_answer: object, props_answer: object, rc: int,
+) -> None:  # fmt: skip
+    server["v1/models"], server["props"] = models_answer, props_answer
+    assert main("pi-local", *argv) == rc
+
+
+@pytest.mark.parametrize("text", ["broken", "[]", '{"providers": 0}'])
+def test_pi_local_keeps_a_config_it_cannot_read(
+    main: Main, tmp_path: Path, text: str
+) -> None:
+    path = tmp_path / ".pi" / "agent" / "models.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(text)
+    assert main("pi-local", "m", "4096", "1921") == 1
+    assert path.read_text() == text
+
+
+def test_pi_local_fetch_fails_quietly() -> None:
+    assert pi_local.fetch("http://127.0.0.1:9/v1/models") is None
+
+
+# --- gh-auth, glab-auth -----------------------------------------------------------
+
+
+@pytest.fixture
+def forge(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], str | None]]:
+    calls: list[tuple[list[str], str | None]] = []
+
+    def run(argv: list[str], stdin: str | None = None) -> int:
+        calls.append((argv, stdin))
+        return 4 if "fail" in argv else 0
+
+    monkeypatch.setattr(auth, "run", run)
+
+    def secret(prompt: str) -> str:
+        return "ghp_x"
+
+    monkeypatch.setattr(auth, "read_secret", secret)
+    return calls
+
+
+def test_gh_auth(main: Main, forge: list[tuple[list[str], str | None]]) -> None:
+    assert main("gh-auth") == 0
+    assert forge[0] == (["gh", "auth", "login", "--with-token"], "ghp_x\n")
+    assert [argv for argv, _ in forge[1:]] == [
+        ["gh", "auth", "setup-git"],
+        ["gh", "auth", "status"],
+    ]
+
+
+def test_glab_auth(main: Main, forge: list[tuple[list[str], str | None]]) -> None:
+    assert main("glab-auth", "gitlab.example") == 0
+    assert forge[0] == (
+        ["glab", "auth", "login", "--stdin", "--hostname", "gitlab.example"],
+        "ghp_x\n",
+    )
+    assert forge[2][0] == [
+        "glab",
+        "config",
+        "set",
+        "--global",
+        "host",
+        "gitlab.example",
+    ]
+    forge.clear()
+    assert main("glab-auth", "fail") == 4 and len(forge) == 1
+
+
+def test_read_secret_is_unechoed_on_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    master, slave = pty.openpty()
+    with os.fdopen(slave) as tty:
+        monkeypatch.setattr(sys, "stdin", tty)
+        os.write(master, b" tok \n")
+        assert auth.read_secret("PAT: ") == "tok"
+    os.close(master)
+    out = capsys.readouterr()
+    assert (out.err, out.out) == ("PAT: ", "\n")
+    read, write = os.pipe()
+    os.write(write, b"piped")
+    os.close(write)
+    with os.fdopen(read) as pipe:
+        monkeypatch.setattr(sys, "stdin", pipe)
+        assert auth.read_secret("PAT: ") == "piped"
+    assert auth.run(["true"]) == 0

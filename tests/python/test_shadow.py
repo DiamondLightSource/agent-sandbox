@@ -19,8 +19,7 @@ from typing import NoReturn
 
 import pytest
 
-import claude_sandbox
-from claude_sandbox import jail, shadow
+from claude_sandbox import cli, jail, shadow
 from claude_sandbox.bwrap import bwrap_argv
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
@@ -584,26 +583,30 @@ def test_dunder_main_dispatches(
     def shadow_main(name: str, args: list[str]) -> None:
         calls.append((name, args))
 
-    def front_door() -> None:
-        calls.append(("front", []))
+    def cli_main() -> int:
+        calls.append(("cli", []))
+        return 0
 
     def holder_main(args: list[str]) -> None:
         calls.append(("holder", args))
 
     monkeypatch.setattr(shadow, "main", shadow_main)
     monkeypatch.setattr(jail, "holder_main", holder_main)
-    monkeypatch.setattr(claude_sandbox, "main", front_door)
+    monkeypatch.setattr(cli, "main", cli_main)
     for argv in (
         ["_shadow", "pi", "--", "--", "x"],
         ["_jail_holder", "--", "script"],
-        ["--help"],
     ):
         monkeypatch.setattr(sys, "argv", ["claude_sandbox", *argv])
         runpy.run_module("claude_sandbox", run_name="__main__")
+    monkeypatch.setattr(sys, "argv", ["claude_sandbox", "--help"])
+    with pytest.raises(SystemExit) as done:
+        runpy.run_module("claude_sandbox", run_name="__main__")
+    assert done.value.code == 0
     assert calls == [
         ("pi", ["--", "x"]),
         ("holder", ["--", "script"]),
-        ("front", []),
+        ("cli", []),
     ]
     monkeypatch.setattr(sys, "argv", ["claude_sandbox", "_shadow", "pi", "x"])
     with pytest.raises(SystemExit) as exc:
