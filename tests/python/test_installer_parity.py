@@ -450,6 +450,7 @@ def test_reinstall_writes_nothing(tmp_path: Path, first: str) -> None:
     assert "was not written by us" in err.getvalue()
 
 
+BAD_JSON = ("{} {}", '{"a":NaN}')
 MANAGED = "prefix/etc/claude-code/managed-settings.json"
 USER_SETTINGS = "user/.claude/settings.json"
 
@@ -481,7 +482,8 @@ def test_known_divergence_python_warns_and_leaves_the_file(
     sc = Scenario("divergence", step, files(spec or {path: text}))
     assert (run_bash(tmp_path / "bash", sc)[0] == 0) == bash_ok
     err = run_python(tmp_path / "python", sc)
-    assert "WARNING" in err
+    assert "WARNING" in err and ("not valid JSON" in err) == (text in BAD_JSON)
+    assert ("not a JSON object" in err) == text.startswith("[")
     assert (tmp_path / "python" / path).read_text() == text
     assert (tmp_path / "python" / path).is_symlink() == bool(link)
 

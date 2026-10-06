@@ -292,24 +292,30 @@ def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
     """``wire_managed_settings``: disable Claude's updater in the managed
     policy (ADR 13), keeping every other key and the administrator's hooks.
     A file that is not a JSON object is left alone with a warning, never a
-    failed install. (The bash aborts on JSON that is not an object.)"""
+    failed install. (The bash aborts on JSON that is not an object.) When
+    this warns the updater is not disabled, and an install summary must
+    not say it is."""
     path = layout.system(MANAGED_SETTINGS)
-    warning = (
-        f"claude-sandbox: WARNING — {path} is not valid JSON.\n"
-        'Skipping the updater settings. Set "env":{"DISABLE_AUTOUPDATER":"1"}\n'
-        'and "autoUpdates": false in the managed policy.'
-    )
+
+    def skipping(problem: str) -> Warn:
+        return Warn(
+            f"claude-sandbox: WARNING — {path}{problem}.\n"
+            'Skipping the updater settings. Set "env":{"DISABLE_AUTOUPDATER":"1"}\n'
+            'and "autoUpdates": false in the managed policy.'
+        )
+
+    warning = skipping(" is not valid JSON").message
     actions = _makedirs(path.parent)
     value, warned = _settings(path, warning)
     if warned:
         return actions + warned
     if not isinstance(value, dict):
-        return actions + [Warn(warning)]
+        return actions + [skipping(" is not a JSON object")]
     env = value.get("env")
     if env is None:
         env = value["env"] = {}
     if not isinstance(env, dict):
-        return actions + [Warn(warning)]
+        return actions + [skipping(": env is not an object")]
     env["DISABLE_AUTOUPDATER"] = "1"
     value["autoUpdates"] = False
     return actions + _rewrite(path, value, layout.owner)
@@ -364,7 +370,12 @@ def plan_statusline(layout: Layout, options: Options) -> list[Action]:
         return actions + warned
     if present:
         if not isinstance(value, dict):
-            return actions + [Warn(warning)]
+            return actions + [
+                Warn(
+                    f"claude-sandbox: WARNING — {settings} is not a JSON object;"
+                    " skipping statusline wiring."
+                )
+            ]
         if value.get("statusLine") is None:
             value["statusLine"] = {
                 "type": "command",
