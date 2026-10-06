@@ -1,6 +1,6 @@
 """The launcher's own options, which come before the command.
 
-Parsed by hand, as the bash loop does, rather than by Typer: the first
+Parsed by hand, as the bash loop does, rather than by argparse: the first
 word that is not one of these ends them, and everything after it belongs
 to the command or the agent (``claude-sandbox --resume`` is ``claude
 --resume``). The errors exit 1, as the bash's do.
@@ -70,7 +70,7 @@ def parse(args: list[str], verbs: Collection[str], version: str) -> Options:
     """The launcher options, then the verb (``claude`` when none is named).
 
     Raises :class:`Stop` for ``--version``, for ``--help`` (code -1: show
-    Typer's help) and for a bad option.
+    the CLI's help) and for a bad option.
     """
     opts = Options()
     i = 0
