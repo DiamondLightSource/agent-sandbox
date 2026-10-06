@@ -35,17 +35,23 @@ def loads(data: bytes) -> Json:
     so those raise too; invalid UTF-8 becomes U+FFFD, as in ``jq``."""
     text = data.decode("utf-8-sig", errors="replace")
     try:
-        value = json.loads(
-            text,
-            parse_int=_number,
-            parse_float=_number,
-            parse_constant=_no_constant,
+        value = cast(
+            Json,
+            json.loads(
+                text,
+                parse_int=_number,
+                parse_float=_number,
+                parse_constant=_no_constant,
+            ),
         )
-    except json.JSONDecodeError as exc:
+        # What cannot be written back (a lone surrogate, nesting too deep
+        # to print) is refused here, so the caller warns and skips.
+        dumps(value).encode()
+    except (json.JSONDecodeError, UnicodeEncodeError, RecursionError) as exc:
         raise NotJson(str(exc)) from exc
     if value is None or value is False:
         raise NotJson("null and false are not settings")
-    return cast(Json, value)
+    return value
 
 
 def _string(s: str) -> str:
