@@ -49,7 +49,10 @@ venv's `bin`, which the session can write, so an executable left there
 shadows a system command, or `claude` itself, in every outer shell. Git hooks
 in the workspace run on your next `git commit` or `git push` and never show
 in a diff. The Python shadow quarantines both while the session runs and
-warns at your shell prompt; `claude-sandbox alerts` lists what it did. See
+warns at your shell prompt; `claude-sandbox alerts` lists what it did. A
+venv's `python` links to an interpreter the session cannot write are left
+alone; where uv keeps its Pythons in a writable place (its default,
+`~/.local/share/uv/python`), recreate the venv outside the sandbox. See
 {ref}`ADR 27 <adr-outer-path-guard>`.
 
 Review the rest like any contribution before you run it outside the

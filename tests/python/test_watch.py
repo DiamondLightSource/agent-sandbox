@@ -490,3 +490,51 @@ def test_jail_chosen_names_are_escaped(lay: Layout, tmp_path: Path) -> None:
     assert len(alerts) == 2  # one line each: nothing forged
     assert all("\x1b" not in line and "\x9b" not in line for line in alerts)
     assert "\\x1b" in s.summary() and "\x1b[2J" not in s.summary()
+
+
+def test_a_venv_interpreter_link_to_a_system_python_stays(lay: Layout) -> None:
+    """``uv venv`` in a session links python3 to an interpreter the session
+    cannot write: left alone. Anything else of that name is judged."""
+    system_python = executable(lay.root / "sys/python3.14")  # outside rw/
+    executable(lay.sys / "python")
+    executable(lay.sys / "python3.14")
+    s = lay.session()
+    (lay.venv / "python3").unlink()  # recreated during the session
+    s.start()
+    (lay.venv / "python").symlink_to(system_python)
+    (lay.venv / "python3").symlink_to("python")  # a chain, as uv makes it
+    (lay.venv / "python3.14").symlink_to("python")
+    assert s.tick() == []
+    # Into the writable tree: quarantined.
+    script = executable(lay.root / "rw/python-evil")
+    (lay.venv / "python3").unlink()
+    (lay.venv / "python3").symlink_to(script)
+    assert s.tick() == [
+        f"removed the link {lay.venv}/python3 -> {script}"
+        f" (it shadowed {lay.sys}/python3)"
+    ]
+    # A regular file: quarantined.
+    (lay.venv / "python3.14").unlink()
+    executable(lay.venv / "python3.14")
+    assert s.tick() == [lay.shadows("python3.14")]
+    # A name that is not an interpreter's, to a system python: quarantined.
+    (lay.venv / "ls").symlink_to(system_python)
+    assert s.tick() == [
+        f"removed the link {lay.venv}/ls -> {system_python} (it shadowed {lay.sys}/ls)"
+    ]
+    # The launch scan applies the same rule.
+    assert not (lay.venv / "python3").exists()  # the quarantined link went
+    (lay.venv / "python3").symlink_to(system_python)
+    assert lay.session().scan_at_launch() == []  # the first: a baseline
+    (lay.venv / "python3").unlink()
+    (lay.venv / "python3").symlink_to("python")
+    assert lay.session().scan_at_launch() == []
+
+
+def test_system_interpreter_needs_a_python_target(tmp_path: Path) -> None:
+    other = executable(tmp_path / "sys/bash")
+    (tmp_path / "python3").symlink_to(other)
+    assert not watch.system_interpreter(str(tmp_path / "python3"), [])
+    (tmp_path / "python3").unlink()
+    (tmp_path / "python3").symlink_to(tmp_path / "sys/python-missing")
+    assert not watch.system_interpreter(str(tmp_path / "python3"), [])

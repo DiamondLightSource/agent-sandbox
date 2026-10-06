@@ -37,6 +37,7 @@ on the launch path (ADR 26).
 import hashlib
 import json
 import os
+import re
 import select
 import signal
 import stat
@@ -162,12 +163,42 @@ def runnable(path: str) -> bool:
     return stat.S_ISREG(st.st_mode) and bool(st.st_mode & 0o111)
 
 
-def offends(target: Target, name: str) -> str | None:
-    """Why ``name`` in ``target`` must be quarantined, or None."""
-    if not runnable(os.path.join(target.directory, name)):
+# A venv's interpreter names. Its ``python3`` shadows /usr/bin/python3 by
+# design; see ``system_interpreter``.
+INTERPRETER = re.compile(r"python(3(\.\d+)?)?")
+
+
+def system_interpreter(path: str, roots: Sequence[str]) -> bool:
+    """``path`` is a venv's link to an interpreter the session cannot write.
+
+    A link (or a chain of them) named python, python3 or python3.N whose
+    final target is an executable named python* outside every read-write
+    root of the jail: what ``uv venv`` makes against /usr/bin/python3 or a
+    root-owned uv-managed Python. Recreating the venv in a session then
+    leaves it working. A regular file of that name, or a link into anything
+    the session can write, is still judged like any other.
+    """
+    name = os.path.basename(path)
+    if not INTERPRETER.fullmatch(name) or not os.path.islink(path):
+        return False
+    real = os.path.realpath(path)
+    return (
+        os.path.basename(real).startswith("python")
+        and runnable(real)
+        and not inside(real, roots)
+    )
+
+
+def offends(target: Target, name: str, roots: Sequence[str] = ()) -> str | None:
+    """Why ``name`` in ``target`` must be quarantined, or None. ``roots``:
+    the jail's read-write roots, for ``system_interpreter``."""
+    path = os.path.join(target.directory, name)
+    if not runnable(path):
         return None
     if target.hooks:
         return None if name.endswith(".sample") else "a git hook"
+    if system_interpreter(path, roots):
+        return None
     for later in target.later:
         if runnable(os.path.join(later, name)):
             return f"it shadowed {describe(os.path.join(later, name))}"
@@ -356,7 +387,7 @@ class Session:
             if base.get(name) == sig or self.seen.get(key) == sig:
                 continue
             self.seen[key] = sig
-            why = offends(target, name)
+            why = offends(target, name, self.roots)
             if why is None:
                 continue
             action = quarantine(os.path.join(target.directory, name))

@@ -66,6 +66,13 @@ new git hooks, while the session runs; warn in outer shells.
     loses its execute bits.
   - What was present and unchanged when the session started is left alone,
     so the venv's own `python3` stays. A changed file is judged again.
+  - One allowance: a link named `python`, `python3` or `python3.N` whose
+    final target is an executable named `python*` outside every read-write
+    root of the jail is not a shadow. That is what `uv venv` makes against
+    `/usr/bin/python3` or a root-owned uv-managed Python, so a session can
+    recreate the venv. A regular file of that name, a link into anything the
+    session can write, and every other name (`pip`, console scripts) are
+    judged as usual.
 - **A scan at launch.** Before the agent starts, each watched directory is
   compared with a baseline the previous launch kept under
   `/run/claude-sandbox` (root-owned); a shadow that is not in it is
@@ -101,10 +108,19 @@ Options rejected:
 ## Consequences
 
 - An in-session install of a console script that shadows a system tool (a
-  package whose script is also in `/usr/bin`) is quarantined, as is the
-  venv's `python3` link if the session recreates the venv. Recreate venvs
-  outside the jail, or restore the file and run `claude-sandbox alerts
-  --clear`.
+  package whose script is also in `/usr/bin`) is quarantined. Restore it and
+  run `claude-sandbox alerts --clear`, or install outside the jail.
+- The interpreter allowance holds only where the interpreter is out of the
+  session's reach. In the published image uv's Pythons are under
+  `/opt/uv/python` (root-owned, not bound read-write), and in a DLS
+  python-copier devcontainer `uv venv` links to the system `/usr/bin/python3`.
+  But a copier project whose `requires-python` the system Python does not
+  meet gets a uv-managed Python in uv's default `~/.local/share/uv/python`,
+  which the jail can write (`~/.local/share` is bound read-write). There a
+  venv the session recreates loses its `python` links to quarantine.
+  Recreate such a venv outside the jail. Trusting that directory would trust
+  an interpreter the session can rewrite, so it is not done; binding it
+  read-only into the jail would let the allowance apply.
 - The entry-point binds leave empty, non-executable files named `claude`,
   `codex`, `pi` and `claude-sandbox` in the guarded directories, and a
   session cannot remove the venv's `bin` while they are mounted.
