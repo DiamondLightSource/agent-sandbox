@@ -13,6 +13,7 @@ import stat
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import NoReturn
 
@@ -24,7 +25,7 @@ from claude_sandbox.bwrap import bwrap_argv
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.profiles import PROFILES, VERIFY_BATTERY
-from claude_sandbox.tools import TOOL_PATH, find_tool
+from claude_sandbox.tools import find_tool
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -299,15 +300,17 @@ def test_refusals_before_launch(
 
 def test_tools_never_come_from_path(fx: Fixture) -> None:
     """ADR 26: no executable is found through PATH."""
-    planted = fx.root / "on-path"
+    planted, system = fx.root / "on-path", fx.root / "system"
     for tool in ("script", "bwrap", "git"):
         executable(planted / tool)
+        executable(system / tool)
     fx.env["PATH"] = str(planted)
-    fx.host = replace(fx.host, find_tool=find_tool)  # the real fixed path
+    # The real lookup, searching a stand-in for TOOL_PATH: CI runners lack bwrap.
+    fx.host = replace(fx.host, find_tool=partial(find_tool, search=(str(system),)))
     ex = fx.run()
     assert str(planted) not in ex.path
     assert str(planted) not in ex.argv[6]
-    assert ex.path.rpartition("/")[0] in TOOL_PATH
+    assert ex.path == str(system / "script")
 
 
 def test_unreadable_conf_refuses(
