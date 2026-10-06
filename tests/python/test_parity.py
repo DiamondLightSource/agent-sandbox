@@ -485,7 +485,11 @@ class ConfCase:
 
 
 CONF_CASES = [
-    ConfCase("workspace-root", "11-workspace-root", "workspace-root = /custom/root\n"),
+    ConfCase(
+        "workspace-root",
+        "11-workspace-root, 8-override",
+        "workspace-root = /custom/root\n",
+    ),
     ConfCase("no-forge", "11-no-forge", "no-forge\n"),
     ConfCase(
         "no-forge-0", "none: any value means 1 (reported quirk)", "no-forge = 0\n"
@@ -542,7 +546,7 @@ CONF_CASES = [
         "workspace-root = /from/config\n",
         {"CLAUDE_SANDBOX_WORKSPACE_ROOT": "/from/env"},
     ),
-    ConfCase("absent", "11-absent", None),
+    ConfCase("absent", "11-absent, 8-pwd", None),
     ConfCase(
         "lexing",
         "none: whitespace, CRLF, comments, empty keys, unknown keys, no final newline",
@@ -558,8 +562,9 @@ CONF_CASES = [
     ),
     ConfCase(
         "workspace-root-empty",
-        "none: an empty value sets nothing",
+        "8-empty-override (falls back to $PWD); an empty value sets nothing",
         "workspace-root =\n",
+        {"CLAUDE_SANDBOX_WORKSPACE_ROOT": ""},
     ),
     ConfCase(
         "ports",
