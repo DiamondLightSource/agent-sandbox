@@ -206,7 +206,7 @@ cmd_pi_local() (
     printf '%s\n' "$result" > "$tmp"
     mv "$tmp" "$dir/models.json"
     echo "Configured Pi's lllm2 provider at http://127.0.0.1:$port/v1."
-    echo "Select lllm2 in Pi's /model picker, or launch pi --provider lllm2."
+    echo "Select lllm2 in Pi's /model picker, or launch pi --model lllm2."
     echo "The relay setting in /etc/claude-sandbox.conf must match port $port (shipped default: 1920)."
 )
 
