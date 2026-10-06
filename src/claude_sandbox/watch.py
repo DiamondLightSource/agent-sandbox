@@ -138,6 +138,20 @@ def snapshot(directory: str) -> dict[str, Sig]:
     return {name: sig for name, sig in sigs.items() if sig is not None}
 
 
+def describe(path: str) -> str:
+    """``path`` fit for an alert line and a terminal.
+
+    The jail chooses these names, and a name may hold a newline, ESC or any
+    other control: left raw, it would forge alert lines and send escape
+    sequences to every outer prompt. Anything not printable, and the
+    backslash, is written as a Python escape (``\\n``, ``\\x1b``, and
+    ``\\udcff`` for an undecodable byte).
+    """
+    return "".join(
+        ch if ch.isprintable() and ch != "\\" else ascii(ch)[1:-1] for ch in path
+    )
+
+
 def runnable(path: str) -> bool:
     """A regular file with an execute bit, following links: what a PATH
     lookup or git would run."""
@@ -156,7 +170,7 @@ def offends(target: Target, name: str) -> str | None:
         return None if name.endswith(".sample") else "a git hook"
     for later in target.later:
         if runnable(os.path.join(later, name)):
-            return f"it shadowed {later}/{name}"
+            return f"it shadowed {describe(os.path.join(later, name))}"
     return None
 
 
@@ -173,7 +187,7 @@ def quarantine(path: str) -> str | None:
         if stat.S_ISLNK(st.st_mode):
             target = os.readlink(path)
             os.unlink(path)
-            return f"removed the link {path} -> {target}"
+            return f"removed the link {describe(path)} -> {describe(target)}"
         fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
         return None
@@ -186,7 +200,7 @@ def quarantine(path: str) -> str | None:
         return None
     finally:
         os.close(fd)
-    return f"cleared the execute bits of {path}"
+    return f"cleared the execute bits of {describe(path)}"
 
 
 # --- state: the alerts and the baselines ----------------------------------------

@@ -466,3 +466,27 @@ def test_prompt_hook(tmp_path: Path, shell: str) -> None:
         "-- 3",
     ], proc.stderr
 
+
+EVIL = "git\n2026-01-01 00:00:00 all clear\x1b[2J\x9b‮\\x"
+
+
+def test_jail_chosen_names_are_escaped(lay: Layout, tmp_path: Path) -> None:
+    """A name cannot forge alert lines or reach the terminal raw."""
+    assert watch.describe(EVIL) == (
+        "git\\n2026-01-01 00:00:00 all clear\\x1b[2J\\x9b\\u202e\\\\x"
+    )
+    assert watch.describe("/a/é b") == "/a/é b"
+    assert watch.describe(os.fsdecode(b"/a/\xff")) == "/a/\\udcff"
+    executable(lay.sys / EVIL)  # a later directory has one too, so it shadows
+    s = lay.session()
+    s.start()
+    executable(lay.venv / EVIL)
+    target = lay.root / "rw/x\x1bt"
+    executable(target)
+    (lay.venv / "ls").symlink_to(target)
+    done = s.tick()
+    assert len(done) == 2 and all(c.isprintable() for line in done for c in line)
+    alerts = lay.alerts()
+    assert len(alerts) == 2  # one line each: nothing forged
+    assert all("\x1b" not in line and "\x9b" not in line for line in alerts)
+    assert "\\x1b" in s.summary() and "\x1b[2J" not in s.summary()
