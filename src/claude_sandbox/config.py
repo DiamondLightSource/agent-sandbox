@@ -78,8 +78,11 @@ _LISTS: Mapping[str, str] = {
     "pass-env": PASS_ENV,
 }
 
-# bash's [[:space:]] in the C locale. Not str.strip(): that also strips
-# Unicode spaces and \x1c-\x1f, which bash keeps.
+# bash's [[:space:]] in the C locale: ASCII whitespace only. Not
+# str.strip(), which also strips Unicode spaces and \x1c-\x1f. Under a UTF-8
+# locale the bash's [[:space:]] also matches some Unicode spaces (U+2000 and
+# friends), so a conf padded with those trims differently there; the port
+# keeps the C-locale reading on every host.
 _SPACE = " \t\n\r\f\v"
 
 

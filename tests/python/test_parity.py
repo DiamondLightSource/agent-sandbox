@@ -122,6 +122,11 @@ def bash_path(tmp_path_factory: pytest.TempPathFactory) -> str:
     return f"{shim}:{SYSTEM_PATH}"
 
 
+def installed_locales() -> list[str]:
+    out = subprocess.run(["locale", "-a"], capture_output=True, text=True)
+    return out.stdout.split()
+
+
 def snapshot(root: Path) -> list[str]:
     return sorted(str(p) for p in root.rglob("*"))
 
@@ -139,6 +144,7 @@ class Scenario:
     conf: str | None = None
     verify: bool = False
     gitconfig: str = GITCONFIG_PATH
+    locale: str = ""  # skip unless the host has this locale
 
 
 REAL_ROOT = {"HOME": "/root"}  # bwrap_argv.sh's HOME=/root, read from the host
@@ -403,6 +409,13 @@ SCENARIOS = [
     Scenario("skills-codex", "15-codex", tree=SKILLS, agent="codex", real=CODEX_REAL),
     Scenario("skills-pi", "15-pi", tree=SKILLS, agent="pi", real=PI_REAL),
     Scenario("skills-none", "15-none", tree=("home/.claude/",)),
+    Scenario(
+        "skills-locale-order",
+        "none: a known divergence (KNOWN_DIVERGENCES)",
+        {"LC_ALL": "en_US.UTF-8"},
+        tree=("home/.claude/", "shipped/alpha/SKILL.md", "shipped/Beta/SKILL.md"),
+        locale="en_US.utf8",
+    ),
     Scenario("shared-claude", "16 (claude)", tree=SHARED),
     Scenario("shared-codex", "16 (codex)", tree=SHARED, agent="codex", real=CODEX_REAL),
     Scenario(
@@ -450,6 +463,12 @@ SCENARIOS = [
 ]
 
 
+def _before(argv: list[str], first: str, then: str) -> bool:
+    """The first element ending in ``first`` precedes the one ending ``then``."""
+    ends = [next(i for i, a in enumerate(argv) if a.endswith(e)) for e in (first, then)]
+    return ends[0] < ends[1]
+
+
 @dataclass(frozen=True)
 class Divergence:
     """A known, deliberate difference between the bash and the port.
@@ -486,6 +505,13 @@ KNOWN_DIVERGENCES: dict[str, Divergence] = {
         "against the cwd; the port only splits, so `1?` stays invalid.",
         bash_shows=lambda report: "local_ports=12" in report,
         python_shows=lambda report: "local_ports=1?" in report,
+    ),
+    "skills-locale-order": Divergence(
+        "The bash orders glob results (shipped skills, GPU nodes) by the "
+        "launching locale's collation; the port uses code-point order on "
+        "every host. Only the order of binds to distinct paths differs.",
+        bash_shows=lambda argv: _before(argv, "/alpha", "/Beta"),
+        python_shows=lambda argv: _before(argv, "/Beta", "/alpha"),
     ),
 }
 
@@ -545,6 +571,8 @@ def sh_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
 def test_argv_matches_bash(
     sc: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bash_path: str
 ) -> None:
+    if sc.locale and sc.locale not in installed_locales():
+        pytest.skip(f"needs the {sc.locale} locale")
     build_tree(tmp_path, sc.tree)
     if sc.conf is not None:
         (tmp_path / "sandbox.conf").write_text(sc.conf.replace("{root}", str(tmp_path)))

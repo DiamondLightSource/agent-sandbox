@@ -151,6 +151,9 @@ class HostProbe:
         return resolved
 
     def glob(self, pattern: str) -> list[str]:
+        # Code-point order on every host. The bash sorts by the launching
+        # locale's collation (en_US puts alpha/ before Beta/, C the reverse);
+        # only the order of binds onto distinct destinations differs.
         return sorted(_glob.glob(pattern))
 
 
@@ -226,6 +229,8 @@ def bwrap_argv(
     if config.gpu:
         # The container runtime supplies driver libraries in the read-only
         # root and selects the available GPUs. Never bind all of /dev.
+        # Glob order is code-point order, not the bash's locale collation:
+        # the binds are to distinct paths, so only their order can differ.
         for pattern in ("/dev/nvidia*", "/dev/nvidia-caps/*", "/dev/dri/*"):
             for device in probe.glob(pattern):
                 if probe.is_char_device(device):
@@ -277,6 +282,8 @@ def bwrap_argv(
     # A `*/` pattern matches only directories and links to them, so unlike
     # the bash (whose `-d` test drops the unmatched pattern itself) there is
     # nothing to filter.
+    # As for the GPU nodes, skills come in code-point order where the bash
+    # used the locale's collation; each lands on its own destination.
     for skill_dir in probe.glob(_glob.escape(shipped_skills_dir) + "/*/"):
         skill_dir = skill_dir.removesuffix("/")
         name = skill_dir.rpartition("/")[2]
