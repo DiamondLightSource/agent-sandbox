@@ -104,6 +104,13 @@ class Doctor:
         shutil.copy2(path, copy)
         self.report("backup", os.path.basename(path), f"saved the original as {copy}")
 
+    def linked(self, subject: str, dest: str) -> bool:
+        """A symlinked file is the user's own arrangement: leave it alone."""
+        if os.path.islink(dest):
+            self.report("skip", subject, f"{dest} is a symlink; left as it is")
+            return True
+        return False
+
     def tag(self) -> None:
         if os.path.isfile(self.tag_file) and os.path.getsize(self.tag_file) > 0:
             self.report("ok", "container tag", _read(self.tag_file).rstrip("\n"))
@@ -120,6 +127,8 @@ class Doctor:
         """DEST must be a copy of SHIPPED."""
         if not os.access(shipped, os.R_OK):
             self.report("skip", subject, f"{shipped} is missing; re-run the install")
+            return
+        if self.linked(subject, dest):
             return
         present = os.path.isfile(dest)
         if present and _read(shipped) == _read(dest):
@@ -141,6 +150,8 @@ class Doctor:
 
     def claude_settings(self) -> None:
         settings = f"{self.home}/.claude/settings.json"
+        if self.linked("claude settings", settings):
+            return
         present = os.path.isfile(settings)
         data: object = {}
         if present:

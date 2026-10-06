@@ -212,6 +212,21 @@ def test_doctor_skips_what_it_cannot_fix(
     assert "pi-sandbox-tag.ts is missing" in out
 
 
+def test_doctor_leaves_symlinks_alone(
+    main: Main, setup: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (setup / "mine.sh").write_text("echo mine\n")
+    (setup / ".claude").mkdir()
+    (setup / ".claude" / "statusline-command.sh").symlink_to(setup / "mine.sh")
+    (setup / ".claude" / "settings.json").symlink_to(setup / "mine.json")
+    main("doctor", "--fix")
+    out = capsys.readouterr().out
+    assert out.count("is a symlink; left as it is") == 2
+    assert (setup / "mine.sh").read_text() == "echo mine\n"
+    assert not (setup / "mine.json").exists()
+    assert not list((setup / ".claude").glob("*.bak-*"))
+
+
 def test_doctor_replaces_every_old_block(
     main: Main, setup: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
