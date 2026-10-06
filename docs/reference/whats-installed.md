@@ -15,7 +15,7 @@ into your own devcontainer.
 | `/usr/libexec/claude-sandbox/codex-dist/` | Codex release, including its bundled helpers; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-dist/` | Standalone Pi executable and assets; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-run` | Pi launch-marker check; see [its limits](../how-to/use-pi.md#verify-the-sandbox) |
-| `/usr/local/bin/claude-sandbox` | The `claude-sandbox` command, run by the same interpreter: `gh-auth`, `glab-auth`, `update`, `verify`, `pi-local`, `doctor`, `version` |
+| `/usr/local/bin/claude-sandbox` | The `claude-sandbox` command, run by the same interpreter: `gh-auth`, `glab-auth`, `update`, `verify`, `pi-local`, `doctor`, `alerts`, `version` |
 | `/usr/libexec/claude-sandbox/verify-sandbox-battery.sh` | Installed isolation checks |
 | `/usr/libexec/claude-sandbox/skills/` | Shipped skills, mounted read-only into each agent's discovery directory |
 | `/usr/libexec/claude-sandbox/statusline-command.sh` | Recommended Claude status line |
@@ -26,8 +26,8 @@ into your own devcontainer.
 | `/etc/claude-code/managed-settings.json` | Disables Claude's updater; preserves existing administrator settings and hooks |
 | `/etc/codex/managed_config.toml` | Disables Codex startup update checks; an administrator-owned file is left unchanged with a warning |
 | `/etc/claude-sandbox.conf` | [Sandbox configuration](configuration.md) |
-| `/etc/profile.d/claude-sandbox-alerts.sh` | Python shadow only: warns at outer shell prompts about what the PATH watcher quarantined; sourced from `/etc/bash.bashrc` and `/etc/zsh/zshrc` ({ref}`ADR 27 <adr-outer-path-guard>`) |
-| `/run/claude-sandbox/` | Python shadow only: the PATH watcher's alerts and baselines, hidden inside the sandbox; `claude-sandbox alerts` lists them |
+| `/etc/profile.d/claude-sandbox-alerts.sh` | Warns at outer shell prompts about what the PATH watcher quarantined; sourced from `/etc/bash.bashrc` and `/etc/zsh/zshrc` ({ref}`ADR 27 <adr-outer-path-guard>`) |
+| `/run/claude-sandbox/` | The PATH watcher's alerts and baselines, hidden inside the sandbox; `claude-sandbox alerts` lists them |
 
 <!-- TODO(phase5): confirm the claude-sandbox entry point, passt, WITH_CODEX, WITH_PI and PI_VERSION against the wired-in Python installer -->
 

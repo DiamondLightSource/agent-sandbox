@@ -99,10 +99,11 @@ Around them:
 | `profiles.py` | One frozen dataclass per agent: the real binary, home paths, injected flags, `--chrome` stripping |
 | `config.py` | The `/etc/claude-sandbox.conf` parser and the local-port and callback-port checks |
 | `gitconfig.py` | The jail's Git config, returned as text |
+| `watch.py` | The PATH watcher (ADR 27) |
 | `tools.py` | The fixed system directories the launch path runs its tools from |
 | `context.py`, `cli.py` | Where the CLI runs, and the command table |
 | `host/` | The host launcher: options, engine calls, `clean` |
-| `helpers/` | The in-container helpers: `gh-auth`, `glab-auth`, `verify`, `pi-local`, `doctor`, `version`, `update` |
+| `helpers/` | The in-container helpers: `gh-auth`, `glab-auth`, `verify`, `pi-local`, `doctor`, `alerts`, `version`, `update` |
 | `installer/` | The installer's steps and the interpreter provisioning |
 
 `bwrap.py` reads the environment only from the mapping it is given. It
@@ -230,16 +231,36 @@ does.
 - The installer runs nothing found through `PATH`: `git` and uv are named by
   absolute path.
 
-### The entry-point guard
+### The entry-point guard and the PATH watcher
 
-<!-- TODO(phase5): confirm against fix/entry-point-guard (module names,
-the watcher's lifetime, the quarantine location, the tests and ADR 27) -->
+{ref}`ADR 27 <adr-outer-path-guard>` guards the outer `PATH` against
+executables a session leaves behind. Two parts, both in the package:
 
-While a session runs, a watcher outside the jail quarantines executables the
-session adds in writable directories ahead of system commands on `PATH`,
-and new Git hooks; outer shells and the end of the session warn about them.
-ADR 27 records the design. Battery check 22 checks the guard from inside
-the jail.
+- `bwrap.py` adds the entry-point mount guard: read-only binds of
+  `/dev/null` over `claude`, `codex`, `pi` and `claude-sandbox` in each
+  writable directory ahead of `/usr/local/bin`, after the read-write binds,
+  and it masks the watcher's state directory, `/run/claude-sandbox`. It
+  also works out which directories the watcher watches
+  (`watched_path_dirs`), so the two agree on what is writable. `shadow.py`
+  refuses to launch when an entry-point name there is anything but the
+  empty file the guard leaves.
+- `watch.py` is the watcher. `shadow.py` runs it in a thread around the
+  jailed launch, and forks it as a child when the jail is off (the shadow
+  then execs `script(1)`). It uses inotify through `ctypes` with a pass
+  every second as a fallback, quarantines by clearing execute bits through
+  a descriptor opened without following links, and records each action
+  under the state directory. Interpreter pruning must keep `_ctypes`.
+
+`claude-sandbox alerts` (`helpers/commands.py`) lists and clears the
+alerts, and refuses inside the jail; `claude-sandbox doctor` warns about
+them and about entry points ahead of the shadow. The installer places the
+prompt hook `/etc/profile.d/claude-sandbox-alerts.sh` and sources it from
+the system bash and zsh rc files.
+
+`tests/python/test_watch.py` runs the watcher against real directories.
+In this repository's image, `tests/entry_guard.sh` and `tests/watch_e2e.sh`
+test the mount guard and the watcher end to end, and battery check 22
+asserts the binds from inside the jail.
 
 ### The Python installer
 

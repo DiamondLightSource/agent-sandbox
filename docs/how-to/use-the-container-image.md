@@ -94,7 +94,7 @@ The tag looks like `myproj-3f2a` and lives in `/etc/claude-sandbox-tag`.
 shared `bashrc`/`zshrc`. Remove the `claude-sandbox prompt tag` block to undo a
 shell prompt change. Older untagged containers need recreation.
 
-With the Python shadow, `doctor` also reports a `warn` line when a command
+`doctor` also reports a `warn` line when a command
 named `claude`, `codex`, `pi` or `claude-sandbox` comes before the sandbox on
 `PATH`, or when `claude-sandbox alerts` lists anything the PATH watcher
 quarantined ({ref}`ADR 27 <adr-outer-path-guard>`). `--fix` does not touch

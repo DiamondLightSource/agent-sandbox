@@ -31,11 +31,12 @@ Codex receives `check_for_update_on_startup=false` in
 left unchanged with a warning. Pi runs from a read-only standalone package
 and skips version checks.
 
-<!-- TODO(phase5): confirm against fix/entry-point-guard -->
-A session that writes its own executable ahead of the wrapper or a system
-command on PATH is caught by the
-[entry-point guard](sandbox-internals.md#the-entry-point-guard), which
-quarantines it while the session runs.
+An executable a session leaves ahead of the wrapper or a system command on
+PATH is handled by two guards. The
+[entry-point guard](sandbox-internals.md#the-entry-point-guard-and-the-path-watcher)
+keeps the names `claude`, `codex`, `pi` and `claude-sandbox` read-only
+in writable directories ahead of the wrapper, and the PATH watcher quarantines other
+shadowing executables while the session runs ({ref}`ADR 27 <adr-outer-path-guard>`).
 
 Update agents by upgrading the image and recreating the container, or by
 creating a fresh devcontainer. Reinstalling the sandbox preserves existing

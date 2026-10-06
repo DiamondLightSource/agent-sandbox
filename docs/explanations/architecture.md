@@ -29,11 +29,12 @@ devcontainer uses the same wrapper.
 6. The agent runs inside the jail. A `script(1)` pseudo-terminal separates
    its terminal input from the outer shell.
 
-<!-- TODO(phase5): confirm against fix/entry-point-guard -->
 While the session runs, a watcher outside the jail quarantines executables
-the session adds ahead of system commands on PATH, and new Git hooks. It
-warns in outer shells and when the session ends. See
-[Sandbox internals](sandbox-internals.md#the-entry-point-guard).
+the session adds ahead of system commands on PATH, and new Git hooks, by
+clearing their execute bits. It warns in outer shells and when the session
+ends; `claude-sandbox alerts` lists what it did. See
+[Sandbox internals](sandbox-internals.md#the-entry-point-guard-and-the-path-watcher)
+and {ref}`ADR 27 <adr-outer-path-guard>`.
 
 Missing isolation prerequisites cause launch to fail. Nested agent calls use
 `IS_SANDBOX=1` to avoid wrapping again; that marker alone is not proof of

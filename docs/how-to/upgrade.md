@@ -64,6 +64,12 @@ devcontainer the installer also places a pinned Python interpreter, about
 differently: `gh-auth` and `glab-auth` now refuse inside an agent session,
 as `update` does. Run them from the host or a container terminal.
 
+The Python wrapper also adds the entry-point guard and the PATH watcher
+({ref}`ADR 27 <adr-outer-path-guard>`): an executable a session leaves ahead
+of a system command on PATH, or a new Git hook, loses its execute bits, and
+outer shells warn about it. Review it, then run
+`claude-sandbox alerts --clear`.
+
 The `container/claude-container` script is gone. If you ran it from a
 clone, install the launcher from PyPI instead, with uv or
 [without it](install-without-uv.md#host-launcher).

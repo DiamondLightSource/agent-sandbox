@@ -66,27 +66,40 @@ stays temporary. The real Claude binary is also bound at
 `~/.local/bin` is appended to PATH, after system directories. A binary planted
 there cannot take precedence over a system command or the agent wrapper.
 
-## The entry-point guard
-
-<!-- TODO(phase5): confirm against fix/entry-point-guard (mechanism, which
-directories are watched, the quarantine location and the exact warnings) -->
+## The entry-point guard and the PATH watcher
 
 Inside the jail, `PATH` puts system directories first. Outer shells are
-different: in the published image `PATH` starts with `/opt/venv/bin`, on the
-writable `/cache` volume, and a project venv or the workspace may also come
-before `/usr/local/bin`. An executable a session creates there, such as a
-`git`, a `python` or a `claude`, would run the next time you type that
-command in an ordinary container terminal, outside the sandbox. A new Git
-hook in the workspace would run on your next commit in the same way.
+different: in the published image and in DLS copier devcontainers `PATH`
+starts with the project venv's `bin`, under the writable `/cache`. An
+executable a session leaves there, such as a `git` or a `claude`, would run
+the next time you type that command in an ordinary container terminal,
+outside the sandbox. A Git hook in the workspace would run on your next
+commit in the same way. {ref}`ADR 27 <adr-outer-path-guard>` records the
+design; it has two parts.
 
-While a session runs, a watcher outside the jail quarantines executables
-that the session adds in writable directories ahead of system commands on
-`PATH`, and new Git hooks. Nothing is deleted: the files are moved aside for
-you to review. Outer shells print a warning while anything is quarantined,
-and the wrapper reports what it quarantined when the session ends.
+- **Entry-point mount guard.** For each writable directory ahead of
+  `/usr/local/bin` on the launching `PATH` that exists at launch, `bwrap.py`
+  read-only binds `/dev/null` over `claude`, `codex`, `pi` and
+  `claude-sandbox`, so the session cannot create those names there. The
+  wrapper refuses to launch when one of them is anything else, and
+  verification check 22 asserts the binds.
+- **PATH watcher** (`watch.py`). Outside the jail, for as long as the
+  session runs, it watches the writable directories that come before the
+  system command directories on `PATH`, and the workspace's Git hooks
+  directory (and the one `core.hooksPath` names). An executable whose name a
+  later `PATH` directory also has is a shadow: the watcher clears its execute
+  bits, or removes it if it is a link. Any new or changed hook other than
+  `*.sample` is treated the same way. Files present and unchanged when the
+  session started are left alone, as are a venv's `python` links to an
+  interpreter outside the session's reach. A scan at launch also catches
+  shadows left since the previous launch.
 
-Files that existed before the session are left alone. Review a quarantined
-file, and the session that created it, before restoring it.
+Each action is recorded under `/run/claude-sandbox/`, which the jail cannot
+see. Outer shells print new alerts at the prompt, the wrapper prints a
+summary when the session ends, and `claude-sandbox doctor` warns about them.
+`claude-sandbox alerts` lists them; after reviewing and restoring a file,
+`claude-sandbox alerts --clear` empties the list and accepts what the
+directories now hold.
 
 ## gitconfig defence-in-depth
 

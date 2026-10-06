@@ -33,11 +33,6 @@ See [Deliberately exposed](../reference/deliberately-exposed.md) for the path li
 A compromised session can alter its writable settings and skills. Shared
 `~/.agents/skills` extends that persistence to other agents and projects using
 the same terminal config. Review those files after an untrusted session.
-<!-- TODO(phase5): confirm against fix/entry-point-guard -->
-Executables a session adds ahead of system commands on PATH, and new Git
-hooks, are quarantined while it runs, so they do not run in your next
-outer shell or commit; see the
-[entry-point guard](sandbox-internals.md#the-entry-point-guard).
 
 Custom mounts and tools can introduce credentials outside the masked paths.
 In particular, `.local/share` and `.cache` are available to agents; credentials
@@ -53,7 +48,7 @@ The commonest route is PATH: the container's PATH starts with the project
 venv's `bin`, which the session can write, so an executable left there
 shadows a system command, or `claude` itself, in every outer shell. Git hooks
 in the workspace run on your next `git commit` or `git push` and never show
-in a diff. The Python shadow quarantines both while the session runs and
+in a diff. The wrapper quarantines both while the session runs and
 warns at your shell prompt; `claude-sandbox alerts` lists what it did. A
 venv's `python` links to an interpreter the session cannot write are left
 alone; where uv keeps its Pythons in a writable place (its default,
