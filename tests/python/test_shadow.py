@@ -472,6 +472,23 @@ def test_signal_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (sent, exit_.value.code) == ([signal.SIGUSR1], 128 + signal.SIGUSR1)
 
 
+def test_battery_check_18_finds_its_pins() -> None:
+    """verify-sandbox-battery.sh check 18 greps these lines (Invariant 4)."""
+    battery = (
+        REPO / ".devcontainer/claude-sandbox/verify-sandbox-battery.sh"
+    ).read_text()
+    assert shadow.SHIM.splitlines()[-1] in battery
+    pkg = REPO / "src/claude_sandbox"
+    assert (
+        'CONFIG_PATH = "/etc/claude-sandbox.conf"\n' in (pkg / "config.py").read_text()
+    )
+    source = (pkg / "shadow.py").read_text()
+    assert "config_path: str = CONFIG_PATH" in source
+    assert "parse_config(host.config_path" in source
+    for line in source.splitlines():
+        assert not ("parse_config(" in line and ".devcontainer" in line), line
+
+
 def test_shim_file_is_the_shim_the_shadow_knows() -> None:
     shim = REPO / ".devcontainer/claude-sandbox/claude-shim"
     assert shim.read_text() == shadow.SHIM

@@ -267,13 +267,29 @@ fi
 # 18 — config read from /etc, not the rw workspace. Inspect the installed
 # shadow (visible ro via --ro-bind / /): it must pin CONFIG_PATH to /etc
 # and feed it to parse_config, with no parse_config reading .devcontainer.
+# The opt-in Python shadow (issue #72 phase 2) is a shim that must exec the
+# root-owned interpreter with -I; the same pins are then read from the
+# package in that interpreter's venv.
 check_18() {
-    local shadow
+    local shadow pkg
     shadow="$(command -v claude || true)"
     [ -n "$shadow" ] || { EXTRA_DETAIL="no claude shadow found on PATH"; return 1; }
-    grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
-        && grep -qF 'parse_config "$CONFIG_PATH"' "$shadow" \
-        && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
+    if ! grep -qxF 'exec /usr/libexec/claude-sandbox/venv/bin/python -I -m claude_sandbox _shadow "${0##*/}" -- "$@"' "$shadow"; then
+        grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
+            && grep -qF 'parse_config "$CONFIG_PATH"' "$shadow" \
+            && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
+        return
+    fi
+    for pkg in /usr/libexec/claude-sandbox/venv/lib/python3*/site-packages/claude_sandbox; do
+        [ -f "$pkg/shadow.py" ] || continue
+        grep -qxF 'CONFIG_PATH = "/etc/claude-sandbox.conf"' "$pkg/config.py" \
+            && grep -qF 'config_path: str = CONFIG_PATH' "$pkg/shadow.py" \
+            && grep -qF 'parse_config(host.config_path' "$pkg/shadow.py" \
+            && ! grep -q 'parse_config(.*\.devcontainer' "$pkg/shadow.py" "$pkg/config.py"
+        return
+    done
+    EXTRA_DETAIL="the Python shadow's package is missing from its venv"
+    return 1
 }
 EXTRA_DETAIL=""
 if check_18; then
