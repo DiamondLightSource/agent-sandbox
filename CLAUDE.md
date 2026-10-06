@@ -22,9 +22,10 @@ uv build --wheel             # the PyPI wheel
 **Refuse** (the Python guardrails; the why is in the `claude-sandbox` skill,
 Reversal 1):
 
-- **No third-party imports on the launch path.** The `_shadow` path is
-  standard library only; `__main__.py` dispatches it before Typer (or any
-  other dependency) is imported.
+- **No runtime dependencies; the package is stdlib-only.** No third-party
+  import anywhere in `src/claude_sandbox/` (the CLI is argparse, not Typer;
+  ADR 26 as amended). `__main__.py` still dispatches `_shadow` before the
+  CLI is imported, and `tests/python/test_wheel.py` imports every module.
 - **The jail's interpreter is fixed.** Anything that runs in or launches
   the jail (the shadow shim and everything it execs) uses the root-owned
   interpreter under `/usr/libexec/claude-sandbox/`, by absolute path, with
