@@ -84,9 +84,10 @@ Nothing calls these modules yet. The installer, the shadow and the
 `uvx claude-sandbox` front door still run the bash, so these modules don't
 change sandbox behaviour. They use the standard library only, and
 `tests/python/test_wheel.py` fails if one of them imports anything else.
-`bwrap.py` reads the environment only from the mapping it is given, and it
-reads the filesystem only through an injectable probe that tests whether a
-path exists.
+`bwrap.py` reads the environment only from the mapping it is given. It
+reads the filesystem only through an injectable probe, which can test what
+a path is, resolve it the way `realpath -e` does, and list the matches for
+a glob such as `/dev/nvidia*`.
 
 The comparison harness checks that the port matches the bash. For each
 scenario it builds a temporary directory tree and runs both builders against
@@ -103,8 +104,14 @@ uv run pytest tests/python/test_parity.py
 It needs only bash, coreutils and git. Each scenario names the
 `tests/bwrap_argv.sh` cases it stands for. If you change `bwrap_argv_build`
 or `parse_config`, make the same change in the Python and add a scenario for
-it. A failure reports the first argv index where the two differ. The harness
-is removed with the bash in phase 5.
+it. A failure reports the first argv index where the two differ.
+
+Where the Python differs from the bash on purpose, for example by not
+expanding pass-env names as globs against the workspace, the difference is
+listed in `KNOWN_DIVERGENCES` in `tests/python/test_parity.py` with its
+reason. A listed scenario must still differ, so once the bash is fixed the
+entry fails and can be removed. The harness is removed with the bash in
+phase 5.
 
 ## Build the docs locally
 
