@@ -12,7 +12,7 @@ Output exactly the following text verbatim, with no preamble, commentary, or tra
 - `/grill-me` — Interview me relentlessly to stress-test a plan or design.
 
 **Workspace commands (`./.claude/commands/`)**
-- `/verify-sandbox` — Run the 21-check sandbox PASS/FAIL battery (+ adversarial probes) against the live process.
+- `/verify-sandbox` — Run the 22-check sandbox PASS/FAIL battery (+ adversarial probes) against the live process.
 
 **Workspace skills (`./.claude/skills/`)**
 - `/claude-sandbox` — Architecture invariants, refuse-lists and walked-back paths for the bwrap sandbox core.

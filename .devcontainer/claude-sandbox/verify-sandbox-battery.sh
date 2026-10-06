@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-sandbox phase-1 battery — the 21 deterministic PASS/FAIL checks
+# verify-sandbox phase-1 battery — the 22 deterministic PASS/FAIL checks
 # behind the /verify-sandbox command (skills/verify-sandbox/SKILL.md).
 #
 # WHY THIS IS A COMMITTED SCRIPT, NOT INLINE IN THE COMMAND MARKDOWN:
@@ -22,7 +22,7 @@
 # Claude (workspace is rw) therefore cannot rewrite the verifier to print
 # PASS for a broken sandbox.
 #
-# CONTRACT: prints `/verify-sandbox: 21 checks`, one [PASS]/[FAIL] line
+# CONTRACT: prints `/verify-sandbox: 22 checks`, one [PASS]/[FAIL] line
 # per check, then `Summary: N PASS / M FAIL`, and exits with the FAIL
 # count (0 == all green). The /verify-sandbox command runs this for
 # phase 1; on a clean exit it proceeds to the open-ended phase-2
@@ -67,7 +67,7 @@ mount_fstype() {
     }' /proc/self/mountinfo
 }
 
-echo "/verify-sandbox: 21 checks"
+echo "/verify-sandbox: 22 checks"
 
 # 01 — IS_SANDBOX sentinel. Only `bwrap --setenv` sets it; unset means
 # Claude ran against the real binary, bypassing the sandbox entirely.
@@ -389,6 +389,48 @@ if [ "${IS_SANDBOX_AGENT:-claude}" = "codex" ]; then
     fi
 else
     result 21 "agent binary mask: ~/.codex/packages is an empty tmpfs" 0 "not a codex session"
+fi
+
+# 22 — entry-point guard. Protect the sandbox's entry-point names (Invariant
+# 1): a session cannot create a command named claude, codex, pi or
+# claude-sandbox in a writable directory that precedes the shadow on the
+# launching PATH. The shadow lists the
+# directories it guarded in CLAUDE_SANDBOX_ENTRY_GUARD (the jail's own PATH
+# is not the launching one); each name in each must be a read-only mount
+# point (so it cannot be replaced, renamed or removed) that is not
+# executable. Unset, there is nothing to check: no writable directory
+# precedes the shadow, or the shadow does not guard them.
+check_22() {
+    local dir name path dirs=()
+    IFS=: read -r -a dirs <<<"$CLAUDE_SANDBOX_ENTRY_GUARD"
+    [ "${#dirs[@]}" -gt 0 ] || { EXTRA_DETAIL="CLAUDE_SANDBOX_ENTRY_GUARD lists no directory"; return 1; }
+    for dir in "${dirs[@]}"; do
+        for name in claude codex pi claude-sandbox; do
+            path="$dir/$name"
+            if [ -L "$path" ] || [ -d "$path" ] || [ -x "$path" ]; then
+                EXTRA_DETAIL="$path could run in place of the shadow"
+                return 1
+            fi
+            # Read-only by the mount's own options: `test -w` cannot tell,
+            # since a device node stays writable on a read-only mount.
+            case ",$(awk -v m="$path" '$5 == m { print $6; exit }' /proc/self/mountinfo)," in
+                *,ro,*) ;;
+                *)
+                    EXTRA_DETAIL="$path is not a read-only mount point (a session could create it)"
+                    return 1
+                    ;;
+            esac
+        done
+    done
+    return 0
+}
+EXTRA_DETAIL=""
+if [ -z "${CLAUDE_SANDBOX_ENTRY_GUARD:-}" ]; then
+    result 22 "entry-point names guarded in writable PATH dirs ahead of the shadow" 0 "no guarded directories"
+elif check_22; then
+    result 22 "entry-point names guarded in writable PATH dirs ahead of the shadow" 0
+else
+    result 22 "entry-point names guarded in writable PATH dirs ahead of the shadow" 1 "$EXTRA_DETAIL"
 fi
 
 echo "  Summary: $PASS PASS / $FAIL FAIL"

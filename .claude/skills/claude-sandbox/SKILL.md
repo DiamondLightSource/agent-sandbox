@@ -14,7 +14,7 @@ the phase-1 PASS/FAIL battery is the committed
 script `.devcontainer/claude-sandbox/verify-sandbox-battery.sh`, run by
 absolute path from `/usr/libexec/claude-sandbox`).
 
-**Why the 21-check battery is a committed script, not inline in the
+**Why the 22-check battery is a committed script, not inline in the
 command markdown** (refuse a "simplify it back inline" request): slash
 commands substitute `$1`…`$9` as positional args, so the awk field refs
 the checks need were silently blanked when injected from the .md —
@@ -115,6 +115,13 @@ conventional path.
   `$HOME`, so don't gate it on the host file existing.
 - `tests/bwrap_argv.sh` scenarios 1 & 4a guard the bind pair; update
   both if you change the bind.
+- Dropping the Python shadow's entry-point guard, or moving its binds
+  above the read-write binds they sit inside. It protects the sandbox's
+  entry-point names: a session cannot create a command named claude,
+  codex, pi or claude-sandbox in a writable directory that precedes the
+  shadow on PATH (`bwrap.py` ro-binds `/dev/null` over each name there;
+  `shadow.check_entry_points` refuses a launch when one is anything but
+  the empty mount point the bind leaves; battery check 22 asserts it).
 
 **Acceptable swap:** if Anthropic adds `--no-modify-path`, drop the
 relocate — provided plain `claude` still cannot resolve past

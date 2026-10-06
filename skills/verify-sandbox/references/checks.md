@@ -1,4 +1,4 @@
-## The 21 checks
+## The 22 checks
 
 ### Check 01 — IS_SANDBOX sentinel
 
@@ -308,3 +308,24 @@ one level down would pass unnoticed.
 
 Claude sessions have nothing to assert here and PASS with a note, so the
 check count stays constant across agents.
+
+### Check 22 — entry-point names guarded ahead of the shadow
+
+Invariant 1 says a plain `claude` (or `codex`, `pi`, `claude-sandbox`)
+reaches the shadow at `/usr/local/bin`. The Python shadow protects the sandbox's entry-point names: a session
+cannot create a command named claude, codex, pi or claude-sandbox in a
+writable directory that precedes the shadow on `PATH`. For each such
+directory that exists at launch, `bwrap.py` read-only binds `/dev/null`
+over each name, after the read-write binds, and lists the directories in
+`CLAUDE_SANDBOX_ENTRY_GUARD` (the jail's own `PATH` is not the launching
+one, so the battery could not work them out). This check asserts that each
+name there is a mount point with the `ro` option (so it cannot be written,
+replaced, renamed or removed; `test -w` cannot tell, since a device node on
+a read-only mount still reports writable) and is not a symlink, a
+directory or an executable.
+
+When the variable is unset the check passes with a note: no writable
+directory precedes the shadow, or the shadow in use does not guard them
+(the bash shadow does not). A directory that does not exist at launch
+cannot be covered without creating it; the shadow's launch-time refusal
+covers what a session leaves there.
