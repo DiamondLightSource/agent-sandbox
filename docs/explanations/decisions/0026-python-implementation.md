@@ -8,6 +8,11 @@ Date: 2026-10-06
 
 Accepted
 
+Amended 2026-10-06: the CLI uses argparse, and the package has no runtime
+dependencies. Typer would have put rich, pygments and click, about 15 MB
+(measured in the phase 0 spike on issue #72), into the trusted set of
+helpers that handle PATs and run as root.
+
 Supersedes {ref}`ADR 8 <adr-bash-only>` (bash-only). Amends
 {ref}`ADR 23 <adr-pypi-front-door>`: the wheel stops bundling bash verbatim
 and becomes the implementation. Leaves {ref}`ADR 9 <adr-shadow-on-path>`
@@ -73,8 +78,9 @@ development lockfile.
 the process is on the HOST, in the CONTAINER (outside the jail) or in the
 JAIL. Commands declare where they run, for example
 `@requires(CONTAINER, forward_from=HOST)` for `verify`. The host launcher and
-the in-container helper become one Typer app, `claude-sandbox`. A command
-called on the host that belongs in the container is forwarded by
+the in-container helper become one CLI, `claude-sandbox`, built on argparse;
+the package has no runtime dependencies. A command called on the host that
+belongs in the container is forwarded by
 `podman exec` or `docker exec`. A command that has no meaning in the current
 context refuses with a clear message. A forwarded command runs the version
 installed in the container, as it does today.
@@ -92,8 +98,8 @@ exec /usr/libexec/claude-sandbox/venv/bin/python -I -m claude_sandbox _shadow "$
 Callers (the VS Code extension, hooks, `claude -p` in scripts) keep calling
 `claude --resume`; the shim inserts the `--`, so arguments reach the real
 agent unchanged. `claude_sandbox/__main__.py` checks for `_shadow` before
-importing Typer, so the launch path uses the standard library only. That
-keeps third-party code out of the launch path and adds little startup time.
+importing the CLI, so the launch path imports only what it needs and adds
+little startup time.
 
 **The audit core stays in a few files you can read top to bottom.**
 
@@ -142,14 +148,12 @@ default. The plan is tracked in a GitHub issue.
 
 - `CLAUDE.md`'s Python rules, the `claude-sandbox` skill's "Reversal 1" and
   the `claude-sandbox-container` skill are rewritten when this ADR is
-  accepted. The refuse-list changes from "no Python" to: no third-party
-  imports on the launch path, no interpreter found through `PATH`, no
-  running without `-I`, and no bind or environment added outside
-  `bwrap.py`.
+  accepted. The refuse-list changes from "no Python" to: no runtime
+  dependencies (the package is the standard library only), no interpreter
+  found through `PATH`, no running without `-I`, and no bind or environment
+  added outside `bwrap.py`.
 - Each guest gains a pinned CPython and venv, about 40 to 60 MB.
-- The trusted set grows from bash and coreutils to CPython plus the pinned
-  dependencies of the helper CLI (Typer and what it pulls in). The launch
-  path does not import them.
+- The trusted set grows from bash and coreutils to CPython.
 - The argv tests become pytest on a pure function. `tests/bwrap_argv.sh` is
   removed once the Python builder is the only one.
 - The Dockerfile's `source install.sh` reuse is replaced by calling the
