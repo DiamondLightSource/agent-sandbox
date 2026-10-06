@@ -22,6 +22,14 @@ USER_HOME_DIR="$(mktemp -d)"
 register_cleanup "$PREFIX" "$USER_HOME_DIR"
 
 export CLAUDE_SANDBOX_SMOKE=1
+# The suite runs against either installer: CLAUDE_SANDBOX_IMPL=python bash
+# tests/smoke.sh runs it against the Python one (issue #72 phase 4), which a
+# smoke run starts from the tree with this test-only interpreter.
+export CLAUDE_SANDBOX_SMOKE_PYTHON="${CLAUDE_SANDBOX_SMOKE_PYTHON:-$(command -v python3)}"
+case "${CLAUDE_SANDBOX_IMPL:-bash}" in
+    python) SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim" ;;
+    *) SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" ;;
+esac
 export INSTALL_PREFIX="$PREFIX"
 export INSTALL_USER_HOME="$USER_HOME_DIR"
 
@@ -60,11 +68,11 @@ else
     fail "shadow mode is $(stat -c '%a' "$SHADOW_DEST" 2>/dev/null), expected 755"
 fi
 
-# Shebang.
-if head -1 "$SHADOW_DEST" | grep -qxF '#!/usr/bin/env bash'; then
+# The shadow (or, with the Python opt-in, the shim) placed as is.
+if cmp -s "$SHADOW_SRC" "$SHADOW_DEST"; then
     pass
 else
-    fail "shadow does not start with #!/usr/bin/env bash"
+    fail "shadow at $SHADOW_DEST is not $SHADOW_SRC"
 fi
 
 # Helper CLI placement: on PATH, executable, bash shebang — the shipped
@@ -459,7 +467,7 @@ else
     fail "install clobbered a foreign /etc/codex/requirements.toml"
 fi
 
-# The Python shadow is opt-in at install time (issue #72 phase 2):
+# The Python shadow is opt-in at install time (issue #72 phases 2 and 4):
 # CLAUDE_SANDBOX_IMPL=python places the shim under all three names, a default
 # re-install puts the bash shadow back and removes the interpreter an opt-in
 # left, and any other value refuses before anything is written. (The smoke
@@ -475,12 +483,14 @@ for agent in claude codex pi; do
     cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim" "$IMPL_PREFIX/usr/local/bin/$agent" \
         && pass || fail "CLAUDE_SANDBOX_IMPL=python did not place the shim as $agent"
 done
-mkdir -p "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" "$IMPL_PREFIX/usr/libexec/claude-sandbox/python"
-impl_install || fail "default re-install after CLAUDE_SANDBOX_IMPL=python exited non-zero"
+mkdir -p "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" "$IMPL_PREFIX/usr/libexec/claude-sandbox/python" \
+    "$IMPL_PREFIX/usr/libexec/claude-sandbox/uv"
+CLAUDE_SANDBOX_IMPL=bash impl_install || fail "default re-install after CLAUDE_SANDBOX_IMPL=python exited non-zero"
 cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" "$IMPL_PREFIX/usr/local/bin/claude" \
     && pass || fail "default re-install did not restore the bash shadow"
 [ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" ] && [ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/python" ] \
-    && pass || fail "default re-install left the Python shadow's interpreter behind"
+    && [ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/uv" ] \
+    && pass || fail "default re-install left the Python installer's interpreter or uv behind"
 BAD_PREFIX="$(mktemp -d)"
 register_cleanup "$BAD_PREFIX"
 CLAUDE_SANDBOX_IMPL=perl CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$BAD_PREFIX" INSTALL_USER_HOME="$BAD_PREFIX/home" \
