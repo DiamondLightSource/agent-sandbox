@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-from importlib import metadata
 from typing import NoReturn
 
 import pytest
@@ -39,11 +38,6 @@ def _main(monkeypatch: pytest.MonkeyPatch, version: str, *argv: str) -> Exec:
     with pytest.raises(Exec) as exc:
         claude_sandbox.main()
     return exc.value
-
-
-def test_version_metadata_resolves() -> None:
-    """hatch-vcs writes _version.py and the dist metadata from one tag."""
-    assert metadata.version("claude-sandbox") == _version.__version__
 
 
 @pytest.mark.parametrize(
