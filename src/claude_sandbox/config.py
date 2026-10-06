@@ -14,10 +14,9 @@ knobs out of it. The argv builder reads the rest of that same environment.
 Standard library only: this module is on the launch path (ADR 26).
 """
 
-import glob as _glob
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 CONFIG_PATH = "/etc/claude-sandbox.conf"
@@ -82,13 +81,6 @@ _LISTS: Mapping[str, str] = {
 # bash's [[:space:]] in the C locale. Not str.strip(): that also strips
 # Unicode spaces and \x1c-\x1f, which bash keeps.
 _SPACE = " \t\n\r\f\v"
-
-Glob = Callable[[str], list[str]]
-
-
-def host_glob(pattern: str) -> list[str]:
-    """Pathname expansion as bash does it: sorted, relative to the cwd."""
-    return sorted(_glob.glob(pattern))
 
 
 def parse_config(path: str, env: Mapping[str, str]) -> dict[str, str]:
@@ -166,23 +158,18 @@ def lines(text: str) -> list[str]:
     return [line for line in text.split("\n") if line]
 
 
-def words(text: str, glob: Glob = host_glob) -> list[str]:
-    """The words of a comma-, space- or newline-separated list.
+def words(text: str) -> list[str]:
+    """The words of a comma-, space-, tab- or newline-separated list.
 
-    The bash splits these lists by leaving the expansion unquoted, which also
-    runs pathname expansion on each word: a word holding ``*``, ``?`` or
-    ``[`` that matches files in the current directory becomes their names.
-    Ported as-is for argv parity (see the phase 1 report on issue #72).
+    Deliberately NOT what the bash does. The bash splits these lists by
+    leaving the expansion unquoted, which also runs pathname expansion on
+    each word against the current directory: the workspace, writable from
+    inside the jail. A session could then plant files that steer the next
+    launch's pass-env names or relay ports, which is the attack Invariant 4
+    keeps the conf out of the workspace to prevent. This splits only. The
+    harness lists it as a known divergence until the bash is fixed.
     """
-    out: list[str] = []
-    for word in re.split(r"[, \t\n]+", text):
-        if not word:
-            continue
-        if any(c in word for c in "*?["):
-            out.extend(glob(word) or [word])
-        else:
-            out.append(word)
-    return out
+    return [word for word in re.split(r"[, \t\n]+", text) if word]
 
 
 def resolve_workspace_root(config: Config, pwd: str) -> str:
@@ -216,29 +203,29 @@ def _dedup(ports: list[str]) -> list[str]:
     return out
 
 
-def local_ports(config: Config, glob: Glob = host_glob) -> list[str]:
+def local_ports(config: Config) -> list[str]:
     """The outbound relay set (ADR 0020), deduplicated, 0 dropped.
 
     local-model-port plus every local-port entry.
     """
-    ports = [config.local_model_port, *words(config.local_port_entries, glob)]
+    ports = [config.local_model_port, *words(config.local_port_entries)]
     return _dedup([p for p in ports if p != "0"])
 
 
-def callback_ports(config: Config, glob: Glob = host_glob) -> list[str]:
+def callback_ports(config: Config) -> list[str]:
     """The inbound callback relay set (ADR 0021), deduplicated."""
-    return _dedup(words(config.callback_port_entries, glob))
+    return _dedup(words(config.callback_port_entries))
 
 
-def local_model_enabled(config: Config, glob: Glob = host_glob) -> bool:
-    return bool(local_ports(config, glob))
+def local_model_enabled(config: Config) -> bool:
+    return bool(local_ports(config))
 
 
-def callback_enabled(config: Config, glob: Glob = host_glob) -> bool:
-    return bool(callback_ports(config, glob))
+def callback_enabled(config: Config) -> bool:
+    return bool(callback_ports(config))
 
 
-def validate_local_model_port(config: Config, glob: Glob = host_glob) -> list[str]:
+def validate_local_model_port(config: Config) -> list[str]:
     """Errors in the raw local ports, one message per bad entry.
 
     Validates the configuration, not the deduplicated set, so a bad entry is
@@ -250,7 +237,7 @@ def validate_local_model_port(config: Config, glob: Glob = host_glob) -> list[st
         errors.append(
             "claude-sandbox: local-model-port must be 1–65535 (or 0 to disable)."
         )
-    for port in words(config.local_port_entries, glob):
+    for port in words(config.local_port_entries):
         if not valid_tcp_port(port):
             errors.append(
                 f"claude-sandbox: local-port entries must be 1–65535, got '{port}'."
@@ -258,7 +245,7 @@ def validate_local_model_port(config: Config, glob: Glob = host_glob) -> list[st
     return errors
 
 
-def validate_callback_ports(config: Config, glob: Glob = host_glob) -> list[str]:
+def validate_callback_ports(config: Config) -> list[str]:
     """Errors in the callback ports, one message per bad entry.
 
     A port cannot be relayed both ways: the outbound relay's in-jail listener
@@ -266,8 +253,8 @@ def validate_callback_ports(config: Config, glob: Glob = host_glob) -> list[str]
     listener outside would sit on the host service's port.
     """
     errors: list[str] = []
-    outbound = local_ports(config, glob)
-    for port in words(config.callback_port_entries, glob):
+    outbound = local_ports(config)
+    for port in words(config.callback_port_entries):
         if not valid_tcp_port(port):
             errors.append(
                 f"claude-sandbox: callback-port entries must be 1–65535, got '{port}'."

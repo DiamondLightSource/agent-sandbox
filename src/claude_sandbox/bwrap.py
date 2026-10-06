@@ -385,7 +385,9 @@ def bwrap_argv(
     # the like. Opt-in by name, so --clearenv stays the default. Names only:
     # values come from the launching environment, so pass-env can forward a
     # variable the operator's shell already has but cannot invent a value.
-    for name in words(config.pass_env, probe.glob):
+    # Split only: the bash also expands each word as a glob against the cwd,
+    # the jail-writable workspace, which the port refuses (see config.words).
+    for name in words(config.pass_env):
         # Not a shell identifier — skip rather than emit a --setenv bwrap
         # would choke on.
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):

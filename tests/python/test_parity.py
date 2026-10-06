@@ -14,7 +14,7 @@ import os
 import shutil
 import socket
 import subprocess
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -329,7 +329,7 @@ SCENARIOS = [
     ),
     Scenario(
         "pass-env-glob",
-        "none: bash expands pass-env words against the cwd (reported quirk)",
+        "none: a known divergence (KNOWN_DIVERGENCES)",
         {"CLAUDE_SANDBOX_PASS_ENV": "FOO_GLOB_*,NOMATCH_*", "FOO_GLOB_X": "leaked"},
         tree=("home/", "FOO_GLOB_X"),
     ),
@@ -448,6 +448,58 @@ SCENARIOS = [
 ]
 
 
+@dataclass(frozen=True)
+class Divergence:
+    """A known, deliberate difference between the bash and the port.
+
+    ``bash_shows`` and ``python_shows`` say what each side's outcome (an argv,
+    or a config report) looks like. Unless ``racy``, the two outcomes must also
+    differ, so an entry fails once the bash is fixed and can then be deleted.
+    """
+
+    why: str
+    bash_shows: Callable[[list[str]], bool]
+    python_shows: Callable[[list[str]], bool]
+    racy: bool = False  # the bash outcome is not deterministic
+
+
+# Every known divergence, keyed by the scenario or conf case that shows it.
+# Everywhere else the outcomes must be identical.
+#
+# Divergences no scenario can show on CI, recorded here so the list is whole:
+# - uutils realpath (Ubuntu 25.10+) accepts /dev/zero/../null for
+#   allow-device; GNU and the port refuse it (the harness runs GNU).
+# - The bash's pass-env reads shell variables as well as the environment
+#   (PPID, RANDOM, HOSTNAME, the shadow's own globals); the port reads only
+#   the environment, apart from TERM=dumb (bwrap.SHELL_DEFAULTS).
+KNOWN_DIVERGENCES: dict[str, Divergence] = {
+    "pass-env-glob": Divergence(
+        "The bash expands each pass-env word as a glob against the cwd, the "
+        "jail-writable workspace; the port only splits (config.words).",
+        bash_shows=lambda argv: "FOO_GLOB_X" in argv,
+        python_shows=lambda argv: "FOO_GLOB_X" not in argv,
+    ),
+    "ports-glob": Divergence(
+        "The bash expands each local-port and callback-port word as a glob "
+        "against the cwd; the port only splits, so `1?` stays invalid.",
+        bash_shows=lambda report: "local_ports=12" in report,
+        python_shows=lambda report: "local_ports=1?" in report,
+    ),
+}
+
+
+def compare(name: str, py: list[str], sh: list[str]) -> None:
+    """Assert ``py`` matches ``sh``, or shows the divergence registered."""
+    known = KNOWN_DIVERGENCES.get(name)
+    if known is None:
+        assert py == sh
+        return
+    assert known.python_shows(py), py
+    if not known.racy:
+        assert known.bash_shows(sh), sh
+        assert py != sh
+
+
 def py_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
     if sc.conf is not None:
         env = parse_config(str(root / "sandbox.conf"), env)
@@ -497,7 +549,7 @@ def test_argv_matches_bash(
     before = snapshot(tmp_path)
 
     expected = sh_outcome(sc, tmp_path, env)
-    assert py_outcome(sc, tmp_path, env) == expected
+    compare(sc.name, py_outcome(sc, tmp_path, env), expected)
     # Both builders are pure: neither created anything (15-pure, 16-pure).
     assert snapshot(tmp_path) == before
 
@@ -621,7 +673,7 @@ CONF_CASES = [
     ),
     ConfCase(
         "ports-glob",
-        "none: bash expands port words against the cwd (reported quirk)",
+        "none: a known divergence (KNOWN_DIVERGENCES)",
         "local-port = 1?\ncallback-port = [x]\n",
         tree=("12",),
     ),
@@ -668,4 +720,11 @@ def test_config_matches_bash(
 
     proc = driver(tmp_path, env, "config", str(conf), "/work/pwd")
     assert proc.returncode == 0, proc.stderr
-    assert py_conf_report(str(conf), env, "/work/pwd") == nul_split(proc.stdout)
+    py = py_conf_report(str(conf), env, "/work/pwd")
+    compare(case.name, py, nul_split(proc.stdout))
+
+
+# A divergence entry that names no scenario would silently check nothing.
+assert set(KNOWN_DIVERGENCES) <= {s.name for s in SCENARIOS} | {
+    c.name for c in CONF_CASES
+}
