@@ -123,7 +123,8 @@ class Layout:
 
 @dataclass(frozen=True)
 class Options:
-    """``CLAUDE_SANDBOX_VERSION``/``git describe``, ``CLAUDE_SANDBOX_INSTALLER``,
+    """``CLAUDE_SANDBOX_VERSION`` (empty: ``git describe``, when stamped),
+    ``CLAUDE_SANDBOX_INSTALLER``,
     ``STATUS=1``, ``CLAUDE_SANDBOX_IMPL`` (which shadow: the bash one, or the
     shim that runs the Python one), ``CLAUDE_SANDBOX_SMOKE``, ``WITH_CODEX``,
     ``WITH_PI`` and ``PI_VERSION``; ``image_build`` is ``--image-build``."""
@@ -173,7 +174,7 @@ def from_env(source: Path, env: Mapping[str, str]) -> tuple[Layout, Options]:
             2,
         )
     options = Options(
-        version=env.get("CLAUDE_SANDBOX_VERSION") or describe(source),
+        version=env.get("CLAUDE_SANDBOX_VERSION", ""),
         installer=env.get("CLAUDE_SANDBOX_INSTALLER", ""),
         force_statusline=env.get("STATUS", "0") == "1",
         impl=impl,
@@ -262,8 +263,10 @@ def _stamp(dst: Path, value: str, owner: Owner) -> list[Action]:
 
 
 def plan_version(layout: Layout, options: Options) -> list[Action]:
-    """``stamp_version``."""
-    return _stamp(layout.system(VERSION_FILE), options.version, layout.owner)
+    """``stamp_version``: ``git describe`` of the tree when no version is
+    given, run only here, so the entrypoint's steps never run git."""
+    version = options.version or describe(layout.source)
+    return _stamp(layout.system(VERSION_FILE), version, layout.owner)
 
 
 def plan_installer(layout: Layout, options: Options) -> list[Action]:
