@@ -56,6 +56,12 @@ PASS_THROUGH = (
 # bash itself gives TERM the value `dumb` when the environment has none, and
 # the bash shadow forwards that shell variable like any other. Kept so the
 # argv matches; an empty TERM in the environment stays empty.
+#
+# TERM is the ONLY shell variable ported, deliberately. The bash's pass-env
+# reads any shell variable by name, so it can also forward ones bash or the
+# shadow invents (HOSTNAME, RANDOM, PPID, AGENT_REAL, ...). That is an
+# accident of `${!name}`, not a feature: the port reads pass-env values from
+# the environment only, which is correct. Don't "fix" it towards the bash.
 SHELL_DEFAULTS = {"TERM": "dumb"}
 
 # Names pass-env may never forward. Passing PATH would undo the shadow's PATH
