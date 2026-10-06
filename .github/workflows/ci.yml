@@ -121,8 +121,9 @@ jobs:
       - name: pyright
         run: uv run pyright
 
-      - name: pytest
-        run: uv run pytest
+      # Coverage settings, including fail_under = 95, live in pyproject.toml.
+      - name: pytest with coverage
+        run: uv run pytest --cov
 
   wheel:
     # The PyPI front door (ADR 23): build the wheel from the root

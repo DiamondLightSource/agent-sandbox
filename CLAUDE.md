@@ -12,10 +12,10 @@ Development: uv, pytest, ruff, pyright, and a committed dev lockfile
 
 ```bash
 uv sync                      # dev environment from uv.lock
-uv run pytest                # tests/python/ (bash suites: tests/*.sh)
+uv run pytest --cov          # tests/python/, >=95% branch coverage (bash suites: tests/*.sh)
 uv run ruff check
 uv run ruff format --check
-uv run pyright
+uv run pyright               # strict, src/ and tests/python/: fix code, don't relax
 uv build --wheel             # the PyPI wheel
 ```
 

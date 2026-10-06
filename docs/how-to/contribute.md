@@ -53,13 +53,14 @@ The development tools (pytest, ruff, pyright) are pinned in `uv.lock`:
 
 ```bash
 uv sync
-uv run pytest
+uv run pytest --cov
 uv run ruff check
 uv run ruff format --check
 uv run pyright
 ```
 
 pytest collects `tests/python/` only; the shell suites above run directly.
+CI requires at least 95% branch coverage of `src/claude_sandbox/`.
 Build the wheel with:
 
 ```bash

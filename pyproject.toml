@@ -34,6 +34,7 @@ claude-sandbox = "claude_sandbox:main"
 dev = [
     "pyright",
     "pytest",
+    "pytest-cov",
     "ruff",
 ]
 
@@ -61,6 +62,16 @@ packages = ["src/claude_sandbox"]
 # tests/*.sh are the bash suites, run directly by CI; pytest owns only this.
 testpaths = ["tests/python"]
 addopts = ["--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+# `uv run pytest --cov` (CI) measures the package; _version.py is generated.
+source = ["claude_sandbox"]
+branch = true
+omit = ["*/claude_sandbox/_version.py"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
 
 [tool.ruff]
 # Python only: ruff would otherwise also format code blocks in the Markdown.
