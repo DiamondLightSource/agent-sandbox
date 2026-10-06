@@ -16,21 +16,22 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
-# Stub execvpe, run main(), then report what it would exec and every module
-# imported from outside the stdlib and the package itself.
+# Stub execvpe, run main(), then report what it would exec, where the package
+# was imported from, and every top-level module that importing and running it
+# added which is neither the stdlib nor the package. Site-packages stay on the
+# path (python -I keeps the venv's), so a third-party import resolves and is
+# reported rather than failing to import; what `site` loaded before the
+# package (a venv's _virtualenv shim) is the environment, not the launch path.
 DRIVER = """
-import json, os, sys, sysconfig
-from pathlib import Path
+import json, os, sys
+before = set(sys.modules)
 def execvpe(file, args, env):
     import claude_sandbox
-    pkg = Path(claude_sandbox.__file__).resolve().parent
-    std = [Path(sysconfig.get_paths()[k]).resolve() for k in ("stdlib", "platstdlib")]
-    foreign = sorted(
-        name for name, mod in sys.modules.items()
-        if getattr(mod, "__file__", None)
-        and not any(Path(mod.__file__).resolve().is_relative_to(d) for d in [pkg, *std])
-    )
-    print(json.dumps({"file": file, "args": args, "foreign": foreign}))
+    foreign = sorted({
+        name.partition(".")[0] for name in set(sys.modules) - before
+    } - set(sys.stdlib_module_names) - {"__main__", "claude_sandbox"})
+    print(json.dumps({"file": file, "args": args, "foreign": foreign,
+                      "pkg": claude_sandbox.__file__}))
     sys.exit(0)
 os.execvpe = execvpe
 sys.argv = ["claude-sandbox", "--help"]
@@ -70,6 +71,7 @@ def test_wheel_execs_its_bundled_launcher_using_only_the_stdlib(
 
     launcher = site / "claude_sandbox" / "tree" / "container" / "claude-container"
     assert launcher.is_file()
+    assert Path(result["pkg"]).resolve().is_relative_to(site.resolve())
     assert result["file"] == "bash"
     assert Path(result["args"][1]).resolve() == launcher.resolve()
     # ADR 26: no third-party import on the launch path.
