@@ -6,7 +6,7 @@ Date: 2026-10-06
 
 ## Status
 
-Proposed
+Accepted
 
 Supersedes {ref}`ADR 8 <adr-bash-only>` (bash-only). Amends
 {ref}`ADR 23 <adr-pypi-front-door>`: the wheel stops bundling bash verbatim

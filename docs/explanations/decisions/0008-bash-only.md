@@ -6,7 +6,11 @@ Date: 2026-05-12
 
 ## Status
 
-Accepted
+Superseded by {ref}`adr-python-implementation` (ADR 26): the premise of two
+short bash files no longer held once the implementation reached about 3,900
+lines, and the sandbox is being reimplemented as a Python package that execs
+bubblewrap. Until that migration finishes (issue #72), the bash described here
+remains the shipped default.
 
 ## Context
 
