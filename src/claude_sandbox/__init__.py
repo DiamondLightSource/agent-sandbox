@@ -14,7 +14,7 @@ from importlib.resources import files
 IMAGE = "ghcr.io/diamondlightsource/claude-sandbox"
 
 
-def _release_tag() -> str:
+def release_tag() -> str:
     """The git tag this wheel was built from, as the image is tagged.
 
     hatch-vcs writes the PEP 440 form to ``_version.py`` (``4.0.0-beta.1``
@@ -47,7 +47,7 @@ def main() -> None:
     """Exec the launcher, or the installer when the first word is ``install``."""
     tree = str(files(__name__).joinpath("tree"))
     launcher = os.path.join(tree, "container", "claude-container")
-    ver = _release_tag()
+    ver = release_tag()
     argv = sys.argv[1:]
     env = dict(os.environ)
     if argv and argv[0] == "install":
