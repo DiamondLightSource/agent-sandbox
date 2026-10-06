@@ -8,6 +8,14 @@ Date: 2026-09-13
 
 Accepted
 
+Amended by {ref}`ADR 26 <adr-python-implementation>` (2026-10-06): the
+sandbox is being reimplemented in Python, so the wheel will stop bundling
+bash verbatim and become the implementation once that migration finishes
+(issue #72). The packaging moved from `packaging/pypi/` to a root
+`pyproject.toml` and `src/claude_sandbox/`, with a development lockfile and
+pytest, which "The bash-only boundary holds" below ruled out. Until the
+switch-over the wheel still ships the bash and execs it, as described here.
+
 Documentation update (2026-09-14): the recommended host workflow is
 `uv tool install claude-sandbox`, then `claude-sandbox`. The `uvx` launcher
 remains available for one-off use and `uvx claude-sandbox install` remains

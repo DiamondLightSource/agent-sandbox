@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox
-description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `skills/verify-sandbox/SKILL.md` — or before any suggestion to re-add Python tooling, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
+description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `skills/verify-sandbox/SKILL.md` — or before any Python change that could cross the ADR 26 guardrails (third-party imports on the launch path, an interpreter found via PATH or run without -I, a bwrap bind/env outside bwrap.py, spreading the audit core) or any suggestion to revert to bash-only, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
 ---
 
 # claude-sandbox
@@ -82,9 +82,10 @@ Codex's guard is Invariant 5's twin, one tier over:
 `/etc/codex/requirements.toml` (hard, admin-only) carries the same
 two hooks; `/etc/codex/managed_config.toml` disables the update
 check. **Do not** set `allow_managed_hooks_only` — same call as
-`allowManagedHooksOnly`. TOML is *owned, not merged* (bash-only, no
-jq for TOML): a `requirements.toml` we did not write is left alone
-with a warning, never half-parsed.
+`allowManagedHooksOnly`. TOML is *owned, not merged* (the bash
+installer has no TOML parser; jq reads only JSON): a
+`requirements.toml` we did not write is left alone with a warning,
+never half-parsed.
 
 `tests/bwrap_argv.sh` scenario 14 and the codex block at the end of
 `tests/smoke.sh` guard all of this — including that the two installed
@@ -200,28 +201,47 @@ history and re-justify against the underlying principle — **the
 sandbox's surface must stay small enough to audit in one read** —
 before proceeding.
 
-### Reversal 1 — Python orchestration
+### Reversal 1 — Python orchestration (reversed again, deliberately)
 
-**Not a re-tread (ADR 23, 2026-09-13):** `packaging/pypi/` is a wheel that
-ships the bash VERBATIM and execs it — packaging, not orchestration. The
-line it must not cross: no logic in the Python module, nothing at the repo
-root, no lockfile, no pytest. See the claude-sandbox-container skill.
+History: embedded bash → standalone bash → Python package + typer CLI →
+bash-only (`bf65407`, 2026-05-12, issue #14 / PR #15; ADR 8) → **Python
+again (ADR 26, 2026-10-06, supersedes ADR 8; migration in issue #72)**.
 
+Why bash-only was right then: the tool was one bash function building a
+bwrap argv, two ~80-line files; the first Python package spread the
+security-critical bits across many modules and was harder to audit.
 
-Went embedded bash → standalone bash → Python package + typer CLI →
-back to bash-only (`bf65407`, 2026-05-12, issue #14 / PR #15). The tool
-is one bash function building a bwrap argv; the Python package
-(pyproject, uv lock, pytest, typer) spread the security-critical bits
-across modules. Bash-only is two files, each readable top-to-bottom.
-Root `CLAUDE.md` carries the rule; this is the why.
+Why Python is right now: the bash grew to ~3,900 lines, mostly argv/list
+building and config parsing done with namerefs, `${arr[@]+…}` guards,
+`printf %q` re-quoting and `export -f` into `unshare … bash -c`. At that size
+bash is the *less* auditable choice — the opposite of ADR 8's intent. Both
+ADRs serve the same principle: the core must stay small enough to audit in
+one read.
 
-**Refuse without justification:**
-- "Let's add a small Python CLI for nicer error messages / config /
-  arg parsing."
-- "Let's bring back pytest / uv / a `src/` package — it's only a
-  little code."
-- Anything that re-introduces `pyproject.toml`, `uv.lock`,
-  `src/claude_sandbox/`, or `test_*.py`.
+**Do not re-litigate either way.** Refuse "go back to bash-only / remove
+pyproject, uv, pytest" (ADR 26 is accepted), and equally refuse Python that
+crosses the guardrails. Until issue #72 phase 5 the bash stays the shipped
+default; the root `pyproject.toml` wheel bundles it verbatim (ADR 23,
+amended by ADR 26).
+
+**Refuse without justification (the ADR 26 guardrails):**
+- Third-party imports on the launch path. The `_shadow` path is stdlib
+  only; `__main__.py` dispatches it before Typer is imported.
+- For anything that runs in or launches the jail (the shadow shim and
+  everything it execs): an interpreter found through `PATH`
+  (`#!/usr/bin/env python3`, bare `python3`), running without `-I`, or
+  running from uv's cache (`~/.cache` is jail-writable). Always the
+  absolute root-owned interpreter under `/usr/libexec/claude-sandbox/` —
+  in the image `PATH` starts with `/opt/venv/bin` → `/cache`, which the
+  jail can write. The host-side `uvx claude-sandbox` launcher/installer
+  (ADR 23) is a console script run from uv's cache without `-I` by
+  construction and is outside this rule: don't "fix" it, and don't refuse
+  uvx on its account.
+- A bind or environment variable added to the bwrap argv anywhere but
+  `bwrap.py`.
+- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`) across
+  more modules or helpers — the `bf65407` failure mode. Profiles, config,
+  host launcher, installer and helper CLI live around the core, not in it.
 
 ### Reversal 2 — extracted from python-copier-template
 

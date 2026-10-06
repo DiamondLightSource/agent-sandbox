@@ -98,9 +98,39 @@ jobs:
       - name: Run shadow Git configuration tests
         run: bash tests/shadow_git.sh
 
+  python:
+    # The Python package (ADR 26): lint, type-check and test against the
+    # committed dev lockfile. pytest collects tests/python only; the bash
+    # suites above stay as they are. Pinned to the requires-python floor so
+    # the oldest supported Python is the one exercised.
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs: version from git tags
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install the dev environment from uv.lock
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check
+
+      - name: ruff format --check
+        run: uv run ruff format --check
+
+      - name: pyright
+        run: uv run pyright
+
+      # Coverage settings, including fail_under = 95, live in pyproject.toml.
+      - name: pytest with coverage
+        run: uv run pytest --cov
+
   wheel:
-    # The PyPI front door (ADR 23) is the one Python packaging in the repo:
-    # build it, prove the entry point execs the bundled bash, and prove
+    # The PyPI front door (ADR 23): build the wheel from the root
+    # pyproject.toml, prove the entry point execs the bundled bash, and prove
     # `install` refuses on a host (the runner is a VM, not a container).
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +140,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Build the wheel
-        run: uv build --wheel packaging/pypi -o dist
+        run: uv build --wheel -o dist
 
       - name: "Test: the entry point runs the bundled launcher at the wheel version"
         run: |
@@ -235,14 +265,14 @@ jobs:
     uses: ./.github/workflows/_dist.yml
 
   pypi:
-    needs: [dist, test, wheel, egress-jail, lint]
+    needs: [dist, test, python, wheel, egress-jail, lint]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_pypi.yml
     permissions:
       id-token: write
 
   release:
-    needs: [dist, test, wheel, egress-jail, lint]
+    needs: [dist, test, python, wheel, egress-jail, lint]
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/_release.yml
     permissions:

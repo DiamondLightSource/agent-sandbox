@@ -9,7 +9,6 @@ what runs, and execs bash. Read the bash: it is what actually runs.
 import os
 import re
 import sys
-
 from importlib.resources import files
 
 IMAGE = "ghcr.io/diamondlightsource/claude-sandbox"

@@ -1,0 +1,97 @@
+# claude-sandbox as a Python package (ADR 26, migrating from bash per issue
+# #72). Until the switch-over (phase 5) the wheel is still the PyPI front door
+# of ADR 23: it ships the bash launcher and installer verbatim as package
+# data, and `claude_sandbox:main` execs them. Build with `uv build --wheel`;
+# the version comes from the git tag (hatch-vcs, the same setuptools_scm
+# mechanism the DLS python-copier template uses), so the wheel and the image
+# tag are the same release by construction.
+[build-system]
+requires = ["hatchling>=1.25", "hatch-vcs>=0.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-sandbox"
+dynamic = ["version"]
+description = "Sandboxed Claude Code, Codex and Pi: a bubblewrap jail with an egress allowlist, via uvx"
+# The PyPI page, kept apart from the repository README (README.md).
+readme = "README.pypi.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/DiamondLightSource/claude-sandbox"
+Documentation = "https://diamondlightsource.github.io/claude-sandbox/"
+
+[project.scripts]
+claude-sandbox = "claude_sandbox:main"
+
+[dependency-groups]
+dev = [
+    "pyright",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/claude_sandbox/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_sandbox"]
+
+# The shipped tree mirrors the repository layout, because the `install`
+# shim locates `install.sh` relative to itself and `install.sh` locates the
+# conf and the statusline script relative to the repo root.
+[tool.hatch.build.targets.wheel.force-include]
+"install" = "claude_sandbox/tree/install"
+"container/claude-container" = "claude_sandbox/tree/container/claude-container"
+".devcontainer/claude-sandbox" = "claude_sandbox/tree/.devcontainer/claude-sandbox"
+".devcontainer/claude-sandbox.conf" = "claude_sandbox/tree/.devcontainer/claude-sandbox.conf"
+".claude/statusline-command.sh" = "claude_sandbox/tree/.claude/statusline-command.sh"
+"skills" = "claude_sandbox/tree/skills"
+
+[tool.pytest.ini_options]
+# tests/*.sh are the bash suites, run directly by CI; pytest owns only this.
+testpaths = ["tests/python"]
+addopts = ["--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+# `uv run pytest --cov` (CI) measures the package; _version.py is generated.
+source = ["claude_sandbox"]
+branch = true
+omit = ["*/claude_sandbox/_version.py"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+[tool.ruff]
+# Python only: ruff would otherwise also format code blocks in the Markdown.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+src = ["src", "tests/python"]
+target-version = "py311"
+line-length = 88
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "B",   # flake8-bugbear
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "W",   # pycodestyle warnings
+]
+
+[tool.pyright]
+include = ["src", "tests/python"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"

@@ -1,5 +1,5 @@
 # Sphinx configuration for the claude-sandbox documentation site.
-# Docs-only build: there is no Python package to autodoc.
+# Docs-only build: the claude_sandbox package is not autodoc'd.
 
 # -- Project information -----------------------------------------------------
 project = "claude-sandbox"

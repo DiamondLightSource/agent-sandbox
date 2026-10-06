@@ -23,6 +23,16 @@ build/
 docs/_build/
 .venv-docs/
 .claude/workflows
-packaging/pypi/dist/
+
+# Python package (ADR 26): build output, the dev venv, tool caches
+dist/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 # hatch-vcs writes this at build time
-packaging/pypi/src/claude_sandbox/_version.py
+src/claude_sandbox/_version.py

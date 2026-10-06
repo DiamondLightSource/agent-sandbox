@@ -1,5 +1,4 @@
-# Copied from the DLS python-copier template (as in podbench), adapted for a
-# pyproject that lives under packaging/pypi rather than at the repo root.
+# Copied from the DLS python-copier template (as in podbench).
 on:
   workflow_call:
 
@@ -17,7 +16,7 @@ jobs:
       - name: Build the wheel (wheel-only, the tree is force-included from the repo root)
         run: >
           export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
-          uvx --from build pyproject-build --wheel packaging/pypi --outdir dist
+          uvx --from build pyproject-build --wheel --outdir dist
       - name: Upload wheel as artifact
         uses: actions/upload-artifact@v7
         with:

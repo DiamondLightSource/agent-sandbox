@@ -1,33 +1,48 @@
 # claude-sandbox
 
-Bash-only. No Python package, no uv, no pytest — don't add them back.
+A Python package (`src/claude_sandbox/`, root `pyproject.toml`) migrating
+from bash per ADR 26
+(`docs/explanations/decisions/0026-python-implementation.md`, supersedes
+ADR 8) and issue #72. Until phase 5 of that issue, the **bash is the shipped
+default**: the wheel bundles the bash launcher and installer verbatim and
+execs them. Don't change bash behaviour as a side effect of Python work.
 
-Python is prohibited except for these **three** uses:
+Development: uv, pytest, ruff, pyright, and a committed dev lockfile
+(`uv.lock`). Version comes from the git tag (hatch-vcs).
 
-1. The documentation toolchain under `docs/`.
-2. The standard-library Unix-socket fixture in `tests/codex_launch.sh`.
-3. The PyPI front door under `packaging/pypi/` (ADR 23): a `pyproject.toml`
-   that bundles the bash launcher and installer VERBATIM as package data,
-   and one module that execs them. It holds no sandbox logic and may not
-   grow any. No root `pyproject.toml`, no lockfile, no `src/`, no pytest.
-   Version comes from the git tag (hatch-vcs). Build:
-   `uv build --wheel packaging/pypi`.
+```bash
+uv sync                      # dev environment from uv.lock
+uv run pytest --cov          # tests/python/, >=95% branch coverage (bash suites: tests/*.sh)
+uv run ruff check
+uv run ruff format --check
+uv run pyright               # strict, src/ and tests/python/: fix code, don't relax
+uv build --wheel             # the PyPI wheel
+```
 
-The documentation toolchain stays fully isolated
-to `docs/` (`docs/requirements.txt`: Sphinx + MyST + pydata theme + mermaid).
-It builds `docs/` to HTML for GitHub Pages and touches nothing in the
-security-critical core — no `pyproject.toml`, no `uv.lock`, no `src/`, no
-pytest, no docs command in the shipped `claude-sandbox` CLI. Don't let it
-grow past that boundary. Contributors may *run* that toolchain with
-`uvx --with-requirements docs/requirements.txt ...` (adds no repo files;
-`docs/requirements.txt` stays the pinned source of truth and CI still
-uses `pip`) — that is not a route to a `uv.lock` or a `pyproject.toml`.
+**Refuse** (the Python guardrails; the why is in the `claude-sandbox` skill,
+Reversal 1):
 
-The Unix-socket fixture is a test-only exception. It adds no Python package
-or runtime dependency to the installed sandbox. The wheel adds a Python
-requirement to the HOST that runs `uvx`, never to the installed sandbox.
-None of the three exceptions permits Python elsewhere in the sandbox
-implementation or tests.
+- **No third-party imports on the launch path.** The `_shadow` path is
+  standard library only; `__main__.py` dispatches it before Typer (or any
+  other dependency) is imported.
+- **The jail's interpreter is fixed.** Anything that runs in or launches
+  the jail (the shadow shim and everything it execs) uses the root-owned
+  interpreter under `/usr/libexec/claude-sandbox/`, by absolute path, with
+  `-I`, never from `~/.cache` (uv's cache, writable from the jail). No
+  `#!/usr/bin/env python3`, no interpreter found through `PATH`. The
+  host-side `uvx claude-sandbox` launcher/installer (ADR 23) is outside
+  this rule.
+- **No bind or environment added to the bwrap argv outside `bwrap.py`.**
+- **Keep the audit core small** — `bwrap.py`, `jail.py`, `shadow.py`, each
+  readable top to bottom. Don't spread the core across many modules: that
+  is the `bf65407` / issue #14 failure that ADR 8 reversed.
+
+The documentation toolchain stays isolated to `docs/`:
+`docs/requirements.txt` (Sphinx + MyST + pydata theme + mermaid) is its
+pinned source of truth and CI installs it with `pip`. Don't merge
+docs-toolchain dependencies into the package's `pyproject.toml` or
+`uv.lock`, and add no docs command to the shipped `claude-sandbox` CLI.
+Contributors may run it with `uvx --with-requirements docs/requirements.txt ...`.
 
 - Docs (Diátaxis, Sphinx): `docs/` → published to GitHub Pages by
   `.github/workflows/docs.yml`. Build locally: `python -m venv .venv-docs
