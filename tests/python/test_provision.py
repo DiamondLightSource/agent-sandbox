@@ -244,3 +244,20 @@ def test_main(
     for argv in (["w.whl"], ["w.whl", "--uv", "uv"]):  # never from PATH
         with pytest.raises(SystemExit):
             p.main(argv)
+
+
+def test_the_bootstrap_reads_the_same_pins() -> None:
+    """install.sh reads the pins from provision.py; this is what it reads."""
+    repo = Path(__file__).resolve().parents[2]
+    script = (
+        'source "$1/.devcontainer/claude-sandbox/install.sh"; for n in PYTHON_VERSION'
+        " UV_VERSION UV_SHA256_X86_64 UV_SHA256_AARCH64; do"
+        ' python_pin "$1/src/claude_sandbox" "$n"; done'
+    )
+    out = p.run(["/bin/bash", "-c", script, "pins", str(repo)], {"HOME": "/"})
+    assert out.split() == [
+        p.PYTHON_VERSION,
+        p.UV_VERSION,
+        p.UV_SHA256_X86_64,
+        p.UV_SHA256_AARCH64,
+    ]
