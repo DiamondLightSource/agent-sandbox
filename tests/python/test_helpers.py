@@ -155,8 +155,9 @@ def test_help_lists_only_what_runs_here(
     assert main("--help") == 0
     out = capsys.readouterr().out
     assert "    doctor " in out and "    shell " not in out
-    assert main(where=JAIL) == 1  # no command is `claude`, which runs on the host
-    assert main("gh-auth", where=JAIL) == 1
+    assert main(where=JAIL) == 0 and main("help") == 0  # usage, as the bash
+    assert "    doctor " in capsys.readouterr().out
+    assert main("shell", where=JAIL) == main("gh-auth", where=JAIL) == 1
     assert (
         "refusing gh-auth inside a sandboxed agent session" in capsys.readouterr().err
     )

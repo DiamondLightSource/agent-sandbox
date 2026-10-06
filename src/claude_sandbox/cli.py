@@ -145,9 +145,9 @@ def _main(args: list[str], where: Where) -> int:
     else:
         if args[:1] in (["-v"], ["--version"]):
             args = ["version"]
-        elif args[:1] in (["-h"], ["--help"]):
-            args = ["help"]
-        name, tail = (args[0], args[1:]) if args else (options.DEFAULT_VERB, [])
+        elif args[:1] in ([], ["-h"], ["--help"]):
+            args = ["help"]  # as the bash helper: usage, exit 0
+        name, tail = args[0], args[1:]
     act = actions.get(name)
     if act is Action.REFUSE:
         print(f"claude-sandbox: {context.refusal(name, where)}", file=sys.stderr)
