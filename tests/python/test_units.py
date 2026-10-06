@@ -167,11 +167,12 @@ def test_host_only_branches() -> None:
     claude = agent_profile("claude")
     argv = bwrap_argv(claude, config, env, "", "/real", [], probe=HostWithEverything())
     i = argv.index("--dev-bind")
-    assert argv[i : i + 12] == [
+    assert argv[i : i + 14] == [
         "--dev-bind", "/dev/sda", "/dev/sda",
         "--dev-bind", "/dev/nvidia0", "/dev/nvidia0",
         "--tmpfs", "/run/user",
         "--tmpfs", "/run/secrets",
+        "--tmpfs", "/run/claude-sandbox",  # the PATH watcher's state
         "--tmpfs", "/h",
     ]  # fmt: skip
     # A GPU glob can list a dangling link; the real probe says "no".

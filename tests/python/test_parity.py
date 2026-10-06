@@ -714,6 +714,9 @@ def py_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
             verify=sc.verify,
             shipped_skills_dir=str(root / "shipped"),
             gitconfig_path=sc.gitconfig,
+            # The watcher's state dir, masked when it exists, is the port's
+            # own: the bash has none. A fixture path no scenario creates.
+            state_dir=str(root / "state"),
         )
     except SandboxError as e:
         return [REFUSED, str(e)]
@@ -1211,6 +1214,8 @@ def py_launch(root: Path, sc: Launch, capsys: pytest.CaptureFixture[str]) -> lis
         },
         execve=record,
         find_tool=lambda name: find_tool(name, search=(f"{root}/tools", *TOOL_PATH)),
+        state_dir=str(root / "state"),
+        fork_watcher=lambda session: None,
     )
     status, argv = 0, None
     exec_env: Mapping[str, str] = {}
@@ -1245,10 +1250,24 @@ def test_launch_matches_bash(
 
 # A divergence entry that names no scenario would silently check nothing.
 # Every launch that ends in the script(1) wrap shows the tool-path difference.
+def _drop_state_mask(out: list[str]) -> list[str]:
+    """Remove the ``--tmpfs`` over the PATH watcher's state directory."""
+    i = next(
+        (
+            i
+            for i in range(len(out) - 1)
+            if out[i : i + 2] == ["--tmpfs", "{root}/state"]
+        ),
+        None,
+    )
+    return out if i is None else out[:i] + out[i + 2 :]
+
+
 TOOLS_DIVERGENCE = Divergence(
     "The Python shadow runs script and bwrap from a fixed root-owned tool "
     "path by absolute path (ADR 26: no executable found through PATH); the "
-    "bash shadow finds both through PATH.",
+    "bash shadow finds both through PATH. It also masks the PATH watcher's "
+    "state directory (ADR 27), which the bash shadow does not have.",
     bash_shows=lambda out: "{root}/bin/script" in out and "bwrap" in out,
     python_shows=lambda out: (
         "{root}/tools/script" in out and "{root}/tools/bwrap" in out
@@ -1260,7 +1279,7 @@ TOOLS_DIVERGENCE = Divergence(
             "bwrap": "<bwrap>",
             "{root}/tools/bwrap": "<bwrap>",
         }.get(line, line)
-        for line in out
+        for line in _drop_state_mask(out)
     ],
 )
 for _launch in LAUNCHES:

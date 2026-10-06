@@ -23,19 +23,22 @@ import sys
 import tempfile
 import termios
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from errno import ENOENT
 from types import FrameType
 from typing import NoReturn
 
-from . import jail
+from . import jail, watch
 from .bwrap import (
     ENTRY_POINTS,
     GITCONFIG_PATH,
     HOST,
     SHADOW_DIR,
+    STATE_DIR,
+    Built,
     Probe,
-    bwrap_argv,
+    bwrap_build,
     path_ahead_of_shadow,
 )
 from .config import (
@@ -111,6 +114,11 @@ class Host:
     git_config_get: Callable[[str, Mapping[str, str]], str] = read_git_config
     find_tool: Callable[[str], str | None] = find_tool
     mountinfo: str = "/proc/self/mountinfo"
+    state_dir: str = STATE_DIR
+    watching: Callable[
+        [watch.Session, Callable[[str], None]], AbstractContextManager[None]
+    ] = watch.watching
+    fork_watcher: Callable[[watch.Session], None] = watch.fork_watcher
 
 
 INSTALLED = Host()
@@ -169,6 +177,9 @@ def run(
         check_config_persistence(profile, env, term, host.mountinfo)
     prepare_home(profile, env, config, term, host.shipped_skills_dir)
 
+    # The PATH watcher's state directory, before the argv masks it.
+    state = None if verify else watch.state_dir(host.state_dir)
+
     # Stage the jail's resolver before the argv is built: bwrap.py binds the
     # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf. jail.launch
     # removes it on exit; the finally removes it if the launch never starts
@@ -176,6 +187,7 @@ def run(
     # known divergence).
     jailed = egress_jail_enabled(config)
     resolv = None
+    session = None
     try:
         if jailed:
             staged = jail.stage_dns()
@@ -186,14 +198,33 @@ def run(
                 env.pop(jail.JAIL_RESOLV, None)
             else:
                 env[jail.JAIL_RESOLV] = resolv
-        argv = build_argv(profile, env, args, verify, host)
-        terminal, launch_env = terminal_command(argv, env, host)
+        built, workspace = build_argv(profile, env, args, verify, host)
+        # The PATH watcher (ADR 27), for everything but the battery: first
+        # what earlier sessions left, as launch warnings so the pause shows
+        # them.
+        if not verify:
+            session = watch.Session(
+                env.get("PATH", ""), built.writable, workspace, state, host.probe
+            )
+            for action in session.scan_at_launch():
+                term.warn(
+                    f"quarantined at launch: {action}. Review the session that"
+                    " created it."
+                )
+        terminal, launch_env = terminal_command(built.argv, env, host)
         term.pause(verify)
-        if jailed:
+        if jailed and session is not None:
+            with host.watching(session, term.warn_raw):
+                jail.launch(config, launch_env, terminal)
+        elif jailed:
             jail.launch(config, launch_env, terminal)
     finally:
         if resolv is not None:
             _remove(resolv)
+    # The jail is off, so this process is about to become script(1): a child
+    # watches for as long as it runs.
+    if session is not None:
+        host.fork_watcher(session)
     _exec(host, terminal[0], terminal, launch_env)
 
 
@@ -300,22 +331,30 @@ def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
     left (a plain file without execute bits, which a PATH lookup passes
     over) may stand there. Nothing is removed here: the user reviews it.
     """
-    for directory in path_ahead_of_shadow(env.get("PATH", ""), probe):
+    for path, name in entry_point_problems(env.get("PATH", ""), probe):
+        _refuse(
+            f"claude-sandbox: refusing to launch: {path} is ahead of"
+            f" {SHADOW_DIR}/{name} on PATH, so a plain `{name}` may not reach"
+            " the sandbox.\n"
+            "  Remove it, and review the session that created it, before"
+            " launching again."
+        )
+
+
+def entry_point_problems(path: str, probe: Probe = HOST) -> list[tuple[str, str]]:
+    """(path, name) for each entry-point name ahead of the shadow on ``path``
+    that is anything but an empty mount point the guard left."""
+    found: list[tuple[str, str]] = []
+    for directory in path_ahead_of_shadow(path, probe):
         for name in ENTRY_POINTS:
-            path = f"{directory}/{name}"
+            entry = f"{directory}/{name}"
             try:
-                mode = os.lstat(path).st_mode
+                mode = os.lstat(entry).st_mode
             except OSError:  # absent, or a lookup could not reach it either
                 continue
-            if stat.S_ISREG(mode) and not mode & 0o111:
-                continue
-            _refuse(
-                f"claude-sandbox: refusing to launch: {path} is ahead of"
-                f" {SHADOW_DIR}/{name} on PATH, so a plain `{name}` may not reach"
-                " the sandbox.\n"
-                "  Remove it, and review the session that created it, before"
-                " launching again."
-            )
+            if not (stat.S_ISREG(mode) and not mode & 0o111):
+                found.append((entry, name))
+    return found
 
 
 def write_gitconfig(host: Host, env: Mapping[str, str], *, no_forge: bool) -> None:
@@ -492,22 +531,26 @@ def build_argv(
     args: Sequence[str],
     verify: bool,
     host: Host,
-) -> list[str]:
-    """The bwrap argv, with its Config read from the same ``env``."""
+) -> tuple[Built, str]:
+    """The bwrap argv, with its Config read from the same ``env``, and the
+    workspace it binds."""
     pwd = working_directory(env)
     config = Config.from_env(env)
-    return bwrap_argv(
+    workspace = resolve_workspace_root(config, pwd)
+    built = bwrap_build(
         profile,
         config,
         env,
-        resolve_workspace_root(config, pwd),
+        workspace,
         profile.real,
         args,
         verify=verify,
         shipped_skills_dir=host.shipped_skills_dir,
         gitconfig_path=host.gitconfig_path,
+        state_dir=host.state_dir,
         probe=host.probe,
     )
+    return built, workspace
 
 
 def working_directory(env: Mapping[str, str]) -> str:

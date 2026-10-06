@@ -16,8 +16,8 @@ import glob as _glob
 import os
 import re
 import stat
-from collections.abc import Mapping, Sequence
-from typing import Protocol
+from collections.abc import Iterable, Mapping, Sequence
+from typing import NamedTuple, Protocol
 
 from .config import Config, lines, words
 from .errors import SandboxError
@@ -28,6 +28,7 @@ from .profiles import (
     agent_exec_argv,
     filter_chrome_args,
 )
+from .tools import TOOL_PATH
 
 GITCONFIG_PATH = "/etc/claude-gitconfig"
 
@@ -37,6 +38,12 @@ SHADOW_DIR = "/usr/local/bin"
 ENTRY_POINTS = ("claude", "codex", "pi", "claude-sandbox")
 # The directories the entry-point guard covered, for battery check 22.
 ENTRY_GUARD_ENV = "CLAUDE_SANDBOX_ENTRY_GUARD"
+# The system command directories (the launch path's own tool path). The PATH
+# watcher (watch.py) covers the writable directories a lookup searches before
+# the last of them.
+SYSTEM_DIRS = TOOL_PATH
+# The watcher's alerts and baselines, outside the jail. Masked inside it.
+STATE_DIR = "/run/claude-sandbox"
 
 # What the agent itself needs from the launching environment, forwarded by
 # value when set and non-empty.
@@ -178,34 +185,71 @@ class HostProbe:
 HOST = HostProbe()
 
 
-def path_ahead_of_shadow(path: str, probe: Probe = HOST) -> list[str]:
-    """The directories a ``PATH`` lookup searches before the shadow's.
+def path_ahead(
+    path: str, stops: Iterable[str], probe: Probe = HOST, *, last: bool = False
+) -> list[str]:
+    """The directories a ``PATH`` lookup searches before ``stops``.
 
-    Each is resolved through symlinks, as the binds are, and listed once, in
-    ``PATH`` order. Empty and relative
-    entries are skipped, and so are entries that do not resolve to a
-    directory. When ``PATH`` does not hold ``SHADOW_DIR`` at all, every entry
-    counts as ahead of it.
+    Before the first of ``stops`` on ``PATH``, or with ``last`` before the
+    last of them. Each directory is resolved through symlinks, as the binds
+    are, and listed once, in ``PATH`` order. Empty and relative entries are
+    skipped, and so are entries that do not resolve to a directory. When
+    ``PATH`` holds none of ``stops``, every entry counts as ahead.
     """
-    try:
-        shadow_dir = probe.realpath(SHADOW_DIR)
-    except OSError:
-        shadow_dir = SHADOW_DIR
-    dirs: list[str] = []
+    stops = set(stops)
+    for stop in list(stops):
+        try:
+            stops.add(probe.realpath(stop))
+        except OSError:
+            continue
+    entries: list[str | None] = []  # None marks a stop
     for entry in path.split(":"):
         if not entry.startswith("/"):
             continue
-        if os.path.normpath(entry) == SHADOW_DIR:
-            break
+        if os.path.normpath(entry) in stops:
+            entries.append(None)
+            continue
         try:
             resolved = probe.realpath(entry)
         except OSError:
             continue
-        if resolved == shadow_dir:
-            break
-        if probe.is_dir(resolved) and resolved not in dirs:
-            dirs.append(resolved)
+        entries.append(None if resolved in stops else resolved)
+    if None in entries:
+        cut = len(entries) - 1 - entries[::-1].index(None) if last else None
+        entries = entries[: entries.index(None) if cut is None else cut]
+    dirs: list[str] = []
+    for directory in entries:
+        if directory is not None and probe.is_dir(directory) and directory not in dirs:
+            dirs.append(directory)
     return dirs
+
+
+def path_ahead_of_shadow(path: str, probe: Probe = HOST) -> list[str]:
+    """The directories a ``PATH`` lookup searches before the shadow's."""
+    return path_ahead(path, (SHADOW_DIR,), probe)
+
+
+def inside(path: str, roots: Iterable[str]) -> bool:
+    """``path`` is one of ``roots`` or lies under one (all resolved)."""
+    return any(os.path.commonpath([path, root]) == root for root in roots)
+
+
+def watched_path_dirs(
+    path: str, roots: Iterable[str], probe: Probe = HOST
+) -> list[str]:
+    """The writable directories (under ``roots``) a ``PATH`` lookup searches
+    before the last system command directory."""
+    roots = list(roots)
+    return [
+        d for d in path_ahead(path, SYSTEM_DIRS, probe, last=True) if inside(d, roots)
+    ]
+
+
+class Built(NamedTuple):
+    """The bwrap argv, and the resolved roots of its read-write binds."""
+
+    argv: list[str]
+    writable: list[str]
 
 
 def _lookup(env: Mapping[str, str], name: str) -> str:
@@ -224,9 +268,41 @@ def bwrap_argv(
     verify: bool = False,
     shipped_skills_dir: str = SHIPPED_SKILLS_DIR,
     gitconfig_path: str = GITCONFIG_PATH,
+    state_dir: str = STATE_DIR,
     probe: Probe = HOST,
 ) -> list[str]:
-    """The full ``bwrap ... -- agent args`` command.
+    """``bwrap_build``'s argv alone."""
+    return bwrap_build(
+        profile,
+        config,
+        env,
+        workspace,
+        real_agent,
+        args,
+        verify=verify,
+        shipped_skills_dir=shipped_skills_dir,
+        gitconfig_path=gitconfig_path,
+        state_dir=state_dir,
+        probe=probe,
+    ).argv
+
+
+def bwrap_build(
+    profile: AgentProfile,
+    config: Config,
+    env: Mapping[str, str],
+    workspace: str,
+    real_agent: str,
+    args: Sequence[str],
+    *,
+    verify: bool = False,
+    shipped_skills_dir: str = SHIPPED_SKILLS_DIR,
+    gitconfig_path: str = GITCONFIG_PATH,
+    state_dir: str = STATE_DIR,
+    probe: Probe = HOST,
+) -> Built:
+    """The full ``bwrap ... -- agent args`` command, and what it binds
+    read-write.
 
     ``env`` is the launch environment with the conf applied (what
     ``config.parse_config`` returns) and ``config`` is
@@ -291,6 +367,10 @@ def bwrap_argv(
     for run_dir in ("/run/user", "/run/secrets"):
         if probe.is_dir(run_dir):
             argv += ["--tmpfs", run_dir]
+    # The PATH watcher's alerts and baselines (watch.py): not the session's
+    # to read. Its fallback under /tmp is masked with /tmp.
+    if probe.is_dir(state_dir):
+        argv += ["--tmpfs", state_dir]
 
     # Strict-under-/root by inversion: wipe $HOME, then bind back only what
     # the agent legitimately needs. Anything we forgot to enumerate stays
@@ -430,7 +510,7 @@ def bwrap_argv(
     guarded = [
         directory
         for directory in path_ahead_of_shadow(env.get("PATH", ""), probe)
-        if any(os.path.commonpath([directory, root]) == root for root in roots)
+        if inside(directory, roots)
     ]
     for directory in guarded:
         for name in ENTRY_POINTS:
@@ -512,4 +592,5 @@ def bwrap_argv(
 
     # Exec via the in-sandbox conventional path so the agent's argv[0]
     # matches what its official installer would have placed.
-    return [*argv, "--", *agent_exec_argv(profile, home, verify=verify), *user_args]
+    command = agent_exec_argv(profile, home, verify=verify)
+    return Built([*argv, "--", *command, *user_args], roots)

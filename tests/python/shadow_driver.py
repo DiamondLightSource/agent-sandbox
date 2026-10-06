@@ -31,6 +31,9 @@ host = shadow.Host(
     find_tool=lambda name: find_tool(
         name, search=(cast(str, spec["tools"]), *TOOL_PATH)
     ),
+    state_dir=cast(str, spec["state"]),
+    # The jail-off watcher child is tested on its own (test_watch.py).
+    fork_watcher=lambda session: None,
 )
 
 signum = cast(int, spec.get("signal", 0))
