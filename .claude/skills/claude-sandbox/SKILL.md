@@ -226,11 +226,16 @@ amended by ADR 26).
 **Refuse without justification (the ADR 26 guardrails):**
 - Third-party imports on the launch path. The `_shadow` path is stdlib
   only; `__main__.py` dispatches it before Typer is imported.
-- An interpreter found through `PATH` (`#!/usr/bin/env python3`, bare
-  `python3`). Always the absolute root-owned interpreter under
-  `/usr/libexec/claude-sandbox/` — in the image `PATH` starts with
-  `/opt/venv/bin` → `/cache`, which the jail can write.
-- Running without `-I`, or from uv's cache (`~/.cache` is jail-writable).
+- For anything that runs in or launches the jail (the shadow shim and
+  everything it execs): an interpreter found through `PATH`
+  (`#!/usr/bin/env python3`, bare `python3`), running without `-I`, or
+  running from uv's cache (`~/.cache` is jail-writable). Always the
+  absolute root-owned interpreter under `/usr/libexec/claude-sandbox/` —
+  in the image `PATH` starts with `/opt/venv/bin` → `/cache`, which the
+  jail can write. The host-side `uvx claude-sandbox` launcher/installer
+  (ADR 23) is a console script run from uv's cache without `-I` by
+  construction and is outside this rule: don't "fix" it, and don't refuse
+  uvx on its account.
 - A bind or environment variable added to the bwrap argv anywhere but
   `bwrap.py`.
 - Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`) across

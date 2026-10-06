@@ -25,11 +25,13 @@ Reversal 1):
 - **No third-party imports on the launch path.** The `_shadow` path is
   standard library only; `__main__.py` dispatches it before Typer (or any
   other dependency) is imported.
-- **No interpreter found through `PATH`.** No `#!/usr/bin/env python3`;
-  always the absolute, root-owned interpreter under
-  `/usr/libexec/claude-sandbox/`.
-- **Never run without `-I`** (isolated mode).
-- **Never run from uv's cache** — `~/.cache` is writable from the jail.
+- **The jail's interpreter is fixed.** Anything that runs in or launches
+  the jail (the shadow shim and everything it execs) uses the root-owned
+  interpreter under `/usr/libexec/claude-sandbox/`, by absolute path, with
+  `-I`, never from `~/.cache` (uv's cache, writable from the jail). No
+  `#!/usr/bin/env python3`, no interpreter found through `PATH`. The
+  host-side `uvx claude-sandbox` launcher/installer (ADR 23) is outside
+  this rule.
 - **No bind or environment added to the bwrap argv outside `bwrap.py`.**
 - **Keep the audit core small** — `bwrap.py`, `jail.py`, `shadow.py`, each
   readable top to bottom. Don't spread the core across many modules: that
