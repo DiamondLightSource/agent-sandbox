@@ -30,6 +30,13 @@ Documentation = "https://diamondlightsource.github.io/claude-sandbox/"
 [project.scripts]
 claude-sandbox = "claude_sandbox:main"
 
+[dependency-groups]
+dev = [
+    "pyright",
+    "pytest",
+    "ruff",
+]
+
 [tool.hatch.version]
 source = "vcs"
 
@@ -49,3 +56,31 @@ packages = ["src/claude_sandbox"]
 ".devcontainer/claude-sandbox.conf" = "claude_sandbox/tree/.devcontainer/claude-sandbox.conf"
 ".claude/statusline-command.sh" = "claude_sandbox/tree/.claude/statusline-command.sh"
 "skills" = "claude_sandbox/tree/skills"
+
+[tool.pytest.ini_options]
+# tests/*.sh are the bash suites, run directly by CI; pytest owns only this.
+testpaths = ["tests/python"]
+addopts = ["--strict-markers", "--strict-config"]
+
+[tool.ruff]
+# Python only: ruff would otherwise also format code blocks in the Markdown.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+src = ["src", "tests/python"]
+target-version = "py39"
+line-length = 88
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "B",   # flake8-bugbear
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "W",   # pycodestyle warnings
+]
+
+[tool.pyright]
+include = ["src", "tests/python"]
+pythonVersion = "3.9"
+typeCheckingMode = "strict"
