@@ -220,6 +220,7 @@ def test_create_argv(
     monkeypatch.setenv("CLAUDE_SANDBOX_ALLOW_WRITE", "/srv")
     monkeypatch.setenv("CLAUDE_SANDBOX_EGRESS_JAIL", "0")
     monkeypatch.setenv("CLAUDE_SANDBOX_IMPL", "python")
+    monkeypatch.setenv("CLAUDE_SANDBOX_NESTED", "1")
     monkeypatch.setenv("CLAUDE_SANDBOX_CACHE", "")
     opts = Options(gpu=True, devices=["/dev/null"], peers=True)
     opts.mounts_ro, opts.mounts_rw = ["/r"], ["/w"]
@@ -242,6 +243,7 @@ def test_create_argv(
     ]:
         assert part in joined
     assert ":/cache" not in joined and "CLAUDE_SANDBOX_IMPL" not in joined
+    assert "CLAUDE_SANDBOX_NESTED" not in joined
     assert args[-4:] == [launcher.IMAGE, "bash", "-c", launcher.KEEPER_CMD]
 
 
