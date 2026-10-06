@@ -281,6 +281,9 @@ class Ops:
     def signal(self, sig: int, handler: Handler | int) -> None:
         signal.signal(sig, handler)
 
+    def ignored(self, sig: int) -> bool:
+        return signal.getsignal(sig) == signal.SIG_IGN
+
     def environ(self) -> dict[str, str]:
         return dict(os.environ)
 
@@ -308,8 +311,10 @@ class Signals:
 
     def __init__(self, ops: Ops) -> None:
         self.status: int | None = None
+        # A signal ignored on entry stays ignored, as bash cannot trap it.
         for sig in SIGNAL_STATUS:
-            ops.signal(sig, self._record)
+            if not ops.ignored(sig):
+                ops.signal(sig, self._record)
 
     def _record(self, signum: int, frame: FrameType | None) -> None:
         if self.status is None:
@@ -679,11 +684,13 @@ def _hold(argv: Sequence[str], ops: Ops) -> int:
         return 2
     command = argv[1:]
     env = ops.environ()
-    # The dispositions a process started by bash would have: the interpreter
-    # ignores SIGPIPE and SIGXFSZ and traps SIGINT, and exec keeps an
-    # ignored signal ignored.
-    for sig in (signal.SIGINT, signal.SIGPIPE, signal.SIGXFSZ):
+    # Undo what the interpreter changed at start-up: it ignores SIGPIPE and
+    # SIGXFSZ and traps SIGINT (unless SIGINT was ignored on entry), and
+    # exec keeps an ignored signal ignored.
+    for sig in (signal.SIGPIPE, signal.SIGXFSZ):
         ops.signal(sig, signal.SIG_DFL)
+    if not ops.ignored(signal.SIGINT):
+        ops.signal(signal.SIGINT, signal.SIG_DFL)
     try:
         lock_routes(env, ops)
     except JailError as e:

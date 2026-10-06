@@ -177,6 +177,9 @@ class FakeOps(Ops):
     def signal(self, sig: int, handler: Handler | int) -> None:
         self.handlers[sig] = handler
 
+    def ignored(self, sig: int) -> bool:
+        return self.handlers.get(sig) == signal.SIG_IGN
+
     def fire(self, sig: int) -> None:
         handler = self.handlers[sig]
         assert callable(handler)
@@ -414,6 +417,20 @@ def test_a_relative_command_is_refused() -> None:
         "claude-sandbox: egress jail — the command to run must be an absolute path"
     ]
     assert ops.kinds("mkdtemp", "spawn") == []
+
+
+def test_a_signal_ignored_on_entry_stays_ignored() -> None:
+    ops = FakeOps()
+    ops.handlers = {signal.SIGHUP: signal.SIG_IGN}
+    launch(ops)
+    assert ops.handlers[signal.SIGHUP] == signal.SIG_IGN
+    assert callable(ops.handlers[signal.SIGTERM])
+    ops = FakeOps()
+    ops.handlers = {signal.SIGINT: signal.SIG_IGN}
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    assert ops.handlers[signal.SIGINT] == signal.SIG_IGN
 
 
 def test_holder_killed_by_a_signal_reports_128_plus_n() -> None:
@@ -785,6 +802,7 @@ def test_real_ops_dirs_signals_and_exec() -> None:
     ops.rmtree(path)
     previous = signal.getsignal(signal.SIGHUP)
     ops.signal(signal.SIGHUP, signal.SIG_IGN)
+    assert ops.ignored(signal.SIGHUP)
     signal.signal(signal.SIGHUP, previous)
     # The real exec and stderr, in a child.
     code = (
