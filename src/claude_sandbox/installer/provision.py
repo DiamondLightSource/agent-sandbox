@@ -209,6 +209,22 @@ def provision(
 ) -> Path:
     """Install CPython ``version`` and a venv holding ``package`` (a wheel)
     under ``root``; return the venv's interpreter."""
+    old = os.umask(0o022)
+    try:
+        return _provision(uv, package, root, version, environ, owner, runner)
+    finally:
+        os.umask(old)
+
+
+def _provision(
+    uv: str,
+    package: str,
+    root: Path,
+    version: str,
+    environ: Mapping[str, str],
+    owner: Owner,
+    runner: Run,
+) -> Path:
     env = uv_env(environ, root)
     runner([uv, "python", "install", "--no-bin", version], env)
     found = runner([uv, "python", "find", version], env).strip()

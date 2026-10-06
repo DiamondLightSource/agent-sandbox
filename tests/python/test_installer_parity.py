@@ -118,6 +118,7 @@ def run_bash(root: Path, sc: Scenario) -> tuple[int, str]:
         capture_output=True,
         text=True,
         check=False,
+        umask=0o022,  # what install() sets for itself
     )
     return done.returncode, done.stderr
 
@@ -129,7 +130,11 @@ def run_python(root: Path, sc: Scenario) -> str:
     if sc.step == "main":
         install(layout, options, err)
     else:
-        apply(dict(STEPS)[sc.step](layout, options), err)
+        old = os.umask(0o022)
+        try:
+            apply(dict(STEPS)[sc.step](layout, options), err)
+        finally:
+            os.umask(old)
     return err.getvalue()
 
 
@@ -479,3 +484,12 @@ def test_known_divergence_python_warns_and_leaves_the_file(
     assert "WARNING" in err
     assert (tmp_path / "python" / path).read_text() == text
     assert (tmp_path / "python" / path).is_symlink() == bool(link)
+
+
+def test_install_sets_its_own_umask(tmp_path: Path) -> None:
+    old = os.umask(0)
+    try:
+        run_python(tmp_path / "root", Scenario("umask", "main"))
+    finally:
+        os.umask(old)
+    assert (tmp_path / "root/prefix/etc/claude-code").stat().st_mode & 0o777 == 0o755

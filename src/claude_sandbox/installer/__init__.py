@@ -7,6 +7,7 @@ function by function. ``provision`` installs the pinned interpreter and
 venv the shadow shim will run. Standard library only: it runs as root.
 """
 
+import os
 from typing import TextIO
 
 from .actions import apply
@@ -15,6 +16,11 @@ from .steps import STEPS, Layout, Options
 
 def install(layout: Layout, options: Options, err: TextIO | None = None) -> None:
     """Run every ported step in ``install.sh``'s order. Each step is planned
-    against what the previous ones left, then applied."""
-    for _name, plan in STEPS:
-        apply(plan(layout, options), err)
+    against what the previous ones left, then applied, under umask 022
+    whatever the caller's: new directories are 0755."""
+    old = os.umask(0o022)
+    try:
+        for _name, plan in STEPS:
+            apply(plan(layout, options), err)
+    finally:
+        os.umask(old)
