@@ -29,12 +29,15 @@ class MakeDirs:
 
 @dataclass(frozen=True)
 class Write:
-    """Replace ``path`` atomically: a temporary file beside it, then rename."""
+    """Replace ``path`` atomically: a temporary file beside it, then rename.
+    With ``in_place``, as install(1) does instead: remove ``path``, then
+    create it (see ``steps.plan_shadow``)."""
 
     path: Path
     data: bytes
     mode: int
     owner: Owner = None
+    in_place: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,9 +122,9 @@ def apply(actions: Iterable[Action], err: TextIO | None = None) -> None:
         match action:
             case MakeDirs(path):
                 path.mkdir(parents=True, exist_ok=True)
-            case Write(path, data, mode, owner):
+            case Write(path, data, mode, owner, in_place):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                _write(path, data, mode, owner)
+                (_create if in_place else _write)(path, data, mode, owner)
             case Touch(path):
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 os.close(os.open(path, flags, 0o666))
@@ -166,6 +169,24 @@ def _move(src: Path, dst: Path) -> None:
         else:
             shutil.copy2(src, dst, follow_symlinks=False)
         _remove(src)
+
+
+def _create(path: Path, data: bytes, mode: int, owner: Owner) -> None:
+    """install(1)'s way: unlink, then create exclusively, never through a
+    link; a failed write leaves no partial file behind."""
+    if os.path.lexists(path):
+        path.unlink()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            os.fchmod(f.fileno(), mode)
+            if owner is not None:
+                os.fchown(f.fileno(), *owner)
+    except BaseException:
+        path.unlink()
+        raise
 
 
 def _remove(path: Path) -> None:

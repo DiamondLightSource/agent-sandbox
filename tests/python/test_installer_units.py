@@ -111,3 +111,35 @@ def test_moves_across_filesystems_and_touch_without_following(
     with pytest.raises(FileExistsError):
         actions.apply([Touch(tmp_path / "dangling")])
     assert not (tmp_path / "nowhere").exists()
+
+
+def test_commands_on_path_are_replaced_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, other = tmp_path / "claude", tmp_path / "elsewhere"
+    other.write_text("not ours")
+    target.symlink_to(other)
+    actions.apply([Write(target, b"shim", 0o755, in_place=True)])
+    assert target.read_bytes() == b"shim" and not target.is_symlink()
+    assert other.read_text() == "not ours" and target.stat().st_mode & 0o777 == 0o755
+
+    def refuse(fd: int, uid: int, gid: int) -> None:
+        raise PermissionError("chown")
+
+    monkeypatch.setattr(os, "fchown", refuse)
+    with pytest.raises(PermissionError):
+        actions.apply([Write(target, b"x", 0o755, (0, 0), in_place=True)])
+    assert not os.path.lexists(target)  # no partial file left
+
+
+def test_the_install_stops_if_a_shadow_name_is_not_the_shadow(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[2]
+    lay = steps.Layout(
+        source=repo, user_home=tmp_path / "u", home=str(tmp_path / "h"),
+        prefix=tmp_path / "p",
+    )  # fmt: skip
+    actions.apply(steps.plan_shadow(lay, steps.Options("1")))
+    steps.check_shadow(lay, steps.Options("1"))
+    (tmp_path / "p/usr/local/bin/pi").unlink()
+    with pytest.raises(steps.InstallError, match="pi is not the shadow"):
+        steps.check_shadow(lay, steps.Options("1"))

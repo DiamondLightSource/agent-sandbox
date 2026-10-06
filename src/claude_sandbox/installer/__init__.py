@@ -22,6 +22,7 @@ from .steps import (
     STEPS,
     Layout,
     Options,
+    check_shadow,
     is_mount,
     plan_conf,
     plan_cred_dirs,
@@ -54,10 +55,13 @@ def install(
             if any(isinstance(a, Warn) for a in actions):
                 skipped.append(name)
             apply(actions, warn)
+            if name == "shadow":
+                check_shadow(layout, options)
             if name == "link_terminal_config":
                 system.install_claude_binary(layout, options, run)
                 system.install_codex_binary(layout, options, warn, run)
                 system.install_pi_binary(layout, options, warn, run)
+        check_shadow(layout, options)
     finally:
         os.umask(old)
     venv = f"{LIBEXEC}/venv"

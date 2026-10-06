@@ -500,3 +500,19 @@ def test_install_sets_its_own_umask(tmp_path: Path) -> None:
     finally:
         os.umask(old)
     assert (tmp_path / "root/prefix/etc/claude-code").stat().st_mode & 0o777 == 0o755
+
+
+def test_python_install_over_a_bash_install_places_the_shim(tmp_path: Path) -> None:
+    """Invariant 1: switching an installed sandbox to the Python one leaves
+    the shim, byte for byte, at every shadow name, and the helper CLI shim."""
+    root = tmp_path / "root"
+    assert run_bash(root, Scenario("bash", "main"))[0] == 0
+    env = environment(root, {"CLAUDE_SANDBOX_IMPL": "python"})
+    layout, options = from_env(REPO, env)
+    install(layout, options, io.StringIO(), io.StringIO())
+    scripts = REPO / ".devcontainer/claude-sandbox"
+    for name in ("claude", "codex", "pi"):
+        placed = root / "prefix/usr/local/bin" / name
+        assert placed.read_bytes() == (scripts / "claude-shim").read_bytes()
+    cli = root / "prefix/usr/local/bin/claude-sandbox"
+    assert cli.read_bytes() == (scripts / "claude-sandbox-shim").read_bytes()

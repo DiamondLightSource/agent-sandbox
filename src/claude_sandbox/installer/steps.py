@@ -15,7 +15,7 @@ import stat
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import jsonfile
@@ -229,7 +229,29 @@ def plan_shadow(layout: Layout, options: Options) -> list[Action]:
     src = SHADOW_SOURCE[options.impl]
     shadow = tuple((src, name, 0o755) for name in SHADOW_NAMES)
     cli = ((CLI_SOURCE[options.impl], "/usr/local/bin/claude-sandbox", 0o755),)
-    return _place_all(layout, shadow + HELPER_FILES + cli)
+    # The commands on PATH are replaced as install(1) replaces them, unlink
+    # then create, not by rename. In GitHub's rootless podman, renaming over
+    # an image-layer file in /usr/local/bin (a directory several layers
+    # write to) left no file at all, and the shadow must never be missing
+    # (Invariant 1). check_shadow verifies the result.
+    return [
+        replace(a, in_place=True)
+        if isinstance(a, Write) and a.path.parent == layout.system("/usr/local/bin")
+        else a
+        for a in _place_all(layout, shadow + HELPER_FILES + cli)
+    ]
+
+
+def check_shadow(layout: Layout, options: Options) -> None:
+    """Refuse to go on unless every shadow name holds the shadow (Invariant
+    1): a missing or different file would let a vendor binary run unwrapped."""
+    data = _source(layout, SHADOW_SOURCE[options.impl])
+    for name in SHADOW_NAMES:
+        if _read(layout.system(name)) != data:
+            raise InstallError(
+                f"claude-sandbox: {layout.system(name)} is not the shadow after"
+                " placing it; refusing to continue."
+            )
 
 
 def plan_runtime_scripts(layout: Layout, options: Options) -> list[Action]:
