@@ -448,6 +448,8 @@ def test_pause_reads_one_key_from_the_terminal(
 
 def test_interactive_waits_out_an_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
     assert launcher.interactive(["sh", "-c", "exit 3"]) == 3
+    # Killed by a signal: 128 + its number, as a shell reports it.
+    assert launcher.interactive(["sh", "-c", "kill -TERM $$"]) == 143
     assert launcher.run(["true"]).returncode == 0
 
     class Child:

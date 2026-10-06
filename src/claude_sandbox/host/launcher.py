@@ -70,9 +70,11 @@ def interactive(argv: list[str]) -> int:
     proc = subprocess.Popen(argv)
     while True:
         try:
-            return proc.wait()
+            rc = proc.wait()
         except KeyboardInterrupt:
             continue
+        # Killed by a signal: report it as a shell does, 128 + its number.
+        return rc if rc >= 0 else 128 - rc
 
 
 def version(env: Mapping[str, str]) -> str:
