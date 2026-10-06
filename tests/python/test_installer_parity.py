@@ -462,13 +462,20 @@ USER_SETTINGS = "user/.claude/settings.json"
         # NaN (which jq rewrites as null). Left alone, with the warning.
         ("wire_managed_settings", MANAGED, "{} {}", True),
         ("wire_managed_settings", MANAGED, '{"a":NaN}', True),
+        # The bash reads a symlinked settings file through the link and
+        # replaces the link; the Python does not follow symlinks when
+        # reading user files as root.
+        ("wire_user_statusline", USER_SETTINGS + " -> other.json", "{}", True),
     ],
 )
 def test_known_divergence_python_warns_and_leaves_the_file(
     tmp_path: Path, step: str, path: str, text: str, bash_ok: bool
 ) -> None:
-    sc = Scenario("divergence", step, files({path: text}))
+    path, _, link = path.partition(" -> ")
+    spec = {f"{path} -> {link}": None, f"user/.claude/{link}": text} if link else {}
+    sc = Scenario("divergence", step, files(spec or {path: text}))
     assert (run_bash(tmp_path / "bash", sc)[0] == 0) == bash_ok
     err = run_python(tmp_path / "python", sc)
-    assert "is not valid JSON" in err
+    assert "WARNING" in err
     assert (tmp_path / "python" / path).read_text() == text
+    assert (tmp_path / "python" / path).is_symlink() == bool(link)

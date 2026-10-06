@@ -11,6 +11,7 @@ and the three agent-binary downloads.
 """
 
 import os
+import stat
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -157,6 +158,17 @@ def _makedirs(path: Path) -> list[Action]:
     return [] if path.is_dir() else [MakeDirs(path)]
 
 
+def _read(path: Path) -> bytes | None:
+    """A regular file's bytes, or None for anything else, a symlink included:
+    the installer runs as root and does not follow links where it reads."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        return f.read() if stat.S_ISREG(os.fstat(fd).st_mode) else None
+
+
 def _source(layout: Layout, rel: str) -> bytes:
     path = layout.source / rel
     if not path.is_file():
@@ -167,7 +179,7 @@ def _source(layout: Layout, rel: str) -> bytes:
 def _place(dst: Path, data: bytes, mode: int, owner: Owner) -> list[Action]:
     """``install_file``: content-compared, so a matching file is left alone
     (mode included, as in the bash)."""
-    if dst.is_file() and dst.read_bytes() == data:
+    if _read(dst) == data:
         return []
     return [Write(dst, data, mode, owner)]
 
@@ -209,7 +221,7 @@ def plan_conf(layout: Layout, options: Options) -> list[Action]:
 
 def _stamp(dst: Path, value: str, owner: Owner) -> list[Action]:
     data = f"{value}\n".encode()
-    if dst.is_file() and dst.read_bytes() == data:
+    if _read(dst) == data:
         return []
     return [Write(dst, data, 0o644, owner)]
 
@@ -255,18 +267,22 @@ def plan_skills(layout: Layout, options: Options) -> list[Action]:
 
 
 def _settings(path: Path, warning: str) -> tuple[jsonfile.Json, list[Action]]:
-    """The settings file's value (``{}`` when absent), or a warning."""
-    if not path.is_file():
+    """The settings file's value (``{}`` when absent), or a warning. A
+    symlink is not followed: it is left alone, with a warning."""
+    if path.is_symlink():
+        return None, [Warn(f"claude-sandbox: WARNING — {path} is a symlink; skipped.")]
+    data = _read(path)
+    if data is None:
         return {}, []
     try:
-        return jsonfile.loads(path.read_bytes()), []
+        return jsonfile.loads(data), []
     except jsonfile.NotJson:
         return None, [Warn(warning)]
 
 
 def _rewrite(path: Path, value: jsonfile.Json, owner: Owner) -> list[Action]:
     data = (jsonfile.dumps(value) + "\n").encode()
-    if path.is_file() and path.read_bytes() == data:
+    if _read(path) == data:
         return []
     return [Write(path, data, 0o644, owner)]
 
@@ -303,8 +319,8 @@ def plan_codex_managed(layout: Layout, options: Options) -> list[Action]:
     its first line. One it did not write is left alone, with a warning."""
     dest = layout.system(CODEX_MANAGED_CONFIG)
     actions = _makedirs(dest.parent)
-    if dest.is_file():
-        first = dest.read_bytes().split(b"\n", 1)[0]
+    if os.path.lexists(dest):
+        first = (_read(dest) or b"").split(b"\n", 1)[0]
         if first != CODEX_MARKER.encode():
             body = CODEX_MANAGED_BODY.split("\n", 1)[1].rstrip("\n")
             return actions + [
@@ -326,13 +342,16 @@ def plan_statusline(layout: Layout, options: Options) -> list[Action]:
     script = claude / "statusline-command.sh"
     actions = _makedirs(claude)
     src = layout.source / _STATUSLINE
+    # A symlinked script counts as the owner's own: kept, and not read.
     if src.is_file():
         if options.force_statusline:
             actions += _place(script, src.read_bytes(), 0o755, None)
-        elif not script.is_file():
+        elif not (script.is_file() or script.is_symlink()):
             actions.append(Write(script, src.read_bytes(), 0o755))
-    present = script.is_file() or any(
-        isinstance(a, Write) and a.path == script for a in actions
+    present = (
+        script.is_file()
+        or script.is_symlink()
+        or any(isinstance(a, Write) and a.path == script for a in actions)
     )
     warning = (
         f"claude-sandbox: WARNING — {settings} is not valid JSON;"
