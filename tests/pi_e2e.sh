@@ -37,7 +37,7 @@ run_pi() {
     rm -f /work/tool-proof /work/battery /tmp/pi-search-results.json
     # Keep the terminal's foreground process group under podman -t. Plain timeout
     # creates a background group, so script(1)'s terminal setup stops on SIGTTOU.
-    timeout --foreground 60 pi --provider lllm2 --no-session --tools bash,find,grep \
+    timeout --foreground 60 pi "$@" --no-session --tools bash,find,grep \
         --no-extensions --no-skills --no-prompt-templates --no-themes \
         -p 'Find and search the fixture, then run the sandbox checks using your bash tool.' > "$tmp/output" 2>&1 || rc=$?
     cat "$tmp/output"
@@ -47,12 +47,16 @@ run_pi() {
     grep -q LOCAL_MODEL_OK "$tmp/output"
     jq -e 'length == 3 and .[0].content == "search-fixture.txt" and (.[1].content | contains("SEARCH_TOOL_OK"))' /tmp/pi-search-results.json >/dev/null
 }
-run_pi
+# Pi 1.0 rejects --provider without --model; --model lllm2 selects the
+# provider's one discovered model, so no model ID is hard-coded here.
+run_pi --model lllm2
 jq -e '.providers.lllm2.models[0].id == "local-test" and .providers.lllm2.models[0].contextWindow == 32768' "$HOME/.pi/agent/models.json" >/dev/null
 # A saved selection of yesterday's model must not require manual ID changes.
 printf '{"defaultProvider":"lllm2","defaultModel":"local-test"}\n' > "$HOME/.pi/agent/settings.json"
 printf renamed-model > /tmp/pi-model-id
 printf 65536 > /tmp/pi-model-context
+# No model flag: Pi must fall back from the stale saved default to the
+# rediscovered model.
 run_pi
 jq -e '.providers.lllm2.models[0].id == "renamed-model" and .providers.lllm2.models[0].contextWindow == 65536' "$HOME/.pi/agent/models.json" >/dev/null
 cp "$HOME/.pi/agent/models.json" "$tmp/before-offline"
