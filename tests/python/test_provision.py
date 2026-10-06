@@ -208,7 +208,9 @@ def test_run_and_size(tmp_path: Path) -> None:
 
 
 def test_main(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     seen: list[tuple[str, str, Path]] = []
 
@@ -217,8 +219,9 @@ def test_main(
         return root / "venv/bin/python"
 
     monkeypatch.setattr(p, "provision", fake)
+    monkeypatch.chdir(tmp_path)
     p.main(["w.whl", "--uv", "/opt/uv", "--root", "/nonexistent"])
-    assert seen == [("/opt/uv", "w.whl", Path("/nonexistent"))]
+    assert seen == [("/opt/uv", f"{tmp_path}/w.whl", Path("/nonexistent"))]
     assert "MB interpreter" in capsys.readouterr().out
     for argv in (["w.whl"], ["w.whl", "--uv", "uv"]):  # never from PATH
         with pytest.raises(SystemExit):

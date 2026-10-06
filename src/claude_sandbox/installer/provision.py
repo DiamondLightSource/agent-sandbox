@@ -271,7 +271,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not os.path.isabs(args.uv):
         parser.error("--uv must be an absolute path")
     owner = (0, 0) if os.geteuid() == 0 else None
-    python = provision(args.uv, args.package, args.root, owner=owner)
+    # uv runs from /, so a relative wheel path would not resolve.
+    package = os.path.abspath(args.package)
+    python = provision(args.uv, package, args.root, owner=owner)
     print(f"{python}: {size(args.root / 'python') / 1e6:.1f} MB interpreter")
 
 
