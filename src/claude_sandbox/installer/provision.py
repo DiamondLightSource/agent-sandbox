@@ -8,8 +8,8 @@ the interpreter is installed straight into ``UV_PYTHON_INSTALL_DIR`` under
 ``/usr/libexec``, and the venv is pinned to the resolved patch directory,
 not uv's ``cpython-3.13-…`` minor-version symlink.
 
-Not wired in yet: the bootstrap that will call ``provision`` is the second
-part of issue #72 phase 4.
+``install.sh``'s bootstrap runs ``main`` with the pinned interpreter it has
+just had uv install, when ``CLAUDE_SANDBOX_IMPL=python`` is set.
 """
 
 import argparse

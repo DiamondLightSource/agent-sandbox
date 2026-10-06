@@ -5,9 +5,9 @@ bring it to the installed state; it writes nothing. The bash function each
 one replaces is named in its docstring, and ``tests/python`` runs both on
 the same fixtures and compares the trees they leave.
 
-Not ported here (they stay in the bash until the wiring part of issue #72
-phase 4): ``apt_install``, ``probe_or_refuse``, ``probe_userns_or_refuse``
-and the three agent-binary downloads.
+The steps that run tools rather than write files the installer owns (the
+probes, apt and the three agent downloads) are in ``system``; ``install``
+in ``__init__`` runs both in main()'s order.
 """
 
 import os
@@ -513,8 +513,8 @@ def plan_shared_links(layout: Layout, options: Options) -> list[Action]:
 
 Step = Callable[[Layout, Options], list[Action]]
 
-# main()'s order, for the steps ported so far. The bash runs apt_install and
-# the userns probe after the shadow, and the agent downloads after the links.
+# The file steps in main()'s order. ``install`` runs apt_install and the
+# userns probe before the links, and the agent downloads after them.
 STEPS: tuple[tuple[str, Step], ...] = (
     ("shadow", plan_shadow),
     ("link_terminal_config", plan_shared_links),
