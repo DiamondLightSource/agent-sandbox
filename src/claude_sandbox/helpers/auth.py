@@ -10,7 +10,11 @@ import subprocess
 import sys
 import termios
 
+from ..tools import TOOL_PATH, find_tool
+
 GITLAB = "gitlab.diamond.ac.uk"
+# Where gh and glab are looked for (ADR 26: no executable found through PATH).
+FORGE_PATH = (*TOOL_PATH, "/usr/local/bin")
 
 
 def _link(url: str) -> str:
@@ -80,15 +84,25 @@ def _steps(*steps: tuple[list[str], str | None]) -> int:
     return rc
 
 
+def _tool(name: str) -> str | None:
+    path = find_tool(name, search=FORGE_PATH)
+    if path is None:
+        print(f"claude-sandbox: {name} is not installed", file=sys.stderr)
+    return path
+
+
 def gh_auth() -> int:
+    gh = _tool("gh")
+    if gh is None:
+        return 1
     sys.stdout.write(
         GH_TEXT.format(url=_link("https://github.com/settings/personal-access-tokens"))
     )
     token = read_secret("GitHub PAT: ")
     return _steps(
-        (["gh", "auth", "login", "--with-token"], f"{token}\n"),
-        (["gh", "auth", "setup-git"], None),
-        (["gh", "auth", "status"], None),
+        ([gh, "auth", "login", "--with-token"], f"{token}\n"),
+        ([gh, "auth", "setup-git"], None),
+        ([gh, "auth", "status"], None),
     )
 
 
@@ -100,15 +114,18 @@ def glab_auth(hostname: str = GITLAB) -> int:
     ``--global`` or ``-h`` writes a repository-local file, or fails
     outside a repository.
     """
+    glab = _tool("glab")
+    if glab is None:
+        return 1
     url = _link(f"https://{hostname}/-/user_settings/personal_access_tokens")
     sys.stdout.write(GLAB_TEXT.format(url=url))
     token = read_secret(f"GitLab PAT for {hostname}: ")
     rc = _steps(
-        (["glab", "auth", "login", "--stdin", "--hostname", hostname], f"{token}\n"),
-        (["glab", "config", "set", "-h", hostname, "git_protocol", "https"], None),
-        (["glab", "config", "set", "--global", "host", hostname], None),
+        ([glab, "auth", "login", "--stdin", "--hostname", hostname], f"{token}\n"),
+        ([glab, "config", "set", "-h", hostname, "git_protocol", "https"], None),
+        ([glab, "config", "set", "--global", "host", hostname], None),
     )
     if rc:
         return rc
     print(f"Default glab host set to {hostname}.")
-    return run(["glab", "auth", "status"])
+    return run([glab, "auth", "status"])

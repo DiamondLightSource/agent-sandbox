@@ -15,6 +15,7 @@ import tempfile
 
 from .. import context
 from ..context import CONTAINER, HOST, JAIL, requires
+from ..tools import find_tool
 from . import auth
 from .doctor import Doctor
 from .pi_local import pi_local as configure_pi
@@ -126,13 +127,16 @@ def update(ns: argparse.Namespace) -> int:
             " uvx claude-sandbox@latest install\n"
             "  (or bump the pinned version in your devcontainer's postCreate)"
         )
+    git = find_tool("git")
+    if git is None:
+        return _fail("git is not installed")
     tmp = tempfile.mkdtemp()
-    clone = ["git", "clone", "--quiet", REPO_URL, f"{tmp}/claude-sandbox"]
+    clone = [git, "clone", "--quiet", REPO_URL, f"{tmp}/claude-sandbox"]
     rc = subprocess.run(clone, check=False).returncode
     if rc:
         return rc
     # `install` picks the newest stable tag; the clone is removed after.
-    script = 'bash "$1/claude-sandbox/install" && rm -rf "$1"'
+    script = '/bin/bash "$1/claude-sandbox/install" && /bin/rm -rf "$1"'
     return _exec("/bin/bash", ["-c", script, "claude-sandbox-update", tmp])
 
 

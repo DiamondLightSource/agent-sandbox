@@ -17,6 +17,7 @@ import pytest
 from claude_sandbox import cli, context
 from claude_sandbox.context import CONTAINER, JAIL, Where
 from claude_sandbox.helpers import auth, commands, doctor, pi_local
+from claude_sandbox.tools import find_tool
 
 Main = Callable[..., int]
 
@@ -102,6 +103,11 @@ def test_update(
     for text in ("as root", "published container image", "@latest install"):
         assert text in err
     installer.write_text("clone\n")
+    on_path = tmp_path / "on_path"
+    on_path.mkdir()
+    (on_path / "git").write_text("#!/bin/sh\n")
+    (on_path / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{on_path}:{os.environ['PATH']}")
     clones: list[list[str]] = []
 
     def git(argv: list[str], check: bool) -> subprocess.CompletedProcess[str]:
@@ -111,10 +117,19 @@ def test_update(
     monkeypatch.setattr(subprocess, "run", git)
     with pytest.raises(Exec) as exc:
         main("update")
-    assert clones[0][:3] == ["git", "clone", "--quiet"]
+    assert clones[0][:3] == [find_tool("git"), "clone", "--quiet"]
+    assert clones[0][0] != str(on_path / "git")
     tmp = clones[0][-1].rsplit("/", 1)[0]
+    assert exc.value.argv[0] == "/bin/bash" and "/bin/rm -rf" in exc.value.argv[2]
     assert exc.value.argv[-2:] == ["claude-sandbox-update", tmp]
     assert main("update") == 1  # the second clone fails
+
+    def missing(name: str) -> None:
+        return None
+
+    monkeypatch.setattr(commands, "find_tool", missing)
+    assert main("update") == 1
+    assert "git is not installed" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(("installed", "rc"), [(True, 0), (False, 1)])
@@ -312,8 +327,18 @@ def test_pi_local_fetch_fails_quietly() -> None:
 
 
 @pytest.fixture
-def forge(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], str | None]]:
+def forge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> list[tuple[list[str], str | None]]:
+    """gh and glab in a system directory, and same-named executables first on PATH."""
     calls: list[tuple[list[str], str | None]] = []
+    for where in ("system", "on_path"):
+        (tmp_path / where).mkdir()
+        for name in ("gh", "glab"):
+            (tmp_path / where / name).write_text("#!/bin/sh\n")
+            (tmp_path / where / name).chmod(0o755)
+    monkeypatch.setattr(auth, "FORGE_PATH", (str(tmp_path / "system"),))
+    monkeypatch.setenv("PATH", f"{tmp_path / 'on_path'}:{os.environ['PATH']}")
 
     def run(argv: list[str], stdin: str | None = None) -> int:
         calls.append((argv, stdin))
@@ -330,21 +355,25 @@ def forge(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], str | None]]
 
 def test_gh_auth(main: Main, forge: list[tuple[list[str], str | None]]) -> None:
     assert main("gh-auth") == 0
-    assert forge[0] == (["gh", "auth", "login", "--with-token"], "ghp_x\n")
+    gh = forge[0][0][0]
+    assert gh.endswith("/system/gh")
+    assert forge[0] == ([gh, "auth", "login", "--with-token"], "ghp_x\n")
     assert [argv for argv, _ in forge[1:]] == [
-        ["gh", "auth", "setup-git"],
-        ["gh", "auth", "status"],
+        [gh, "auth", "setup-git"],
+        [gh, "auth", "status"],
     ]
 
 
 def test_glab_auth(main: Main, forge: list[tuple[list[str], str | None]]) -> None:
     assert main("glab-auth", "gitlab.example") == 0
+    glab = forge[0][0][0]
+    assert glab.endswith("/system/glab")
     assert forge[0] == (
-        ["glab", "auth", "login", "--stdin", "--hostname", "gitlab.example"],
+        [glab, "auth", "login", "--stdin", "--hostname", "gitlab.example"],
         "ghp_x\n",
     )
     assert forge[2][0] == [
-        "glab",
+        glab,
         "config",
         "set",
         "--global",
@@ -353,6 +382,14 @@ def test_glab_auth(main: Main, forge: list[tuple[list[str], str | None]]) -> Non
     ]
     forge.clear()
     assert main("glab-auth", "fail") == 4 and len(forge) == 1
+
+
+def test_a_missing_forge_cli_refuses(
+    main: Main, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(auth, "FORGE_PATH", ("/nonexistent",))
+    assert main("gh-auth") == main("glab-auth") == 1
+    assert "gh is not installed" in capsys.readouterr().err
 
 
 def test_read_secret_is_unechoed_on_a_terminal(

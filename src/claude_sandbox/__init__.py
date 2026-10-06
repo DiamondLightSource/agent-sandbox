@@ -69,7 +69,9 @@ def main() -> None:
         # `unknown`; the wheel version is the release it was built from.
         env.setdefault("CLAUDE_SANDBOX_VERSION", ver)
         env["CLAUDE_SANDBOX_INSTALLER"] = "uvx"
-        os.execvpe("bash", ["bash", os.path.join(tree, "install"), *argv[1:]], env)
+        os.execvpe(
+            "/bin/bash", ["/bin/bash", os.path.join(tree, "install"), *argv[1:]], env
+        )
     env.setdefault("CLAUDE_SANDBOX_LAUNCHER_VERSION", ver)
     # The wheel pins the image: launcher and image are the same release. A
     # wheel built between tags (a dev version) has no image of its own.

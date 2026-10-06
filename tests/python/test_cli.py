@@ -4,6 +4,7 @@ import argparse
 import os
 import runpy
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from claude_sandbox.host import commands, launcher
 from claude_sandbox.host.options import Options
 
 Sessions = list[tuple[list[str], bool, Options]]
+BIN = "/usr/local/bin"
 
 
 def code(argv: list[str]) -> int:
@@ -23,6 +25,15 @@ def code(argv: list[str]) -> int:
     except SystemExit as exc:
         assert isinstance(exc.code, int)
         return exc.code
+
+
+@pytest.fixture
+def on_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Executables of every name the CLI runs, first on PATH: none may be used."""
+    for name in ("claude", "codex", "pi", "claude-sandbox", "sh", "bash"):
+        (tmp_path / name).write_text("#!/bin/sh\n")
+        (tmp_path / name).chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
 
 @pytest.fixture
@@ -49,20 +60,24 @@ def sessions(monkeypatch: pytest.MonkeyPatch) -> Sessions:
 @pytest.mark.parametrize(
     ("argv", "command", "pause"),
     [
-        ([], ["claude"], True),
-        (["--recreate", "--resume"], ["claude", "--resume"], True),
-        (["--", "codex"], ["codex"], True),
-        (["pi", "--help", "-p", "hi"], ["pi", "--help", "-p", "hi"], True),
-        (["help"], ["claude", "help"], True),  # not a host command: claude's prompt
+        ([], [f"{BIN}/claude"], True),
+        (["--recreate", "--resume"], [f"{BIN}/claude", "--resume"], True),
+        (["--", "codex"], [f"{BIN}/codex"], True),
+        (["pi", "--help", "-p", "hi"], [f"{BIN}/pi", "--help", "-p", "hi"], True),
+        (["help"], [f"{BIN}/claude", "help"], True),  # claude's prompt on a host
         (["verify", "--agent", "pi"],
-         ["claude-sandbox", "verify", "--agent", "pi"], False),
+         [f"{BIN}/claude-sandbox", "verify", "--agent", "pi"], False),
         (["pi-local", "--port", "1"],
-         ["claude-sandbox", "pi-local", "--port", "1"], False),
+         [f"{BIN}/claude-sandbox", "pi-local", "--port", "1"], False),
         (["clean", "--images"], ["clean", "False", "True"], False),
     ],
 )  # fmt: skip
 def test_host_commands(
-    sessions: Sessions, argv: list[str], command: list[str], pause: bool
+    sessions: Sessions,
+    on_path: None,
+    argv: list[str],
+    command: list[str],
+    pause: bool,
 ) -> None:
     rc = cli.main(argv)
     assert sessions[0][:2] == (command, pause)
@@ -76,7 +91,7 @@ def test_shell_runs_the_shell_you_use(
     monkeypatch.setenv("CLAUDE_SANDBOX_SHELL", "fish")
     cli.main(["shell", "-c", "ls"])
     assert sessions[0][0] == [
-        "sh",
+        "/bin/sh",
         "-c",
         launcher.SHELL_SCRIPT,
         "_",

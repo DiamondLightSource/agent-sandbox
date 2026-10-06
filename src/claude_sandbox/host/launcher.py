@@ -29,12 +29,21 @@ KEEPER_CMD = 'trap "exit 0" TERM INT; while :; do sleep 60 & wait $!; done'
 KEEPER_MARK = "sleep 60 & wait"
 # Turn off the DEC mouse modes a TUI killed mid-draw leaves on.
 MOUSE_RESET = "\033[?1000l\033[?1002l\033[?1003l\033[?1005l\033[?1006l\033[?1015l"
-# The `shell` verb: the user's shell if the image has it, else bash.
-SHELL_SCRIPT = 'command -v "$1" >/dev/null && exec "$@"; shift; exec bash "$@"'
+# Programs run inside the container are named by absolute path (ADR 26: no
+# executable found through PATH): the sandbox's own commands, and the shell.
+IN_CONTAINER = "/usr/local/bin"
+SH = "/bin/sh"
+# The `shell` verb: the user's shell, looked up on a fixed PATH, if the image
+# has it; else bash.
+SHELL_SCRIPT = (
+    'if p="$(PATH=/usr/local/bin:/usr/bin:/bin command -v -- "$1")"; then'
+    ' shift; exec "$p" "$@"; fi; shift; exec /bin/bash "$@"'
+)
 SHELLS = frozenset({"zsh", "bash", "fish", "ksh", "tcsh", "dash", "sh"})
 # CLAUDE_SANDBOX_* variables that are the launcher's own, not the sandbox's.
-# IMPL and CONTEXT are new with the Python CLI: the host's opt-in must not
-# opt the container's own install in, nor tell it that it is a host.
+# IMPL, CONTEXT and NESTED are not passed by the Python CLI (the bash passes
+# NESTED): the host's opt-in must not opt the container's own install in,
+# and nothing the host sets may tell the container that it is a host.
 NOT_PASSED = frozenset(
     "CLAUDE_SANDBOX_" + v
     for v in (

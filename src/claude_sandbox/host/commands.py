@@ -28,32 +28,38 @@ def forward(ns: argparse.Namespace) -> int:
     """Run the container's own ``claude-sandbox VERB ARGS`` (its installed
     version), so a helper typed on the host does what it does inside."""
     opts = options(ns)
-    return session(ns, ["claude-sandbox", opts.verb, *opts.tail], pause=False)
+    command = [f"{launcher.IN_CONTAINER}/claude-sandbox", opts.verb, *opts.tail]
+    return session(ns, command, pause=False)
+
+
+def agent(ns: argparse.Namespace, name: str) -> int:
+    command = [f"{launcher.IN_CONTAINER}/{name}", *options(ns).tail]
+    return session(ns, command, pause=True)
 
 
 @requires(HOST)
 def claude(ns: argparse.Namespace) -> int:
     """a sandboxed Claude Code session (the default)"""
-    return session(ns, ["claude", *options(ns).tail], pause=True)
+    return agent(ns, "claude")
 
 
 @requires(HOST)
 def codex(ns: argparse.Namespace) -> int:
     """a sandboxed Codex session"""
-    return session(ns, ["codex", *options(ns).tail], pause=True)
+    return agent(ns, "codex")
 
 
 @requires(HOST)
 def pi(ns: argparse.Namespace) -> int:
     """a sandboxed Pi session"""
-    return session(ns, ["pi", *options(ns).tail], pause=True)
+    return agent(ns, "pi")
 
 
 @requires(HOST)
 def shell(ns: argparse.Namespace) -> int:
     """a plain, UNSANDBOXED shell in the container (e.g. for gh-auth)"""
     want = os.environ.get("CLAUDE_SANDBOX_SHELL") or launcher.detect_shell(os.environ)
-    command = ["sh", "-c", launcher.SHELL_SCRIPT, "_", want, *options(ns).tail]
+    command = [launcher.SH, "-c", launcher.SHELL_SCRIPT, "_", want, *options(ns).tail]
     return session(ns, command, pause=False)
 
 
