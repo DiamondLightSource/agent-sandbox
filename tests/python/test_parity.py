@@ -196,6 +196,17 @@ SCENARIOS = [
     Scenario("home-partial", "4a", tree=("home/.claude/", "home/.config/gh/")),
     Scenario("home-full", "4b", tree=FULL_HOME),
     Scenario(
+        "home-files-as-dirs",
+        "4b (a file bind needs a regular file: -f, not -e)",
+        tree=("home/.claude/", "home/.claude.json/", "home/.local/bin/uv/"),
+    ),
+    Scenario(
+        "workspace-is-file",
+        "3 (a workspace bind needs a directory: -d, not -e)",
+        tree=("home/", "ws-file"),
+        workspace="{root}/ws-file",
+    ),
+    Scenario(
         "pass-through",
         "5",
         {**REAL_ROOT, "TERM": "xterm-256color", "LANG": "en_US.UTF-8"},
