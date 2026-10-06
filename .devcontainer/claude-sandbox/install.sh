@@ -646,15 +646,26 @@ provision_python_shadow() {
         echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python installs from a clone (./install --here); $REPO_ROOT has no src/claude_sandbox." >&2
         exit 1
     fi
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python needs uv on PATH to fetch the interpreter." >&2
+    # ADR 26: no executable found through PATH. uv comes only from a fixed
+    # system location, and only a root-owned copy nobody else can write.
+    local uv="" candidate
+    for candidate in /usr/bin/uv /usr/local/bin/uv; do
+        if [ -f "$candidate" ] && [ -x "$candidate" ] \
+                && [ "$(stat -c %u "$candidate")" = 0 ] \
+                && [ -z "$(find "$candidate" -perm /022)" ]; then
+            uv="$candidate"
+            break
+        fi
+    done
+    if [ -z "$uv" ]; then
+        echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python needs a root-owned uv at /usr/bin/uv or /usr/local/bin/uv." >&2
         exit 1
     fi
     # An active venv or a UV_PYTHON request must not choose the interpreter.
     env -u VIRTUAL_ENV -u UV_PYTHON UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
-        uv python install --no-config --quiet "$PY_VERSION"
+        "$uv" python install --no-config --quiet "$PY_VERSION"
     interp="$(env -u VIRTUAL_ENV -u UV_PYTHON UV_PYTHON_INSTALL_DIR="$py_dir" \
-        uv python find --no-config --no-project --managed-python "$PY_VERSION")"
+        "$uv" python find --no-config --no-project --managed-python "$PY_VERSION")"
     interp="$(readlink -f "$interp")"
     case "$interp" in
         "$py_dir"/*) ;;
@@ -666,7 +677,7 @@ provision_python_shadow() {
     if [ "$(readlink -f "$venv/bin/python" 2>/dev/null)" != "$interp" ]; then
         rm -rf "$venv"
         env -u VIRTUAL_ENV UV_NO_CACHE=1 \
-            uv venv --no-config --no-project --quiet --python "$interp" "$venv"
+            "$uv" venv --no-config --no-project --quiet --python "$interp" "$venv"
     fi
     site="$("$venv/bin/python" -I -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
     rm -f "$site/_virtualenv.pth" "$site/_virtualenv.py"
