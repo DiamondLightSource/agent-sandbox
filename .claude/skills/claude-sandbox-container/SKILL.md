@@ -86,7 +86,8 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   `claude-sandbox update` points back at uvx instead of cloning past the
   pin. **Refuse:** sandbox logic in the entry point beyond locate + env +
   exec while bash is the default (new Python logic goes in its own ADR 26
-  modules, behind the opt-in switch, not into the front door);
+  modules, not wired into the front door until phase 5; the Python shadow
+  ships behind an opt-in switch first);
   a second console script or package (reopens `--from` for `@latest`);
   an sdist (a second copy of the tree); a devcontainer *feature* as the
   guest path (considered, slow to start, and useless for the host

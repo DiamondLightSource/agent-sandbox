@@ -82,9 +82,10 @@ Codex's guard is Invariant 5's twin, one tier over:
 `/etc/codex/requirements.toml` (hard, admin-only) carries the same
 two hooks; `/etc/codex/managed_config.toml` disables the update
 check. **Do not** set `allow_managed_hooks_only` — same call as
-`allowManagedHooksOnly`. TOML is *owned, not merged* (bash-only, no
-jq for TOML): a `requirements.toml` we did not write is left alone
-with a warning, never half-parsed.
+`allowManagedHooksOnly`. TOML is *owned, not merged* (the bash
+installer has no TOML parser; jq reads only JSON): a
+`requirements.toml` we did not write is left alone with a warning,
+never half-parsed.
 
 `tests/bwrap_argv.sh` scenario 14 and the codex block at the end of
 `tests/smoke.sh` guard all of this — including that the two installed
