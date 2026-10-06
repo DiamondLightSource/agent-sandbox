@@ -1,0 +1,502 @@
+"""The shadow launch path (shadow.py), with injected exec, env and paths.
+
+Every launch ends in an exec; the fake execve raises ``Exec`` instead, so a
+test sees exactly what would have run. The bash-equivalence of the same
+launches is in test_parity.py; these pin behaviour the harness cannot reach.
+"""
+
+import os
+import runpy
+import shlex
+import signal
+import stat
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import NoReturn
+
+import pytest
+
+import claude_sandbox
+from claude_sandbox import jail, shadow
+from claude_sandbox.bwrap import bwrap_argv
+from claude_sandbox.config import Config, parse_config
+from claude_sandbox.errors import SandboxError
+from claude_sandbox.profiles import PROFILES, VERIFY_BATTERY
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+class Exec(Exception):
+    def __init__(self, path: str, argv: list[str], env: Mapping[str, str]) -> None:
+        super().__init__(path)
+        self.path, self.argv, self.env = path, list(argv), dict(env)
+
+
+def fake_execve(path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:
+    raise Exec(path, argv, env)
+
+
+@dataclass
+class Fixture:
+    root: Path
+    host: shadow.Host
+    env: dict[str, str]
+
+    @property
+    def home(self) -> Path:
+        return self.root / "home"
+
+    def run(self, *args: str, argv0: str = "claude") -> Exec:
+        with pytest.raises(Exec) as exc:
+            shadow.run(argv0, args, self.env, self.host)
+        return exc.value
+
+    def refused(self, *args: str, argv0: str = "claude") -> int:
+        with pytest.raises(SystemExit) as exc:
+            shadow.run(argv0, args, self.env, self.host)
+        assert isinstance(exc.value.code, int)
+        return exc.value.code
+
+
+def executable(path: Path, text: str = "#!/bin/sh\n") -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o755)
+    return str(path)
+
+
+@pytest.fixture
+def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
+    libexec = tmp_path / "libexec"
+    profiles = {
+        "claude": replace(
+            PROFILES["claude"], real=executable(libexec / "claude", "real claude")
+        ),
+        "codex": replace(
+            PROFILES["codex"],
+            real=executable(libexec / "codex-dist/bin/codex"),
+            exec_via=executable(libexec / "codex-launch"),
+        ),
+        "pi": replace(PROFILES["pi"], real=executable(libexec / "pi-run")),
+    }
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/claude-sandbox.conf").write_text("egress-jail = 0\n")
+    (tmp_path / "home").mkdir()
+    (tmp_path / "work").mkdir()
+    (tmp_path / "skills/alpha").mkdir(parents=True)
+    executable(tmp_path / "bin/script")
+    identity = {"user.name": "A U Thor", "user.email": "a@example.invalid"}
+    host = shadow.Host(
+        config_path=str(tmp_path / "etc/claude-sandbox.conf"),
+        gitconfig_path=str(tmp_path / "etc/claude-gitconfig"),
+        shipped_skills_dir=str(tmp_path / "skills"),
+        profiles=profiles,
+        execve=fake_execve,
+        git_config_get=lambda key, env: identity[key],
+        mountinfo=str(tmp_path / "mountinfo"),
+    )
+    (tmp_path / "mountinfo").write_text("")
+    monkeypatch.chdir(tmp_path / "work")
+    env = {"HOME": str(tmp_path / "home"), "PATH": str(tmp_path / "bin")}
+    return Fixture(tmp_path, host, env)
+
+
+def test_launch_wraps_the_bwrap_argv_in_script(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ex = fx.run("--chrome", "a b", "")
+    assert ex.path == str(fx.root / "bin/script")
+    assert ex.argv[:6] == ["script", "--return", "-q", "-E", "never", "-c"]
+    assert ex.argv[7:] == ["/dev/null"]
+    env = parse_config(fx.host.config_path, fx.env)
+    expected = bwrap_argv(
+        fx.host.profiles["claude"],
+        Config.from_env(env),
+        env,
+        str(fx.root / "work"),
+        fx.host.profiles["claude"].real,
+        ["--chrome", "a b", ""],
+        shipped_skills_dir=fx.host.shipped_skills_dir,
+        gitconfig_path=fx.host.gitconfig_path,
+    )
+    assert shlex.split(ex.argv[6]) == expected
+    assert expected[-3:] == ["--no-chrome", "a b", ""]
+    assert ex.env == {**env, "SHELL": "/bin/bash"}
+    # What the builder binds exists now.
+    for rel in (".config/gh", ".config/glab-cli", ".claude/skills", ".agents/skills"):
+        assert (fx.home / rel).is_dir(), rel
+    assert (fx.home / ".claude.json").is_file()
+    gitconfig = Path(fx.host.gitconfig_path)
+    assert stat.S_IMODE(gitconfig.stat().st_mode) == 0o644
+    assert "\tname = A U Thor\n" in gitconfig.read_text()
+    assert "gh auth git-credential" in gitconfig.read_text()
+    assert [p.name for p in gitconfig.parent.iterdir()] != []  # no temp left
+    assert sorted(p.name for p in gitconfig.parent.iterdir()) == [
+        "claude-gitconfig",
+        "claude-sandbox.conf",
+    ]
+    assert "~/.claude is not host-mounted" in capsys.readouterr().err
+
+
+def test_no_forge_skips_credential_dirs_and_helpers(fx: Fixture) -> None:
+    Path(fx.host.config_path).write_text("egress-jail = 0\nno-forge\n")
+    fx.run()
+    assert not (fx.home / ".config").exists()
+    assert "credential" not in Path(fx.host.gitconfig_path).read_text()
+
+
+def test_codex_and_pi_create_their_own_state(fx: Fixture) -> None:
+    fx.run(argv0="/usr/local/bin/codex")
+    fx.run(argv0="pi")
+    assert (fx.home / ".codex/skills").is_dir()
+    assert (fx.home / ".pi/agent/skills").is_dir()
+    assert not (fx.home / ".claude.json").exists()
+
+
+def test_inherited_gitconfig_path_never_reaches_the_builder(fx: Fixture) -> None:
+    fx.env["CLAUDE_SANDBOX_GITCONFIG_PATH"] = "/evil/gitconfig"
+    argv = shlex.split(fx.run().argv[6])
+    assert "/evil/gitconfig" not in argv
+
+
+def test_the_egress_jail_is_refused_not_skipped(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    Path(fx.host.config_path).write_text("")  # the jail is on by default
+    with pytest.raises(SandboxError, match="egress jail"):
+        shadow.run("claude", [], fx.env, fx.host)
+    # The refusal names the fix, never the operator opt-out.
+    assert "EGRESS_JAIL" not in jail.NOT_PORTED
+
+
+def test_a_jailed_launch_goes_through_the_jail_seam_only(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    Path(fx.host.config_path).write_text("")
+
+    def staged(env: Mapping[str, str], warn: object) -> dict[str, str]:
+        return {**env, "CLAUDE_SANDBOX_JAIL_RESOLV": str(fx.root / "resolv")}
+
+    monkeypatch.setattr(jail, "stage_dns", staged)
+    # Never the unjailed exec: the seam refuses until phase 2b fills it.
+    with pytest.raises(SandboxError, match="egress jail"):
+        shadow.run("claude", [], fx.env, fx.host)
+
+
+def test_recursion_guard_execs_the_agent_without_bwrap(fx: Fixture) -> None:
+    fx.env["IS_SANDBOX"] = "1"
+    ex = fx.run("--chrome", "-p", "hi")
+    inner = str(fx.home / ".local/bin/claude")
+    assert (ex.path, ex.argv) == (inner, [inner, "--no-chrome", "-p", "hi"])
+    assert ex.env == fx.env
+    codex = fx.host.profiles["codex"]
+    ex = fx.run("--chrome", argv0="codex")
+    assert ex.argv == [codex.exec_via, codex.real, "--chrome"]
+    ex = fx.run("--sandbox-verify", argv0="pi")
+    assert ex.argv == ["/bin/bash", VERIFY_BATTERY]
+    # Nothing was written on the way.
+    assert list(fx.home.iterdir()) == []
+
+
+def test_sandbox_verify_runs_the_battery_without_the_persistence_check(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = shlex.split(fx.run("--sandbox-verify").argv[6])
+    assert argv[-2:] == ["/bin/bash", VERIFY_BATTERY]
+    assert capsys.readouterr().err == ""
+    assert fx.refused("--sandbox-verify", "x") == 2
+
+
+def test_refusals_before_launch(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fx.env["CLAUDE_SANDBOX_AGENT"] = "bash"
+    with pytest.raises(SandboxError, match="unknown CLAUDE_SANDBOX_AGENT"):
+        shadow.run("claude", [], fx.env, fx.host)
+    del fx.env["CLAUDE_SANDBOX_AGENT"]
+
+    Path(fx.host.profiles["pi"].real).chmod(0o644)
+    assert fx.refused(argv0="pi") == 1
+    assert "real Pi binary missing at" in capsys.readouterr().err
+
+    Path(fx.host.profiles["pi"].real).write_text(shadow.SHIM)
+    Path(fx.host.profiles["pi"].real).chmod(0o755)
+    assert fx.refused(argv0="pi") == 1
+    assert "is a copy of this shadow" in capsys.readouterr().err
+
+    Path(fx.host.config_path).write_text("egress-jail = 0\nlocal-model-port = 99999\n")
+    assert fx.refused() == 1
+    assert "local-model-port must be 1–65535" in capsys.readouterr().err
+
+    Path(fx.host.config_path).write_text("egress-jail = 0\nallow-device = /etc\n")
+    with pytest.raises(SandboxError, match="allow-device"):
+        shadow.run("claude", [], fx.env, fx.host)
+
+    Path(fx.host.config_path).write_text("egress-jail = 0\n")
+    fx.env["PATH"] = str(fx.root / "nowhere")
+    assert fx.refused() == 127
+    assert "script: command not found" in capsys.readouterr().err
+
+
+def test_unreadable_conf_refuses(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unreadable(path: str, env: Mapping[str, str]) -> dict[str, str]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(shadow, "parse_config", unreadable)
+    assert fx.refused() == 1
+    assert "claude-sandbox.conf: Permission denied" in capsys.readouterr().err
+
+
+def test_unknown_name_warns(fx: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    fx.run(argv0="claude-dev")
+    assert "invoked as 'claude-dev', which names no known agent" in (
+        capsys.readouterr().err
+    )
+    fx.env["CLAUDE_SANDBOX_AGENT"] = "claude"
+    fx.run(argv0="claude-dev")
+    assert "invoked as" not in capsys.readouterr().err
+
+
+def test_exec_failure_statuses(fx: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    def enoent(path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    def eacces(path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:
+        raise PermissionError(13, "Permission denied")
+
+    fx.host = replace(fx.host, execve=enoent)
+    assert fx.refused() == 127
+    fx.host = replace(fx.host, execve=eacces)
+    assert fx.refused() == 126
+    assert "Permission denied" in capsys.readouterr().err
+
+
+def test_exec_restores_the_signals_python_ignores(fx: Fixture) -> None:
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    try:
+        fx.run()
+        assert signal.getsignal(signal.SIGPIPE) == signal.SIG_DFL
+        assert signal.getsignal(signal.SIGXFSZ) == signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+
+def test_gitconfig_write_failures_leave_no_temp_file(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail(src: str, dst: str) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", fail)
+    assert fx.refused() == 1
+    assert "No space left on device" in capsys.readouterr().err
+    assert sorted(p.name for p in (fx.root / "etc").iterdir()) == [
+        "claude-sandbox.conf"
+    ]
+    fx.host = replace(fx.host, gitconfig_path=str(fx.root / "no/such/dir/gitconfig"))
+    assert fx.refused() == 1
+    assert "cannot write" in capsys.readouterr().err
+
+
+def test_home_creation_failure_refuses(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (fx.home / ".config").write_text("a file, not a dir")
+    assert fx.refused() == 1
+    assert "cannot create" in capsys.readouterr().err
+
+
+def test_shipped_skills_warn_only_when_they_mask_something(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (fx.root / "skills/beta/scripts").mkdir(parents=True)
+    (fx.root / "skills/.hidden").mkdir()
+    (fx.root / "skills/not-a-skill").touch()
+    skills = fx.home / ".claude/skills"
+    for name in ("alpha", "beta", "gamma"):
+        (skills / name).mkdir(parents=True)
+    (skills / "beta/SKILL.md").touch()
+    (skills / "gamma/SKILL.md").touch()
+    fx.run()
+    assert capsys.readouterr().err.count("shadowed") == 1  # beta only
+    (skills / "beta/SKILL.md").unlink()
+    (skills / "beta").rmdir()
+    (skills / "beta").symlink_to(skills / "gamma")
+    (skills / "alpha").rmdir()
+    (skills / "alpha").touch()
+    fx.run()
+    err = capsys.readouterr().err
+    assert "~/.claude/skills/alpha is shadowed" in err
+    assert "~/.claude/skills/beta is shadowed" in err
+
+
+def test_unshareable_skills_dir_warns_and_launches(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (fx.home / ".agents").symlink_to(fx.root / "gone")
+    fx.run()
+    assert "cannot create ~/.agents/skills" in capsys.readouterr().err
+
+
+def test_persistent_config_does_not_warn(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shared = fx.root / "shared dir"
+    shared.mkdir()
+    (fx.home / ".claude").symlink_to(shared)
+    fx.run()
+    assert "not host-mounted" not in capsys.readouterr().err
+    (fx.home / ".claude").unlink()
+    (fx.home / ".claude").mkdir()
+    mount = str(fx.home / ".claude").replace(" ", "\\040")
+    Path(fx.host.mountinfo).write_text(f"1 2 0:1 / {mount} rw - tmpfs t rw\n")
+    fx.home.rename(fx.root / "home dir")
+    fx.env["HOME"] = str(fx.root / "home dir")
+    mount = str(fx.root / "home dir/.claude").replace(" ", "\\040")
+    Path(fx.host.mountinfo).write_text(f"short\n1 2 0:1 / {mount} rw - tmpfs t rw\n")
+    fx.run()
+    assert "not host-mounted" not in capsys.readouterr().err
+
+
+def test_is_mountpoint() -> None:
+    assert shadow.is_mountpoint("/proc")
+    assert not shadow.is_mountpoint("/proc/self/../self/..", "/nonexistent")
+    assert not shadow.is_mountpoint("/no/such/path")
+
+
+def test_original_environ(tmp_path: Path) -> None:
+    block = tmp_path / "environ"
+    block.write_bytes(b"A=1\0B=x=y\0A=2\0junk\0=nameless\0C=\xff\0")
+    assert shadow.original_environ(str(block)) == {
+        "A": "1",
+        "B": "x=y",
+        "C": os.fsdecode(b"\xff"),
+    }
+    assert shadow.original_environ(str(tmp_path / "absent")) == dict(os.environ)
+    assert shadow.original_environ()["PATH"] == os.environ["PATH"]
+
+
+def test_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    monkeypatch.chdir(tmp_path / "link")
+    real = os.getcwd()
+    assert shadow.working_directory({"PWD": str(tmp_path / "link")}) == str(
+        tmp_path / "link"
+    )
+    assert shadow.working_directory({"PWD": str(tmp_path)}) == real
+    assert shadow.working_directory({"PWD": "relative"}) == real
+    assert shadow.working_directory({"PWD": "/no/such/dir"}) == real
+    assert shadow.working_directory({}) == real
+
+
+def test_git_identity_comes_from_git_on_path(tmp_path: Path) -> None:
+    cfg = tmp_path / "gitconfig"
+    cfg.write_text("[user]\n\tname = Real Name\n")
+    env = {"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": str(cfg)}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    assert shadow.read_git_config("user.name", env) == "Real Name"
+    assert shadow.read_git_config("user.email", env) == ""
+    env["PATH"] = str(tmp_path)  # no git at all: an empty identity
+    assert shadow.read_git_config("user.name", env) == ""
+
+
+def test_pause_needs_a_person_at_the_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    term = shadow.Terminal()
+    term.pause(verify=False)
+    term.warn("hello")
+    term.pause(verify=True)
+    term.pause(verify=False)  # pytest's stdin is not a terminal
+    assert capsys.readouterr().err == "claude-sandbox: hello\n"
+
+
+def test_main_reports_and_dies_like_the_bash(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    died: list[int] = []
+
+    def die_by(signum: int) -> NoReturn:
+        died.append(signum)
+        raise SystemExit(128 + signum)
+
+    def raising(exc: BaseException) -> None:
+        def run(*args: object) -> NoReturn:
+            raise exc
+
+        monkeypatch.setattr(shadow, "run", run)
+
+    monkeypatch.setattr(shadow, "die_by", die_by)
+    saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        raising(SandboxError("claude-sandbox: no."))
+        with pytest.raises(SystemExit) as exc:
+            shadow.main("claude", [])
+        assert exc.value.code == 1
+        assert capsys.readouterr().err == "claude-sandbox: no.\n"
+        assert signal.getsignal(signal.SIGTERM) is shadow.raise_signalled
+        for raised, signum in (
+            (KeyboardInterrupt(), signal.SIGINT),
+            (shadow.Signalled(signal.SIGHUP), signal.SIGHUP),
+        ):
+            raising(raised)
+            with pytest.raises(SystemExit):
+                shadow.main("claude", [])
+            assert died[-1] == signum
+    finally:
+        for signum, handler in saved.items():
+            signal.signal(signum, handler)
+
+
+def test_signal_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(shadow.Signalled) as exc:
+        shadow.raise_signalled(signal.SIGTERM, None)
+    assert exc.value.signum == signal.SIGTERM
+    sent: list[int] = []
+
+    def kill(pid: int, signum: int) -> None:
+        sent.append(signum)
+
+    monkeypatch.setattr(os, "kill", kill)
+    saved = signal.getsignal(signal.SIGUSR1)
+    try:
+        with pytest.raises(SystemExit) as exit_:
+            shadow.die_by(signal.SIGUSR1)
+    finally:
+        signal.signal(signal.SIGUSR1, saved)
+    assert (sent, exit_.value.code) == ([signal.SIGUSR1], 128 + signal.SIGUSR1)
+
+
+def test_shim_file_is_the_shim_the_shadow_knows() -> None:
+    shim = REPO / ".devcontainer/claude-sandbox/claude-shim"
+    assert shim.read_text() == shadow.SHIM
+    assert os.access(shim, os.X_OK)
+
+
+def test_dunder_main_dispatches(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, list[str]]] = []
+
+    def shadow_main(name: str, args: list[str]) -> None:
+        calls.append((name, args))
+
+    def front_door() -> None:
+        calls.append(("front", []))
+
+    monkeypatch.setattr(shadow, "main", shadow_main)
+    monkeypatch.setattr(claude_sandbox, "main", front_door)
+    for argv in (["_shadow", "pi", "--", "--", "x"], ["--help"]):
+        monkeypatch.setattr(sys, "argv", ["claude_sandbox", *argv])
+        runpy.run_module("claude_sandbox", run_name="__main__")
+    assert calls == [("pi", ["--", "x"]), ("front", [])]
+    monkeypatch.setattr(sys, "argv", ["claude_sandbox", "_shadow", "pi", "x"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("claude_sandbox", run_name="__main__")
+    assert exc.value.code == 2
+    assert "usage:" in capsys.readouterr().err
