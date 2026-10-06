@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from .. import context
+from .. import context, watch
 from ..context import CONTAINER, HOST, JAIL, requires
 from ..tools import find_tool
 from . import auth
@@ -78,6 +78,27 @@ def verify(ns: argparse.Namespace) -> int:
 def pi_local(ns: argparse.Namespace) -> int:
     """configure Pi's lllm2 provider: [--port PORT] or MODEL CONTEXT [PORT]"""
     return configure_pi(list[str](ns.tail))
+
+
+def alerts_arguments(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--clear",
+        action="store_true",
+        help="empty the list and accept what the directories hold now",
+    )
+
+
+# Not in the jail: the alerts are what a session must not see or clear.
+@requires(CONTAINER, forward_from=HOST)
+def alerts(ns: argparse.Namespace) -> int:
+    """list what the PATH watcher quarantined (ADR 27); --clear once reviewed"""
+    if ns.clear:
+        if not watch.clear_alerts():
+            return _fail("could not empty the alerts (run as root).")
+        return 0
+    for line in watch.read_alerts():
+        print(line)
+    return 0
 
 
 def doctor_arguments(p: argparse.ArgumentParser) -> None:

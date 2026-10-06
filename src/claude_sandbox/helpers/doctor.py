@@ -3,6 +3,11 @@
 The container tag in the Claude status line, the Pi footer and the shell
 prompts. Every file ``--fix`` changes is backed up first. The paths come
 from the environment so the tests stay hermetic, as in the bash.
+
+Where the Python shadow is installed it also checks, from outside the jail,
+that the agents' names reach it on PATH (Invariant 1) and whether the PATH
+watcher has quarantined anything (ADR 27). Neither is for ``--fix``: what
+put a file there needs a person to look at it.
 """
 
 import json
@@ -11,6 +16,13 @@ import shutil
 import tempfile
 import time
 from typing import cast
+
+from .. import watch
+from ..bwrap import SHADOW_DIR
+from ..shadow import SHIM, entry_point_problems
+
+# The installed shadow; the Python one is the shim.
+SHADOW = f"{SHADOW_DIR}/claude"
 
 SL_CMD = "bash $HOME/.claude/statusline-command.sh"
 PROMPT_BEGIN = "# >>> claude-sandbox prompt tag >>>"
@@ -82,6 +94,8 @@ class Doctor:
         env = os.environ
         self.fix = fix
         self.pending = False
+        self.warned = False
+        self.path = env.get("PATH", "")
         self.home = env.get("HOME") or os.path.expanduser("~")
         self.libexec = (
             env.get("CLAUDE_SANDBOX_LIBEXEC") or "/usr/libexec/claude-sandbox"
@@ -236,6 +250,38 @@ class Doctor:
                 "fixed", subject, f"updated the tag block in {rc} (new shells show it)"
             )
 
+    def warn(self, subject: str, detail: str) -> None:
+        """A problem for a person, not for --fix."""
+        self.report("warn", subject, detail)
+        self.warned = True
+
+    def guards(self) -> None:
+        """The entry points reach the shadow; nothing is quarantined."""
+        try:
+            python_shadow = _read(SHADOW) == SHIM
+        except OSError:
+            python_shadow = False
+        if not python_shadow:
+            self.report("skip", "entry points", "the Python shadow is not installed")
+            return
+        problems = entry_point_problems(self.path)
+        for path, name in problems:
+            self.warn(
+                "entry points",
+                f"{path} is ahead of {SHADOW_DIR}/{name} on PATH; remove it and"
+                " review the session that created it",
+            )
+        if not problems:
+            self.report("ok", "entry points", "claude, codex, pi reach the shadow")
+        alerts = watch.read_alerts()
+        if alerts:
+            self.warn(
+                "quarantined",
+                f"{len(alerts)} alert(s); see `claude-sandbox alerts`",
+            )
+        else:
+            self.report("ok", "quarantined", "nothing")
+
     def run(self) -> int:
         self.tag()
         self.file(
@@ -252,6 +298,9 @@ class Doctor:
         )
         self.prompt("zsh")
         self.prompt("bash")
+        self.guards()
+        if self.warned and not self.pending:
+            return 1
         if self.pending:
             print(
                 "Run `claude-sandbox doctor --fix` to apply the recommended setup."
