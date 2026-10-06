@@ -1,8 +1,4 @@
-(adr-py- `uvx claude-sandbox [OPTIONS] [claude|codex|pi|shell] [AGENT_ARGS...]` is
-  the launcher. The verbs replace `--agent NAME` and `--shell`. The helper
-  verbs of the in-container CLI (`gh-auth`, `glab-auth`, `verify`,
-  `pi-local`, `version`, `update`) are forwarded into the container, so
-  `uvx claude-sandbox verify` means the same on the host as inside.-front-door)=
+(adr-pypi-front-door)=
 
 # 23. A PyPI wheel as the front door: `uvx claude-sandbox`
 
@@ -59,7 +55,10 @@ Python entry point that locates them and execs bash. The bash is what runs;
 the Python sets two environment variables and calls `execvpe`.
 
 - `uvx claude-sandbox [OPTIONS] [claude|codex|pi|shell] [AGENT_ARGS...]` is
-  the launcher. The verbs replace `--agent NAME` and `--shell`.
+  the launcher. The verbs replace `--agent NAME` and `--shell`. The helper
+  verbs of the in-container CLI (`gh-auth`, `glab-auth`, `verify`,
+  `pi-local`, `version`, `update`) are forwarded into the container, so
+  `uvx claude-sandbox verify` means the same on the host as inside.
 - `uvx claude-sandbox install` runs the installer inside a devcontainer. The
   entry point refuses it outside a container (`CLAUDE_SANDBOX_HOST_INSTALL=1`
   overrides), because a one-word command can be typed on a host by accident
