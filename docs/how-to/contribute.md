@@ -198,9 +198,26 @@ package it uses the standard library only.
 Each command declares where it runs, for example
 `@requires(CONTAINER, JAIL, forward_from=HOST)` on `verify`. `cli.py` runs a
 command where it is declared, forwards it from `forward_from` into the
-project container as `podman exec … claude-sandbox VERB ARGS` (so it runs
-the version installed there), and refuses it anywhere else. That
-declaration replaces the bash launcher's hand-kept list of forwarded verbs.
+project container as `podman exec … /usr/local/bin/claude-sandbox VERB
+ARGS` (so it runs the version installed there), and refuses it anywhere
+else. That declaration replaces the bash launcher's hand-kept list of
+forwarded verbs.
+
+As ADR 26 requires, no program the CLI runs in the container or the jail is
+found through `PATH`. The agents and `claude-sandbox` are named by their
+absolute paths under `/usr/local/bin`, the `shell` verb starts from
+`/bin/sh`, and `gh`, `glab` and `git` come from `tools.find_tool`. Only the
+engine on the host (`podman` or `docker`) is still found on the user's
+`PATH`, as the bash launcher finds it.
+
+Where the Python CLI differs from the bash on purpose:
+
+- The create-time pass-through to the container leaves out
+  `CLAUDE_SANDBOX_IMPL`, `CLAUDE_SANDBOX_CONTEXT` and
+  `CLAUDE_SANDBOX_NESTED`; the bash passes `NESTED`.
+- Inside the jail, `gh-auth` and `glab-auth` refuse, as `update` does.
+- In a container, `--version` reports the installed sandbox's version, as
+  the helper does, rather than the launcher's.
 
 | Where | What it holds |
 |---|---|
@@ -221,8 +238,13 @@ CLAUDE_SANDBOX_IMPL=python uvx --from dist/claude_sandbox-*.whl claude-sandbox
 
 `install` still runs the bash installer either way. `uv run python -m
 claude_sandbox` runs the CLI directly, without the front door's
-environment. To try the helpers on a host, set
-`CLAUDE_SANDBOX_CONTEXT=container`, the seam the tests use.
+environment.
+
+`CLAUDE_SANDBOX_CONTEXT=host|container` is a test seam only: it lets the
+helper suites run on a host. It never overrides the jail, and `update`
+ignores it: `update` changes the system only where `/run/.containerenv` or
+`/.dockerenv` exists, or with `CLAUDE_SANDBOX_HOST_INSTALL=1`, as `install`
+does.
 
 `tests/launcher.sh` and `tests/doctor.sh` run against the Python CLI as
 well as the bash: `tests/python/test_bash_suites.py` points them at a
