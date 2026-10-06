@@ -12,7 +12,6 @@ injectable ``Probe``, and reads the environment only from the ``env`` mapping
 it is given, never from ``os.environ``. Standard library only.
 """
 
-import errno
 import glob as _glob
 import os
 import re
@@ -136,11 +135,19 @@ class HostProbe:
         return _mode_is(path, stat.S_IFBLK)
 
     def realpath(self, path: str) -> str:
-        resolved = os.path.realpath(path, strict=True)
-        # coreutils refuses a trailing slash on a non-directory; Python
-        # strips the slash and resolves the file.
-        if path.endswith("/") and not os.path.isdir(resolved):
-            raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR))
+        # `realpath -e` as GNU coreutils does it, which is the kernel's own
+        # path resolution: every component must exist, and a non-directory
+        # may not be followed by anything, not even `.`, `..` or `/`. The
+        # first stat raises exactly those errors on every Python version;
+        # os.path.realpath(strict=True) does not (3.11 resolves
+        # /dev/zero/.. to /dev, 3.13 refuses it). Once the path resolves,
+        # os.path.realpath agrees across versions. The second stat refuses
+        # what GNU's readlink walk cannot finish: a procfs magic link such as
+        # /dev/stdin -> socket:[N]. uutils coreutils (Ubuntu 25.10+) is more
+        # lenient and accepts /dev/zero/../null; this follows GNU.
+        os.stat(path)
+        resolved = os.path.realpath(path)
+        os.stat(resolved)
         return resolved
 
     def glob(self, pattern: str) -> list[str]:

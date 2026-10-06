@@ -44,7 +44,8 @@ BASH = shutil.which("bash") or "/bin/bash"
 
 # What every scenario starts from; a scenario's env overrides it, and None
 # removes a variable.
-BASE_ENV = {"HOME": "{root}/home", "PATH": "/usr/bin:/bin"}
+BASE_ENV = {"HOME": "{root}/home", "PATH": "{path}"}
+SYSTEM_PATH = "/usr/bin:/bin"
 
 # A refusal compares as this marker followed by the message, so a mismatch
 # reads as a plain list diff either way.
@@ -90,11 +91,35 @@ def build_tree(root: Path, entries: Iterable[str]) -> None:
             path.touch()
 
 
-def scenario_env(root: Path, overrides: Mapping[str, str | None]) -> dict[str, str]:
+def scenario_env(
+    root: Path, overrides: Mapping[str, str | None], path: str
+) -> dict[str, str]:
     merged: dict[str, str | None] = {**BASE_ENV, **overrides}
     return {
-        k: v.replace("{root}", str(root)) for k, v in merged.items() if v is not None
+        k: v.replace("{root}", str(root)).replace("{path}", path)
+        for k, v in merged.items()
+        if v is not None
     }
+
+
+@pytest.fixture(scope="session")
+def bash_path(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """PATH for the bash side, with GNU coreutils' realpath first.
+
+    allow-device runs `realpath -e`. GNU coreutils (CI runners, Debian and
+    Ubuntu 24.04 guests) refuses /dev/zero/..; uutils, the default from
+    Ubuntu 25.10, accepts it. The port follows GNU, so on a uutils host the
+    bash is pointed at GNU's copy, which Ubuntu installs as gnurealpath.
+    """
+    version = subprocess.run(
+        ["realpath", "--version"], capture_output=True, text=True, check=False
+    ).stdout
+    gnu = shutil.which("gnurealpath")
+    if "uutils" not in version or gnu is None:
+        return SYSTEM_PATH
+    shim = tmp_path_factory.mktemp("gnu-bin")
+    (shim / "realpath").symlink_to(gnu)
+    return f"{shim}:{SYSTEM_PATH}"
 
 
 def snapshot(root: Path) -> list[str]:
@@ -328,6 +353,8 @@ SCENARIOS = [
                 "/dev/no-such-claude-device",
                 "/dev/null/",
                 "/dev/zero/..",
+                # Python 3.11's strict realpath resolved this to /dev/null.
+                "/dev/zero/../null",
             )
         )
     ),
@@ -460,12 +487,12 @@ def sh_outcome(sc: Scenario, root: Path, env: dict[str, str]) -> list[str]:
 
 @pytest.mark.parametrize("sc", SCENARIOS, ids=[s.name for s in SCENARIOS])
 def test_argv_matches_bash(
-    sc: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    sc: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bash_path: str
 ) -> None:
     build_tree(tmp_path, sc.tree)
     if sc.conf is not None:
         (tmp_path / "sandbox.conf").write_text(sc.conf.replace("{root}", str(tmp_path)))
-    env = scenario_env(tmp_path, sc.env)
+    env = scenario_env(tmp_path, sc.env, bash_path)
     monkeypatch.chdir(tmp_path)
     before = snapshot(tmp_path)
 
@@ -636,7 +663,7 @@ def test_config_matches_bash(
     conf = tmp_path / "sandbox.conf"
     if case.conf is not None:
         conf.write_bytes(case.conf.encode())
-    env = {"PATH": "/usr/bin:/bin", **case.env}
+    env = {"PATH": SYSTEM_PATH, **case.env}
     monkeypatch.chdir(tmp_path)
 
     proc = driver(tmp_path, env, "config", str(conf), "/work/pwd")
