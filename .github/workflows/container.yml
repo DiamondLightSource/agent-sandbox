@@ -166,6 +166,42 @@ jobs:
             -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
             claude-sandbox:test bash /opt/claude-sandbox/tests/pi_e2e.sh
 
+      # The opt-in Python shadow (issue #72 phase 2), installed over the
+      # baked bash one, with the egress jail on (the default): the same
+      # launches as the bash step above, then the Python jail's own tests in
+      # real namespaces (tests/jail_python.sh, which fetches pytest).
+      # Runs after the bash steps above and changes nothing they use.
+      - name: "Test: opt-in Python shadow (egress jail on)"
+        run: |
+          podman run --rm -t \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --security-opt label=disable \
+            --device /dev/net/tun \
+            -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
+            -v "$RUNNER_TEMP/project:/work" -w /work \
+            claude-sandbox:test bash -c '
+              git config --global user.name "Sandbox integration test" || exit "$?"
+              git config --global user.email "sandbox-test@example.invalid" || exit "$?"
+              before="$(ls -A "$HOME/.local/bin" 2>/dev/null)"
+              CLAUDE_SANDBOX_IMPL=python \
+                bash /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh --image-build \
+                || exit "$?"
+              # The opt-in writes only under /usr/libexec/claude-sandbox.
+              [ "$(ls -A "$HOME/.local/bin" 2>/dev/null)" = "$before" ] || {
+                echo "the Python shadow install changed ~/.local/bin"; exit 1; }
+              grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
+              claude --version || {
+                rc=$?
+                echo "--- /tmp/claude-pasta.log ---"
+                cat /tmp/claude-pasta.log 2>/dev/null || true
+                exit "$rc"
+              }
+              for agent in claude codex pi; do
+                claude-sandbox verify --agent "$agent" || exit "$?"
+              done
+              bash /opt/claude-sandbox/tests/jail_python.sh'
+
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3

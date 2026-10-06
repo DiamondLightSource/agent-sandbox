@@ -16,6 +16,10 @@
 #       FUNCTION's own stdout, stderr and exit status.
 #   argv_driver.sh SHADOW gitconfig OUT
 #       render_gitconfig into OUT.
+#   argv_driver.sh SHADOW stage_dns RESOLV
+#       jail_stage_dns reading RESOLV in place of /etc/resolv.conf, as
+#       tests/bwrap_argv.sh scenario 13 does; the staged file is left in
+#       $TMPDIR for the test to read.
 #
 # Only bash builtins here: a scenario may set PATH to something useless.
 set -euo pipefail
@@ -82,6 +86,11 @@ case "$_drv_mode" in
         # shellcheck disable=SC2034  # read by render_gitconfig
         CLAUDE_SANDBOX_GITCONFIG_PATH="$1"
         render_gitconfig
+        ;;
+    stage_dns)
+        eval "$(declare -f jail_stage_dns | sed "s#/etc/resolv.conf#$1#g")"
+        unset CLAUDE_SANDBOX_JAIL_RESOLV
+        jail_stage_dns
         ;;
     *)
         echo "argv_driver.sh: unknown mode '$_drv_mode'" >&2

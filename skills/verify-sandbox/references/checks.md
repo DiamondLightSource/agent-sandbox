@@ -214,6 +214,14 @@ that to `parse_config`, with no `parse_config` call reading from
 match is scoped to the `parse_config` line so the `/etc` rationale
 comment — which legitimately names the source path — doesn't trip it.
 
+When the opt-in Python shadow is installed (issue #72 phase 2), the
+shadow on `$PATH` is a three-line shim. The check then requires the shim
+to exec the root-owned interpreter under `/usr/libexec/claude-sandbox`
+with `-I`, and reads the same pins from the package in that
+interpreter's venv: `config.py` sets `CONFIG_PATH` to `/etc/...`, and
+`shadow.py` defaults the conf path to it and passes that to
+`parse_config`, with no `.devcontainer` read.
+
 ### Check 19 — egress jail active: netns isolated, RFC1918 blackholed
 
 The per-process egress jail (ADR 0015, Design D) runs Claude inside a

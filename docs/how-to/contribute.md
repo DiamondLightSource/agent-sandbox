@@ -80,9 +80,19 @@ first phase ports the pure parts of `claude-shadow` into
 | `bwrap.py` | `bwrap_argv_build` | A pure function from profile, config and environment to the bwrap argv |
 | `gitconfig.py` | `render_gitconfig` | The jail's git config, returned as text |
 
-Nothing calls these modules yet. The installer, the shadow and the
-`uvx claude-sandbox` front door still run the bash, so these modules don't
-change sandbox behaviour. They use the standard library only, and
+Phase 2 adds the launch path that uses them:
+
+| Module | Ported from | What it holds |
+|---|---|---|
+| `shadow.py` | the launch body, `configure_launch`, `sandbox_launch` | One launch, top to bottom: the recursion guard, the refusals, the conf and git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
+| `jail.py` | `netns_launch`, `netns_holder`, `jail_stage_dns` and the relay helpers | The egress jail: the namespace holder, pasta, DNS forwarding and the loopback relays |
+| `tools.py` | | The fixed system directories the launch path runs its tools from; nothing is found through `PATH` |
+| `__main__.py` | | Dispatches the shim's `_shadow` call and the jail's `_jail_holder` before importing anything outside the standard library |
+
+By default nothing calls these modules: the installer, the shadow and the
+`uvx claude-sandbox` front door still run the bash, so the modules don't
+change sandbox behaviour unless you opt in to the Python shadow (see below).
+They use the standard library only, and
 `tests/python/test_wheel.py` fails if one of them imports anything else.
 `bwrap.py` reads the environment only from the mapping it is given. It
 reads the filesystem only through an injectable probe, which can test what
@@ -106,12 +116,69 @@ It needs only bash, coreutils and git. Each scenario names the
 or `parse_config`, make the same change in the Python and add a scenario for
 it. A failure reports the first argv index where the two differ.
 
+The same file compares whole launches. `tests/python/launch_driver.sh`
+installs a copy of `claude-shadow` under a fixture directory, as
+`tests/verify.sh` does, and runs it; the Python shadow runs against the same
+paths. The exit status, the warnings, the command that is executed (with the
+`script -c` command compared as the words bash reads back), the git config
+and every path the launch creates must match.
+
 Where the Python differs from the bash on purpose, for example by not
 expanding pass-env names as globs against the workspace, the difference is
 listed in `KNOWN_DIVERGENCES` in `tests/python/test_parity.py` with its
 reason. A listed scenario must still differ, so once the bash is fixed the
 entry fails and can be removed. The harness is removed with the bash in
 phase 5.
+
+### Trying the Python shadow
+
+The Python shadow is opt-in until phase 5, and it is chosen when the sandbox
+is installed, never when an agent starts. With `CLAUDE_SANDBOX_IMPL=python`
+the installer places the three-line shim from ADR 26 at
+`/usr/local/bin/claude`, `codex` and `pi`. It also installs a CPython
+interpreter and a venv holding `src/claude_sandbox`, both root-owned, under
+`/usr/libexec/claude-sandbox/`. Fetching the interpreter needs `uv` and
+network access. In a devcontainer terminal of this repository (not inside an
+agent session), run:
+
+```bash
+CLAUDE_SANDBOX_IMPL=python ./install --here
+head -3 /usr/local/bin/claude    # the shim, not the bash shadow
+```
+
+To use it from the start in this repository's devcontainer, set
+`CLAUDE_SANDBOX_IMPL=python` in the host environment that VS Code starts
+from, then rebuild the container. `devcontainer.json` passes the variable to
+`postCreate`. To go back to the bash shadow, run `./install --here` without
+the variable, or rebuild without it. The installer then puts the bash shadow
+back and removes the interpreter.
+`claude-sandbox update` installs a published release, which won't carry the
+opt-in until a release that includes the Python shadow ships.
+
+The Python shadow runs the egress jail by default, as the bash shadow does,
+and refuses to launch if the jail cannot start.
+
+### The egress jail in Python
+
+`jail.py` ports `netns_launch`, `netns_holder`, `jail_stage_dns` and the
+relay helpers. The shadow calls `stage_dns` before it builds the bwrap argv,
+because `bwrap.py` binds the staged resolver, and then hands the `script(1)`
+command to `launch`, which runs it in the jail and exits with its status.
+The bash ran the namespace holder as `unshare -rn bash -c` with `export -f`.
+The Python holder re-enters the package instead:
+`unshare -rn <sys.executable> -I -m claude_sandbox _jail_holder -- COMMAND`,
+so it runs the same root-owned interpreter, in isolated mode, that launched
+it, and `__main__.py` dispatches `_jail_holder` before importing anything
+else. The holder inherits stdin and the process group, so it, `script` and
+`bwrap` stay in the terminal's foreground group.
+
+Every side effect in `jail.py` goes through an `Ops` object, so the unit
+tests in `tests/python/test_jail.py` replace it and check the argv, the fail-closed
+paths, the cleanup and the exit status after each signal. Real namespaces
+need `/dev/net/tun` and unprivileged user namespaces, so
+`tests/python/test_jail_netns.py` skips elsewhere. Run it in this
+repository's image with `tests/jail_python.sh`; the comment at its top gives
+the `podman run` command.
 
 ## Build the docs locally
 

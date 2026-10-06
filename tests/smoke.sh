@@ -459,4 +459,33 @@ else
     fail "install clobbered a foreign /etc/codex/requirements.toml"
 fi
 
+# The Python shadow is opt-in at install time (issue #72 phase 2):
+# CLAUDE_SANDBOX_IMPL=python places the shim under all three names, a default
+# re-install puts the bash shadow back and removes the interpreter an opt-in
+# left, and any other value refuses before anything is written. (The smoke
+# flag skips fetching the interpreter, as it skips the agent binaries.)
+IMPL_PREFIX="$(mktemp -d)"
+register_cleanup "$IMPL_PREFIX"
+impl_install() {
+    CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$IMPL_PREFIX" INSTALL_USER_HOME="$IMPL_PREFIX/home" \
+        bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
+}
+CLAUDE_SANDBOX_IMPL=python impl_install || fail "CLAUDE_SANDBOX_IMPL=python install exited non-zero"
+for agent in claude codex pi; do
+    cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim" "$IMPL_PREFIX/usr/local/bin/$agent" \
+        && pass || fail "CLAUDE_SANDBOX_IMPL=python did not place the shim as $agent"
+done
+mkdir -p "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" "$IMPL_PREFIX/usr/libexec/claude-sandbox/python"
+impl_install || fail "default re-install after CLAUDE_SANDBOX_IMPL=python exited non-zero"
+cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" "$IMPL_PREFIX/usr/local/bin/claude" \
+    && pass || fail "default re-install did not restore the bash shadow"
+[ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" ] && [ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/python" ] \
+    && pass || fail "default re-install left the Python shadow's interpreter behind"
+BAD_PREFIX="$(mktemp -d)"
+register_cleanup "$BAD_PREFIX"
+CLAUDE_SANDBOX_IMPL=perl CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$BAD_PREFIX" INSTALL_USER_HOME="$BAD_PREFIX/home" \
+    bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
+[ "$?" -eq 2 ] && [ -z "$(ls -A "$BAD_PREFIX")" ] && pass \
+    || fail "an unknown CLAUDE_SANDBOX_IMPL did not refuse before writing"
+
 finish smoke.sh
