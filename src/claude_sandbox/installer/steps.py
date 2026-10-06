@@ -206,7 +206,8 @@ def plan_cred_dirs(layout: Layout, options: Options) -> list[Action]:
     """``ensure_cred_dirs``: what the shadow binds must exist."""
     home = layout.user_home
     actions = _makedirs(home / ".config/gh") + _makedirs(home / ".config/glab-cli")
-    if not (home / ".claude.json").exists():
+    # A link there, even a dangling one, is left as it is.
+    if not os.path.lexists(home / ".claude.json"):
         actions.append(Touch(home / ".claude.json"))
     return actions + _makedirs(home / ".codex") + _makedirs(home / ".pi/agent")
 

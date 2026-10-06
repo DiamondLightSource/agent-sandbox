@@ -5,6 +5,7 @@ Every installer step plans a list of these by reading the filesystem, and
 nothing, so a second install writes nothing at all.
 """
 
+import errno
 import os
 import shutil
 import stat
@@ -38,7 +39,7 @@ class Write:
 
 @dataclass(frozen=True)
 class Touch:
-    """Create an empty file (the umask's mode) unless one exists."""
+    """Create an empty file (the umask's mode); never through a link."""
 
     path: Path
 
@@ -58,7 +59,7 @@ class Symlink:
 
 @dataclass(frozen=True)
 class Move:
-    """``mv``, across filesystems if need be."""
+    """``mv``: a rename, or a copy and delete across filesystems."""
 
     src: Path
     dst: Path
@@ -122,13 +123,14 @@ def apply(actions: Iterable[Action], err: TextIO | None = None) -> None:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 _write(path, data, mode, owner)
             case Touch(path):
-                os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o666))
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                os.close(os.open(path, flags, 0o666))
             case Remove(path):
                 _remove(path)
             case Symlink(path, target):
                 path.symlink_to(target)
             case Move(src, dst):
-                shutil.move(src, dst)
+                _move(src, dst)
             case ReplaceTree(path, mode, entries, owner):
                 _replace_tree(path, mode, entries, owner)
             case Warn(message):
@@ -147,6 +149,23 @@ def _write(path: Path, data: bytes, mode: int, owner: Owner) -> None:
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+def _move(src: Path, dst: Path) -> None:
+    try:
+        os.rename(src, dst)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        # Across filesystems: copy without following links in the source,
+        # and never write through whatever already sits at the destination.
+        if os.path.lexists(dst):
+            raise FileExistsError(errno.EEXIST, "destination exists", dst) from exc
+        if src.is_dir() and not src.is_symlink():
+            shutil.copytree(src, dst, symlinks=True)
+        else:
+            shutil.copy2(src, dst, follow_symlinks=False)
+        _remove(src)
 
 
 def _remove(path: Path) -> None:

@@ -1,6 +1,7 @@
 """Installer behaviour the bash comparison cannot reach: mountpoints, image
 builds, ownership, and failures part-way through a write."""
 
+import errno
 import os
 import shutil
 from pathlib import Path
@@ -8,7 +9,14 @@ from pathlib import Path
 import pytest
 
 from claude_sandbox.installer import actions, jsonfile, steps
-from claude_sandbox.installer.actions import Entry, ReplaceTree, Warn, Write
+from claude_sandbox.installer.actions import (
+    Entry,
+    Move,
+    ReplaceTree,
+    Touch,
+    Warn,
+    Write,
+)
 
 
 def layout(tmp_path: Path, source: Path | None = None) -> steps.Layout:
@@ -76,3 +84,30 @@ def test_a_failed_write_leaves_no_temporary_file(tmp_path: Path) -> None:
 def test_json_that_cannot_be_written_back_is_refused(data: bytes) -> None:
     with pytest.raises(jsonfile.NotJson):
         jsonfile.loads(data)
+
+
+def test_moves_across_filesystems_and_touch_without_following(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rename = os.rename
+
+    def exdev(src: Path, dst: Path) -> None:
+        raise OSError(errno.EXDEV, "cross-device")
+
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d/f").write_text("x")
+    (tmp_path / "f").write_text("y")
+    (tmp_path / "dangling").symlink_to("nowhere")
+    monkeypatch.setattr(os, "rename", exdev)
+    actions.apply([Move(tmp_path / "d", tmp_path / "d2")])
+    actions.apply([Move(tmp_path / "f", tmp_path / "f2")])
+    assert (tmp_path / "d2/f").read_text() == "x" and not (tmp_path / "d").exists()
+    assert (tmp_path / "f2").read_text() == "y" and not (tmp_path / "f").exists()
+    with pytest.raises(FileExistsError):
+        actions.apply([Move(tmp_path / "f2", tmp_path / "dangling")])
+    monkeypatch.setattr(os, "rename", rename)
+    with pytest.raises(FileNotFoundError):
+        actions.apply([Move(tmp_path / "absent", tmp_path / "x")])
+    with pytest.raises(FileExistsError):
+        actions.apply([Touch(tmp_path / "dangling")])
+    assert not (tmp_path / "nowhere").exists()
