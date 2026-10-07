@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Launcher argv tests for container/claude-container — the verbs, the
-# host-network default, the in-container refusal
-# and the uvx-aware update hint. Drives the REAL launcher against a fake
-# container engine on PATH that logs every call and answers the inspect
-# queries the launcher makes; no image, no container, no network.
+# Launcher argv tests for the host launcher (`uvx claude-sandbox` on a host)
+# — the verbs, the host-network default, the in-container refusal and the
+# uvx-aware update hint. Drives the REAL launcher against a fake container
+# engine on PATH that logs every call and answers the inspect queries the
+# launcher makes; no image, no container, no network.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
-# CLAUDE_SANDBOX_TEST_LAUNCHER runs the suite against another launcher, a
-# bash file (tests/python/test_bash_suites.py points it at the Python CLI).
-LAUNCHER="${CLAUDE_SANDBOX_TEST_LAUNCHER:-$HERE/../container/claude-container}"
+# CLAUDE_SANDBOX_TEST_LAUNCHER is a bash file that runs the Python CLI with a
+# VERSION= line; tests/python/test_bash_suites.py writes one and runs this.
+LAUNCHER="${CLAUDE_SANDBOX_TEST_LAUNCHER:?run through tests/python/test_bash_suites.py}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -136,16 +136,6 @@ assert_parse 'no host groups without --device' grep -Fvq -- 'keep-groups' <<< "$
 run CLAUDE_SANDBOX_ENGINE=docker -- --device /dev/null
 assert_parse 'Docker has no keep-groups' grep -Fvq -- 'keep-groups' <<< "$(create_line)"
 run CLAUDE_SANDBOX_ALLOW_DEVICES=/dev/full -- --gpu --device /dev/null --device /dev/zero
-binds="$(
-    export CLAUDE_SHADOW_SOURCE_ONLY=1
-    source "$HERE/../.devcontainer/claude-sandbox/claude-shadow"
-    CLAUDE_SANDBOX_ALLOW_DEVICES="$(cat "$LOG.device-env")"
-    bwrap_argv_build built "$TMP/project" /fake/claude
-    printf '%s\n' "${built[@]}"
-)"
-for device in /dev/full /dev/null /dev/zero; do
-    assert_pair 'host device reaches sandbox' "$binds" --dev-bind "$device"
-done
 for invalid in /dev /dev/pts /dev/no-such-claude-device /etc/passwd /dev/../etc/passwd --gpu; do
     run -- --device "$invalid"
     assert_eq "reject invalid device $invalid" 1 "$RC"
@@ -182,11 +172,11 @@ PROJECT="$TMP/ws/project" run -- --peers
 assert_eq 'peers reuse does not recreate' '' "$(create_line)"
 assert_eq 'peers reuse completes normally' 0 "$RC"
 assert_parse 'peers reuse warns option was ignored' grep -Fq -- '  warning     ignored on an existing container: --peers' <<< "$ERR"
-assert_parse 'peers reuse explains recreation' grep -Fq -- '  rebuild     claude-container --recreate' <<< "$ERR"
+assert_parse 'peers reuse explains recreation' grep -Eq -- '^  rebuild     .* --recreate$' <<< "$ERR"
 # A container created with the old default keeps its parent mount: say so.
 PROJECT="$TMP/ws/project" run FAKE_MOUNTS="$TMP/ws"$'\n'"$TMP/ws/project"$'\n' --
 assert_parse 'old parent mount warns' grep -Fq -- '  warning     mounts the parent directory; peers are now off by default' <<< "$ERR"
-assert_parse 'old parent mount explains recreation' grep -Fq -- '  rebuild     claude-container --recreate' <<< "$ERR"
+assert_parse 'old parent mount explains recreation' grep -Eq -- '^  rebuild     .* --recreate$' <<< "$ERR"
 PROJECT="$TMP/ws/project" run FAKE_MOUNTS="$TMP/ws"$'\n' -- --peers
 case "$ERR" in *"mounts the parent directory"*) fail "peers container warned about its own parent mount" ;; *) pass ;; esac
 # A plain reuse prints the headline alone.
@@ -203,21 +193,12 @@ case "$(create_line)" in *"-e CLAUDE_SANDBOX_ALLOW_WRITE=$TMP/rw "*) pass ;; *) 
 assert_not_contains "ro mount not in allow-write" "$(create_line)" "ALLOW_WRITE=$TMP/rw:$TMP/ro"
 run -- --mount; [ "$RC" = 1 ] && pass || fail "--mount without PATH accepted (rc=$RC)"
 
-# Exercise the format handed from the host launcher to the actual shadow.
+# The format handed from the host launcher to the shadow: one path per line
+# (test_argv.py checks that the shadow binds each line).
 mkdir -p "$TMP/rw second" "$TMP/from-env"
 run CLAUDE_SANDBOX_ALLOW_WRITE="$TMP/from-env" -- --mount-rw "$TMP/rw" --mount-rw "$TMP/rw second"
 assert_eq 'merge writable mount paths as lines' \
     "$TMP/from-env"$'\n'"$TMP/rw"$'\n'"$TMP/rw second" "$(cat "$LOG.mount-env")"
-binds="$(
-    export CLAUDE_SHADOW_SOURCE_ONLY=1
-    source "$HERE/../.devcontainer/claude-sandbox/claude-shadow"
-    CLAUDE_SANDBOX_ALLOW_WRITE="$(cat "$LOG.mount-env")"
-    bwrap_argv_build built "$TMP/project" /fake/claude
-    printf '%s\n' "${built[@]}"
-)"
-for path in "$TMP/from-env" "$TMP/rw" "$TMP/rw second"; do
-    assert_pair 'host writable path reaches sandbox' "$binds" --bind "$path"
-done
 run CLAUDE_SANDBOX_ALLOW_WRITE="$TMP/from-env" --
 assert_eq 'forward writable environment without mount flags' "$TMP/from-env" "$(cat "$LOG.mount-env")"
 
@@ -256,7 +237,7 @@ else
 fi
 
 # --- update hint names the front door that ran us ---------------------------
-run FAKE_IMG_VER=99.0.0 --; case "$ERR" in *"curl -fsSLO"*) pass ;; *) fail "copied-script hint: $ERR" ;; esac
+run FAKE_IMG_VER=99.0.0 --; case "$ERR" in *"is older than the image"*) pass ;; *) fail "older-launcher notice: $ERR" ;; esac
 run FAKE_IMG_VER=99.0.0 CLAUDE_SANDBOX_LAUNCHER=uvx --
 case "$ERR" in *"uvx claude-sandbox@latest"*) pass ;; *) fail "uvx hint: $ERR" ;; esac
 case "$ERR" in *"curl"*) fail "uvx hint still mentions curl" ;; *) pass ;; esac

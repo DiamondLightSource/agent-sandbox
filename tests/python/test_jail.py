@@ -19,7 +19,6 @@ from claude_sandbox import jail
 from claude_sandbox.config import Config
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.jail import Handler, Ops, stage_dns
-from test_parity import driver
 
 PY = "/usr/libexec/claude-sandbox/venv/bin/python"
 JAIL_DIR = "/tmp/claude-jail.T"
@@ -489,6 +488,23 @@ def test_holder_locks_routes_then_execs() -> None:
         assert ops.handlers[sig] == signal.SIG_DFL
 
 
+def test_holder_keeps_a_gateway_that_is_a_connected_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mirrored scope-link route can be the gateway's own /32 (DHCP on
+    Azure). It is blackholed with the other connected routes, then pinned
+    on-link again, so the jail keeps its egress."""
+    linked = LINK_ROUTES + "10.0.2.2 proto dhcp scope link src 10.0.2.15\n"
+    monkeypatch.setitem(globals(), "LINK_ROUTES", linked)
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    done = runs(ops)
+    pin = done.index("ip route replace 10.0.2.2/32 dev eth0")
+    assert done.index("ip route replace blackhole 10.0.2.2") < pin
+
+
 @pytest.mark.parametrize("index", range(3, 11))
 def test_holder_fails_closed_on_each_load_bearing_route(index: int) -> None:
     ops = FakeOps()
@@ -657,47 +673,52 @@ def test_holder_agent_that_cannot_start() -> None:
     assert hold(ops, "--", "/not/executable") == 126
 
 
-# --- DNS staging (the bash's scenario 13, through the comparison driver) --------
+# --- DNS staging (the bash's scenario 13) ----------------------------------------
+
+FORWARDER = "nameserver 192.0.2.53\n"
+NO_RESOLVERS = (
+    "egress jail — /etc/resolv.conf lists no resolvers; forwarding Claude DNS to"
+    " the host's resolvers via pasta. If resolution still fails the host has none"
+    " to forward to."
+)
 
 
 @pytest.mark.parametrize(
-    "resolv",
+    ("resolv", "staged_text", "warnings"),
     [
-        "nameserver 8.8.8.8\n",  # routable: still overridden (#11)
-        "nameserver 127.0.0.53\n",  # loopback stub
-        "nameserver 127.0.0.53\nnameserver 192.168.1.1\n",  # mixed
-        "",  # empty: forwarder, with a warning
-        "search a.example b.example\nnameserver 8.8.8.8\noptions timeout:1\n",
-        # beyond the bash suite: indentation, a keyword with no space after
-        # it, a last line with no newline, and CRLF.
-        " domain x\ndomain\n\tsearch y\r\n#options z\noptions ndots:2",
+        # Every case is overridden: the jail has one DNS path, the pasta
+        # forwarder, so the holder punches no route to a real resolver (#11).
+        ("nameserver 8.8.8.8\n", FORWARDER, ()),  # routable
+        ("nameserver 127.0.0.53\n", FORWARDER, ()),  # loopback stub
+        ("nameserver 127.0.0.53\nnameserver 192.168.1.1\n", FORWARDER, ()),
+        ("", FORWARDER, (NO_RESOLVERS,)),  # empty: forwarder, with a warning
+        # search / domain / options survive; the real resolvers do not.
+        (
+            "search a.example b.example\nnameserver 8.8.8.8\noptions timeout:1\n",
+            FORWARDER + "search a.example b.example\noptions timeout:1\n",
+            (),
+        ),
+        # Indentation, a keyword with no space after it, a last line with no
+        # newline, and CRLF.
+        (
+            " domain x\ndomain\n\tsearch y\r\n#options z\noptions ndots:2",
+            FORWARDER + " domain x\n\tsearch y\noptions ndots:2\n",
+            (NO_RESOLVERS,),
+        ),
     ],
 )
-def test_stage_dns_matches_the_bash(tmp_path: Path, resolv: str) -> None:
+def test_stage_dns(
+    tmp_path: Path, resolv: str, staged_text: str, warnings: tuple[str, ...]
+) -> None:
     conf = tmp_path / "resolv.conf"
     conf.write_text(resolv)
-    (tmp_path / "py").mkdir()
-    (tmp_path / "sh").mkdir()
-    staged = stage_dns(resolv_conf=str(conf), tmpdir=str(tmp_path / "py"))
+    (tmp_path / "out").mkdir()
+    staged = stage_dns(resolv_conf=str(conf), tmpdir=str(tmp_path / "out"))
     assert staged.path is not None
-    assert os.path.dirname(staged.path) == str(tmp_path / "py")
-    got = Path(staged.path).read_bytes()
-
-    sh = driver(
-        tmp_path,
-        {"TMPDIR": str(tmp_path / "sh"), "PATH": "/usr/bin:/bin"},
-        "stage_dns",
-        str(conf),
-    )
-    assert sh.returncode == 0, sh.stderr
-    (bash_file,) = (tmp_path / "sh").iterdir()
-    assert bash_file.name.startswith("claude-jail-resolv.")
-    assert got == bash_file.read_bytes()
-    warned = [f"claude-sandbox: {w}\n" for w in staged.warnings]
-    assert os.fsdecode(sh.stderr).replace(str(conf), "/etc/resolv.conf") == "".join(
-        warned
-    )
-    assert got.startswith(b"nameserver 192.0.2.53\n")
+    assert os.path.basename(staged.path).startswith("claude-jail-resolv.")
+    assert os.path.dirname(staged.path) == str(tmp_path / "out")
+    assert Path(staged.path).read_text() == staged_text
+    assert staged.warnings == warnings
 
 
 def test_stage_dns_without_a_resolv_conf(tmp_path: Path) -> None:

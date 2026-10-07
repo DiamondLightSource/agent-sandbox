@@ -1,7 +1,7 @@
 """The in-container helpers, driven through the CLI in the container context.
 
-tests/doctor.sh runs against the Python CLI too (test_bash_suites.py); the
-doctor cases here reach what it does not.
+tests/doctor.sh drives the same CLI as a black box (test_bash_suites.py);
+the doctor cases here reach what it does not.
 """
 
 import json
@@ -308,6 +308,13 @@ def test_pi_local_manual_then_discovered(
         (["m", "100"], None, None, 2),
         ([], {"data": []}, None, 1),
         ([], {"data": [{"id": ""}]}, None, 1),
+        ([], {"data": [{"id": "a"}, {"id": "b"}]}, None, 1),  # ambiguous
+        (
+            [],
+            {"data": [{"id": "m"}]},
+            {"default_generation_settings": {"n_ctx": 0}},
+            2,  # a discovered context of 0 is refused like a typed one
+        ),
         (
             [],
             {"data": [{"id": "m"}]},

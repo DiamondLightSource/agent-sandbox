@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
 # Shared test harness for the claude-sandbox bash test suite
-# (bwrap_argv.sh, smoke.sh). Sourced — defines the PASS/FAIL
+# (smoke.sh, launcher.sh, doctor.sh, ...). Sourced — defines the PASS/FAIL
 # counters, the assertion helpers, a jq predicate wrapper, and a
 # register-once EXIT cleanup. Source-safe: defining functions and zeroing
 # the counters is all that runs at source time. Owns no `set` options —
@@ -35,36 +35,6 @@ assert_not_contains() {
         fail "$name — unexpected token: $token"
     else
         pass
-    fi
-}
-
-# assert_pair NAME ARGV FLAG VALUE — FLAG on one line, VALUE on the next.
-# Catches paired emissions like `--ro-bind` / `/proc`.
-assert_pair() {
-    local name="$1" argv="$2" flag="$3" value="$4"
-    if printf '%s\n' "$argv" | grep -A1 "^${flag}\$" | grep -qxF -- "$value"; then
-        pass
-    else
-        fail "$name — expected pair $flag → $value"
-    fi
-}
-
-# assert_order NAME ARGV BEFORE AFTER — the LAST BEFORE line precedes the
-# first AFTER line. Locks argv sequences bwrap applies in order (mask
-# before bind), which line-presence assertions can't catch.
-assert_order() {
-    local name="$1" argv="$2" before="$3" after="$4"
-    local b_line a_line
-    # `|| true`: callers source the shadow and inherit its `set -e`, and a
-    # missing token (grep exit 1) is a result to report, not a reason to
-    # abort the run — without this the suite dies before its summary on the
-    # very regression this assertion exists to catch.
-    b_line="$(printf '%s\n' "$argv" | grep -nxF -- "$before" | tail -1 | cut -d: -f1 || true)"
-    a_line="$(printf '%s\n' "$argv" | grep -nxF -- "$after" | head -1 | cut -d: -f1 || true)"
-    if [ -n "$b_line" ] && [ -n "$a_line" ] && [ "$b_line" -lt "$a_line" ]; then
-        pass
-    else
-        fail "$name — expected last '$before' (line ${b_line:-none}) before first '$after' (line ${a_line:-none})"
     fi
 }
 
@@ -118,12 +88,4 @@ register_cleanup() {
 finish() {
     echo "$1: $PASSED passed / $FAILED failed"
     [ "$FAILED" -eq 0 ]
-}
-
-# Text view for existing single-line argv assertions. Production uses arrays;
-# tests that exercise argument boundaries inspect the array directly.
-bwrap_argv_lines() {
-    local -a built_args=()
-    bwrap_argv_build built_args "$@"
-    printf '%s\n' "${built_args[@]}"
 }

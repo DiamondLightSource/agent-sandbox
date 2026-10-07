@@ -4,12 +4,13 @@ Needs unprivileged user+net namespaces, /dev/net/tun, pasta, socat, ip and
 ss: run inside this repository's image, as tests/jail_python.sh does. Skips
 elsewhere, unless JAIL_NETNS_REQUIRE=1, which turns a skip into a failure.
 
-The assertions are those of tests/egress_jail.sh and tests/local_model.sh,
-ported to drive the Python jail directly, so each case can choose its own
-command and configuration. Each test runs a small driver as
-`python -I -m claude_sandbox._jail_driver COMMAND...` from a venv holding a
-copy of the package: the holder re-enters that same interpreter as
-`python -I -m claude_sandbox _jail_holder`, exactly as installed.
+The assertions are those of the bash egress-jail and local-model suites,
+which drove the bash shadow's holder; these drive the Python jail directly,
+so each case can choose its own command and configuration. Each test runs a
+small driver as `python -I -m claude_sandbox._jail_driver COMMAND...` from a
+venv holding a copy of the package: the holder re-enters that same
+interpreter as `python -I -m claude_sandbox _jail_holder`, exactly as
+installed.
 """
 
 import os
@@ -182,7 +183,7 @@ def clean() -> Iterator[None]:
     assert_clean()
 
 
-# --- egress_jail.sh: the routing allowlist ------------------------------------
+# --- the routing allowlist ------------------------------------------------------
 
 ROUTES_PROBE = r"""
 set -u
@@ -252,7 +253,7 @@ def test_dns_goes_through_the_forwarder(python: str) -> None:
     assert re.search(r"example\.com", done.stdout), done.stdout
 
 
-# --- local_model.sh: the loopback relays ---------------------------------------
+# --- the loopback relays --------------------------------------------------------
 
 RELAY_PROBE = r"""
 set -euo pipefail

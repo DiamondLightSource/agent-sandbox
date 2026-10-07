@@ -56,8 +56,15 @@ class Launch:
         return sorted(p.name for p in (self.root / "etc").iterdir())
 
 
-def launch(root: Path, *args: str, persistent: bool = True, sig: int = 0) -> Launch:
-    for path, text in (("bin/bwrap", FAKE_BWRAP), ("agent", AGENT)):
+def launch(
+    root: Path,
+    *args: str,
+    persistent: bool = True,
+    sig: int = 0,
+    agent: str = "pi",
+    bwrap: str = FAKE_BWRAP,
+) -> Launch:
+    for path, text in (("bin/bwrap", bwrap), ("agent", AGENT)):
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
         (root / path).chmod(0o755)
@@ -78,7 +85,7 @@ def launch(root: Path, *args: str, persistent: bool = True, sig: int = 0) -> Lau
         "state": str(root / "state"),
         "signal": sig,
     }
-    argv = [sys.executable, "-I", str(DRIVER), json.dumps(spec), "pi", *args]
+    argv = [sys.executable, "-I", str(DRIVER), json.dumps(spec), agent, *args]
     env = {
         "HOME": str(root / "home"),
         "PATH": f"{root / 'bin'}:/usr/bin:/bin",
@@ -166,3 +173,28 @@ def test_a_signal_mid_launch_cleans_up_and_kills(tmp_path: Path, sig: int) -> No
     assert proc.returncode == -sig, proc.stderr
     # The git config's temporary file is gone; the real one never landed.
     assert ln.leftovers() == ["claude-sandbox.conf"]
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "pi"])
+def test_arguments_survive_the_terminal_shell(tmp_path: Path, agent: str) -> None:
+    """script(1) runs the bwrap command through a shell: every argument and
+    forwarded value reaches bwrap exactly as built, newlines and `$(...)`
+    included."""
+    capture = tmp_path / "argv"
+    recorder = f"#!/bin/bash\nprintf '%s\\0' \"$@\" > {capture}\n"
+    prompt, value = "first line\nsecond line\n", "first value\nsecond value\n"
+    ln = launch(tmp_path, prompt, "", "literal $(false)", agent=agent, bwrap=recorder)
+    ln.env |= {"MULTILINE_VALUE": value, "CLAUDE_SANDBOX_PASS_ENV": "MULTILINE_VALUE"}
+    proc = subprocess.run(
+        ln.argv,
+        env=ln.env,
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    got = capture.read_bytes().decode().split("\0")[:-1]
+    assert got[-3:] == [prompt, "", "literal $(false)"]
+    i = got.index("MULTILINE_VALUE")
+    assert got[i - 1 : i + 2] == ["--setenv", "MULTILINE_VALUE", value]

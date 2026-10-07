@@ -124,19 +124,4 @@ if [ "$SECONDS" -lt 8 ]; then pass; else fail 'server cleanup exceeded deadline'
 endpoint="$(cat "$MOCK_DIR/endpoint")"
 assert_eq stubborn-runtime-cleaned no "$(test -e "${endpoint#unix://}" && echo yes || echo no)"
 
-# Exercise the shadow's real IS_SANDBOX recursion guard without nesting bwrap.
-# Rewrite only installed locations to fixtures, so no system files are touched.
-cat >"$MOCK_DIR/launcher" <<'LAUNCHER'
-#!/usr/bin/env bash
-printf '%s\n' "$@"
-LAUNCHER
-chmod +x "$MOCK_DIR/launcher"
-sed -e "s|/usr/libexec/claude-sandbox/codex-launch|$MOCK_DIR/launcher|g" \
-    -e "s|/usr/libexec/claude-sandbox/codex-dist/bin/codex|$MOCK_DIR/codex|g" \
-    "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" >"$MOCK_DIR/shadow"
-nested="$(IS_SANDBOX=1 CLAUDE_SHADOW_SOURCE_ONLY=0 CLAUDE_SANDBOX_AGENT=codex \
-    bash "$MOCK_DIR/shadow" agents --no-alt-screen)"
-assert_eq nested-launch "$MOCK_DIR/codex
-agents
---no-alt-screen" "$nested"
 finish codex_launch.sh
