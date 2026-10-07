@@ -1143,3 +1143,16 @@ def test_an_old_kernels_network_broadcast_route_is_its_own() -> None:
     assert jail.own_addresses("2: eth0 inet not-an-address scope global\n") == {
         "not-an-address"
     }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "default \tnexthop via 10.1.0.2 dev d0 weight 1"
+        " \tnexthop via 10.2.0.2 dev d1 weight 1",
+        "default via 10.0.2.2 dev eth0 via 10.0.3.1 dev eth1",
+    ],
+)
+def test_a_multipath_route_is_refused(line: str) -> None:
+    with pytest.raises(jail.JailError, match="multipath route"):
+        jail.check_routes(line + "\n", RULES, ADDRS, set())

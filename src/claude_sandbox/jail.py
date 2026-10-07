@@ -829,10 +829,17 @@ def check_routes(table: str, rules: str, addrs: str, allowed: set[Route]) -> Non
     namespace's own addresses and loopback, no other table holds any, and
     the policy rules are the kernel's three. A route left over, in any
     table, or a rule that picks another table, would route around the
-    allowlist."""
+    allowlist. A multipath route (``nexthop``) is refused outright: the
+    allowlist compares one gateway and one device per route, and a second
+    default or next hop must not hide behind the first."""
     own = own_addresses(addrs)
     seen: set[Route] = set()
     for line in table.split("\n"):
+        words = line.split()
+        if "nexthop" in words or words.count("via") > 1 or words.count("dev") > 1:
+            raise JailError(
+                f"— multipath route in the jail: {' '.join(words)} (fail-closed)"
+            )
         parsed = parse_route(line)
         if parsed is None:
             continue
