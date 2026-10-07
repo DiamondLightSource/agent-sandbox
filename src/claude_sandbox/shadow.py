@@ -18,7 +18,7 @@ import signal
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import dataclass, field
 from errno import ENOENT
 from types import FrameType
@@ -30,7 +30,6 @@ from .bwrap import (
     GITCONFIG_PATH,
     SHADOW_DIR,
     STATE_DIR,
-    Built,
     bwrap_build,
     path_ahead_of_shadow,
 )
@@ -174,7 +173,19 @@ def run(
                 env.pop(jail.JAIL_RESOLV, None)
             else:
                 env[jail.JAIL_RESOLV] = resolv
-        built, workspace = build_argv(profile, env, args, verify, host)
+        workspace = resolve_workspace_root(config, working_directory(env))
+        built = bwrap_build(
+            profile,
+            config,
+            env,
+            workspace,
+            profile.real,
+            args,
+            verify=verify,
+            shipped_skills_dir=host.shipped_skills_dir,
+            gitconfig_path=host.gitconfig_path,
+            state_dir=host.state_dir,
+        )
         # The PATH watcher (ADR 27), for everything but the battery: first
         # what earlier sessions left, as launch warnings so the pause shows
         # them.
@@ -189,11 +200,11 @@ def run(
                 )
         terminal, launch_env = terminal_command(built.argv, env, host)
         term.pause(verify)
-        if jailed and session is not None:
-            with host.watching(session, term.warn_raw):
+        if jailed:
+            # The watcher is a thread around the jailed launch (not for the
+            # battery).
+            with host.watching(session, term.warn_raw) if session else nullcontext():
                 jail.launch(config, launch_env, terminal)
-        elif jailed:
-            jail.launch(config, launch_env, terminal)
     finally:
         if resolv is not None:
             with suppress(OSError):
@@ -487,33 +498,6 @@ def _check_local_model_port(config: Config) -> None:
     forwards it into the jail with --setenv, jailed or not."""
     if not model_port_ok(config.local_model_port):
         _refuse(MODEL_PORT_ERROR)
-
-
-def build_argv(
-    profile: AgentProfile,
-    env: Mapping[str, str],
-    args: Sequence[str],
-    verify: bool,
-    host: Host,
-) -> tuple[Built, str]:
-    """The bwrap argv, with its Config read from the same ``env``, and the
-    workspace it binds."""
-    pwd = working_directory(env)
-    config = Config.from_env(env)
-    workspace = resolve_workspace_root(config, pwd)
-    built = bwrap_build(
-        profile,
-        config,
-        env,
-        workspace,
-        profile.real,
-        args,
-        verify=verify,
-        shipped_skills_dir=host.shipped_skills_dir,
-        gitconfig_path=host.gitconfig_path,
-        state_dir=host.state_dir,
-    )
-    return built, workspace
 
 
 def terminal_command(
