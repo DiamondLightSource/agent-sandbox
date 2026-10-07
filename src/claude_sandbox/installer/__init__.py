@@ -64,7 +64,9 @@ def install(
     finally:
         os.umask(old)
     venv = f"{LIBEXEC}/venv"
-    print(system.summary(layout, options, skipped, venv), end="", file=out)
+    print(system.summary(layout, options, skipped, venv), end="", file=out, flush=True)
+    # Last, so it is not lost above the summary.
+    system.warn_if_no_tun(layout, options, warn)
 
 
 def container_start(
@@ -72,7 +74,8 @@ def container_start(
 ) -> None:
     """What the published image's entrypoint redoes at each start, where the
     runtime mounts are: the shared-config links, the credential directories,
-    and the conf, unless the operator mounted their own over it."""
+    and the conf, unless the operator mounted their own over it. Then the
+    warning the image build could not give, if the container has no tun."""
     old = os.umask(0o022)
     try:
         apply(plan_shared_links(layout, options), err)
@@ -81,3 +84,4 @@ def container_start(
             apply(plan_conf(layout, options), err)
     finally:
         os.umask(old)
+    system.warn_if_no_tun(layout, options, err or sys.stderr)

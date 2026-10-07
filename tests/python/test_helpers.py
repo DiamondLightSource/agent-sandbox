@@ -483,6 +483,10 @@ def test_doctor_checks_the_path_guards(
 
     shadow = tmp_path / "shadow"
     monkeypatch.setattr(doctor, "SHADOW", str(shadow))
+    monkeypatch.setattr(doctor, "TUN", str(shadow))  # present once written
+    monkeypatch.setattr(doctor, "CONF", str(tmp_path / "conf"))
+    monkeypatch.delenv("CLAUDE_SANDBOX_EGRESS_JAIL", raising=False)
+    monkeypatch.setattr(context, "current", lambda: CONTAINER)
     venv = tmp_path / "venv"
     venv.mkdir()
     monkeypatch.setenv("PATH", f"{venv}:/usr/local/bin:/usr/bin:/bin")
@@ -496,6 +500,12 @@ def test_doctor_checks_the_path_guards(
     shadow.write_text(SHIM)
     out = report()
     assert "ok       entry points" in out and "ok       quarantined" in out
+    assert "ok       tun device" in out
+    monkeypatch.setattr(doctor, "TUN", str(tmp_path / "no-tun"))
+    assert f"warn     tun device             {tmp_path}/no-tun is missing" in report()
+    monkeypatch.setattr(context, "current", lambda: JAIL)
+    assert "skip     tun device" in report()
+    monkeypatch.setattr(context, "current", lambda: CONTAINER)
     (venv / "codex").write_text("#!/bin/sh\n")
     (venv / "codex").chmod(0o755)
     (state / "alerts").write_text("one\ntwo\n")

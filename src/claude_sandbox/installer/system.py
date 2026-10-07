@@ -15,12 +15,13 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TextIO
 
+from ..config import Config, egress_jail_enabled, parse_config
 from ..tools import find_tool
-from .steps import LIBEXEC, InstallError, Layout, Options
+from .steps import CONF, LIBEXEC, InstallError, Layout, Options
 
 Run = Callable[..., "subprocess.CompletedProcess[bytes]"]
 
@@ -94,6 +95,41 @@ def probe_userns_or_refuse(options: Options, run: Run = subprocess.run) -> None:
     quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if run([*argv, "--", "/bin/true"], check=False, **quiet).returncode:
         raise InstallError(USERNS_REFUSAL)
+
+
+TUN = "/dev/net/tun"
+TUN_DOCS = "https://diamondlightsource.github.io/claude-sandbox/how-to/network-egress-jail.html"
+TUN_WARNING = f"""\
+claude-sandbox: WARNING — this container has no {TUN}.
+The network egress jail is on, and claude, codex and pi will refuse to
+launch without it. Give the container the device and rebuild it:
+    devcontainer.json:   "runArgs": ["--device={TUN}"]
+    podman/docker run:   --device {TUN}
+See {TUN_DOCS}"""
+
+
+def tun_missing(conf: str, env: Mapping[str, str], tun: str) -> bool:
+    """The egress jail is on, as a launch would read it (the conf, then the
+    environment, ADR 15), and the device it needs is absent. The launch
+    refuses then (``jail.py``); this lets the install and doctor say so first."""
+    if os.path.exists(tun):
+        return False
+    try:
+        merged = parse_config(conf, env)
+    except OSError:
+        merged = dict(env)  # the launch fails on it too; assume the default
+    return egress_jail_enabled(Config.from_env(merged))
+
+
+def warn_if_no_tun(layout: Layout, options: Options, err: TextIO) -> None:
+    """Issue #71: say at install, not at the first launch, that the device is
+    missing. A warning, not a refusal: the launch stays fail-closed. An image
+    build has no device to see (``docker build`` gives none), so it is the
+    entrypoint's ``--container-start`` that warns there."""
+    if options.smoke or options.image_build:
+        return
+    if tun_missing(str(layout.system(CONF)), os.environ, TUN):
+        print(TUN_WARNING, file=err)
 
 
 def _fetch(url: str, run: Run, *extra: str) -> bytes | None:

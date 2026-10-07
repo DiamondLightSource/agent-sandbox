@@ -22,7 +22,8 @@ Create `.devcontainer/devcontainer.json`:
 
 Open the project in VS Code and select **Dev Containers: Reopen in Container**.
 The root user is inside a rootless container; `/dev/net/tun` is required
-by the network jail. Rootful Docker is unsupported.
+by the network jail, and the install warns if it is missing. Rootful Docker
+is unsupported.
 
 ## Install the sandbox
 
