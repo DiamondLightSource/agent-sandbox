@@ -379,6 +379,7 @@ def test_an_old_passt_is_too_old_with_the_jail_on(tmp_path: Path) -> None:
     assert config.passt_too_old(conf, {}, BOOKWORM)
     assert not config.passt_too_old(conf, {}, "0.0~git20230908.05627dc-1")
     assert not config.passt_too_old(conf, {}, "unknown")  # no false alarm
+    assert not config.passt_too_old(conf, {}, "2025_09_01.abcdef0-1")
     off = {"CLAUDE_SANDBOX_EGRESS_JAIL": "0"}
     assert not config.passt_too_old(conf, off, BOOKWORM)
 
@@ -386,15 +387,18 @@ def test_an_old_passt_is_too_old_with_the_jail_on(tmp_path: Path) -> None:
 def test_the_passt_version_comes_from_dpkg(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
+    replies = [(0, f"installed {BOOKWORM}"), (0, f"config-files {BOOKWORM}"), (1, "")]
+
     def output(argv: list[str]) -> tuple[int, str]:
         calls.append(argv)
-        return (0, BOOKWORM) if len(calls) == 1 else (1, "")
+        return replies[len(calls) - 1]
 
     monkeypatch.setattr(config, "output", output)
     found = {"dpkg-query": "/usr/bin/dpkg-query"}
     monkeypatch.setattr(config, "find_tool", found.get)
     assert config.passt_version() == BOOKWORM
     assert calls[0][0] == "/usr/bin/dpkg-query" and calls[0][-1] == "passt"
+    assert config.passt_version() == ""  # removed, not purged
     assert config.passt_version() == ""  # not installed
     found.clear()
     assert config.passt_version() == ""
@@ -412,7 +416,7 @@ def test_the_install_warns_of_an_old_passt_but_not_the_image_build(
         system.warn_if_old_passt(layout, options, err)
         return err.getvalue()
 
-    assert warned(replace(options, image_build=True)) == ""
+    assert warned(replace(options, image_build=True)) != ""  # its author can fix it
     assert warned(replace(options, smoke=True)) == ""
     assert warned(options) == system.PASST_WARNING.format(version=BOOKWORM) + "\n"
     assert f"jail: {BOOKWORM}, older than" in warned(options)

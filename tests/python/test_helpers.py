@@ -294,7 +294,6 @@ def test_doctor_reports_the_passt_version(
     # Unparseable: a note, not an alarm.
     rc, out = doctor_with("")
     assert rc == 0 and "info     passt                  cannot read" in out
-    assert "(no passt package)" in out
     rc, out = doctor_with("", JAIL)
     assert rc == 0 and "skip     passt                  run doctor outside" in out
     (tmp_path / "conf").write_text("egress-jail = 0\n")

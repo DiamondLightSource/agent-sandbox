@@ -193,20 +193,22 @@ def tun_missing(conf: str, env: Mapping[str, str], tun: str) -> bool:
 # passt, which denies the holder's /proc/PID/ns/* and pasta's log: the
 # attach fails. Unconfined, it attaches but sets the address up with a
 # broadcast route the jail's route check refuses (upstream changed that on
-# 2023-05-23, cc9d167). From this version pasta is a hard link with a
+# 2023-05-14, cc9d167). From this version pasta is a hard link with a
 # profile of its own, and the address handling is the newer one.
 PASST_MIN = "0.0~git20230908"
 
 
 def passt_version() -> str:
     """The installed passt package's version, from dpkg; "" when there is
-    none. Not ``pasta --version``: Debian 12's and Ubuntu 24.04's print
-    "unknown version"."""
+    none, or only a removed one's conffiles. Not ``pasta --version``:
+    Debian 12's and Ubuntu 24.04's print "unknown version"."""
     dpkg = find_tool("dpkg-query")
     if dpkg is None:
         return ""
-    rc, out = output([dpkg, "--show", "--showformat=${Version}", "passt"])
-    return out if rc == 0 else ""
+    form = "--showformat=${db:Status-Status} ${Version}"
+    rc, out = output([dpkg, "--show", form, "passt"])
+    status, _, version = out.partition(" ")
+    return version if rc == 0 and status == "installed" else ""
 
 
 def passt_date(version: str) -> str | None:

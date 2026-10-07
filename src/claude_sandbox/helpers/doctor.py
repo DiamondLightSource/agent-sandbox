@@ -308,8 +308,8 @@ class Doctor:
             self.report(
                 "info",
                 "passt",
-                f"cannot read its version ({version or 'no passt package'});"
-                f" the egress jail needs {config.PASST_MIN} or later",
+                f"cannot read its version; the egress jail needs"
+                f" {config.PASST_MIN} or later",
             )
         elif config.passt_too_old(config.CONFIG_PATH, os.environ, version):
             self.warn(

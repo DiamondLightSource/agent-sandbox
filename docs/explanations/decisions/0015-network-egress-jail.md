@@ -201,7 +201,7 @@ Two structural choices fix scope:
   attach succeeds but the old `--config-net` adds the address with a
   `broadcast` route in table `local` that the route read-back refuses.
   Upstream releases from 2023_06_03 pass; the change is cc9d167 ("With
-  --config-net, copy all addresses by default", 2023-05-23).
+  --config-net, copy all addresses by default", 2023-05-14).
   bookworm-backports has no passt. The install and `claude-sandbox doctor`
   warn when the jail is on and dpkg reports an older passt. An unreadable
   version gives no warning, only a doctor note. Not `pasta --version`,

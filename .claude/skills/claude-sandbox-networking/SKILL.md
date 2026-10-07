@@ -255,11 +255,11 @@ and pasta's log → "Couldn't open ...: Permission denied". Debian made pasta
 a hard link with its own profile in 0.0~git20230908.05627dc-1. (2) Even
 hard-linked or unconfined, its `--config-net` leaves a `broadcast ... table
 local` route that the jail's read-back refuses; upstream fixed that in
-cc9d167 (2023-05-23, first tag 2023_06_03). So no AppArmor gate: it fails
+cc9d167 (2023-05-14, first tag 2023_06_03). So no AppArmor gate: it fails
 on any host. bookworm-backports has no passt. Read the version from
 **dpkg-query**, not `pasta --version` (Debian 12's and Ubuntu 24.04's print
 "unknown version"). `config.passt_too_old` (jail on + dated older) drives
-`installer/system.warn_if_old_passt` and doctor's `passt` row, mirroring
+`installer/system.warn_if_old_passt` (also at image build, unlike tun) and doctor's `passt` row, mirroring
 the tun warning; an unparseable version is a doctor note, never an alarm.
 Don't "fix" (1) by giving pasta an unconfined path: that drops the host's
 confinement of pasta, and (2) still fails.
