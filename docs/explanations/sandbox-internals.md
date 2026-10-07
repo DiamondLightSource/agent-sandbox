@@ -56,9 +56,12 @@ stored there are exposed. Two `.local/share` directories are masked again:
 uv's Python store (`$UV_PYTHON_INSTALL_DIR`, else `uv/python` under
 `$XDG_DATA_HOME` or `.local/share`) is bound read-only when it exists at
 launch inside a writable bind, so a session cannot change an interpreter
-that a venv, or uv outside the sandbox, runs. `uv venv` and `uv sync` work
+that a venv, or uv outside the sandbox, runs. The directories between the
+writable bind and the store are bound over themselves, so the session cannot
+rename them to swap in a store of its own. `uv venv` and `uv sync` work
 against the Pythons there; `uv python install` fails inside the sandbox and
-belongs in an ordinary terminal.
+belongs in an ordinary terminal. `uv-python-store = writable` in the
+[configuration](../reference/configuration.md) turns this off.
 
 Other top-level credential directories, such as `.ssh`, `.aws`, `.kube` and
 `.gnupg`, remain behind the home mask. See the

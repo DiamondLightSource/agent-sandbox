@@ -47,18 +47,39 @@ recipe above.
 
 Where the project needs a Python the container does not have, uv installs
 one into its store, `~/.local/share/uv/python` by default. The sandbox binds
-that store read-only, so install Pythons from an ordinary container
-terminal, not from an agent session:
+that store read-only, so agents cannot change an interpreter you later run
+outside the sandbox. Install Pythons outside the agent session:
 
-```bash
-uv python install 3.12
+- **The project's Python:** install it in `postCreate.sh`, so it is there
+  before the first session:
+
+  ```bash
+  uv python install 3.12
+  ```
+
+- **An extra version during a session:** when an agent reports
+  `error: ... Read-only file system (os error 30) at path
+  "/root/.local/share/uv/python/..."`, it tried to install a Python. Run
+  `uv python install X.Y` yourself in another devcontainer terminal while
+  the agent waits, then let it continue. Agents can create and sync venvs
+  against installed Pythons (`uv venv`, `uv sync`, `uv run`).
+
+The store must exist when the session starts. If it did not, uv in that
+session can create it, but the PATH watcher may remove the `python` links
+of a venv made against it; recreate the venv from a terminal, or start a
+new session.
+
+For a project that installs Pythons as part of its work, such as nox or tox
+across several versions, leave the store writable in
+`/etc/claude-sandbox.conf`:
+
+```ini
+uv-python-store = writable
 ```
 
-Agents can then create and sync venvs against it (`uv venv`, `uv sync`). If
-the store did not exist when the session started, uv in that session can
-create it, but the PATH watcher may remove the `python` links of a venv made
-against it; recreate the venv from a terminal, or start a new session. See
-{ref}`ADR 27 <adr-outer-path-guard>`.
+Venv `python` links into a writable store are then quarantined like any
+other executable the session adds ahead of system commands, so recreate
+venvs from a terminal. See {ref}`ADR 27 <adr-outer-path-guard>`.
 
 ## Team configuration
 
