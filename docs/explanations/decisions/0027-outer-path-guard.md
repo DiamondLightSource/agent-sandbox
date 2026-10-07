@@ -72,31 +72,49 @@ new git hooks, while the session runs; warn in outer shells.
     setting during the session is an alert of its own.
   - A key in the repository's own config that makes git run a command is
     watched too, and a key that appears, changes or goes is an alert naming
-    the key and its old and new values (escaped, quoted, cut short). The
-    watcher reads `git config --local --no-includes --list` the same safe
-    way, plus the worktree config when `extensions.worktreeConfig` is on;
-    the user's and the system's config are out of the session's reach. The
-    keys: `core.fsmonitor`, `core.sshCommand`, `core.pager`, `core.editor`,
-    `core.askPass`, `core.gitProxy`, `core.alternateRefsCommand`,
-    `credential.helper` and `credential.<url>.helper`, `sequence.editor`,
-    `filter.*.clean`, `.smudge` and `.process`, `diff.external`,
-    `diff.*.command` and `.textconv`, `difftool.*.cmd` and `.path`,
-    `merge.*.driver`, `mergetool.*.cmd` and `.path`, every `alias.*` (one
-    without `!` still runs a command through `rebase --exec` or
-    `fetch --upload-pack`), every `pager.*`, `gpg.program`,
-    `gpg.*.program`, `gpg.ssh.defaultKeyCommand`, `interactive.diffFilter`,
-    `gc.recentObjectsHook`, `remote.*.uploadpack` and `.receivepack`,
-    `submodule.*.update` (its `!command` form), `tar.*.command`,
-    `trailer.*.command` and `.cmd`, `imap.tunnel`, `instaweb.httpd`,
-    `browser.*`, `man.*` and `guitool.*` commands, `sendemail`'s
-    `smtpServer`, `toCmd`, `ccCmd` and `headerCmd`, and, though they run
-    nothing themselves, `include.path`, `includeIf.*.path` (includes are
-    not followed: adding one is the alert) and `protocol.allow` and
-    `protocol.*.allow` (which can let an `ext::` URL run a command).
-    `uploadpack.packObjectsHook` is left out: git honours it only from
-    protected (system, global or command-line) config. Branch, remote URL
-    and fetch, and user keys never alert, so `git push -u`,
-    `git remote add` and `git config user.name` stay quiet.
+    the key and its old and new values (escaped, quoted, cut short; at most
+    20 lines a look, then a count). The watcher reads
+    `git config --local --includes --list` the same safe way, plus the
+    worktree config when `extensions.worktreeConfig` is on. Includes are
+    followed, so a key in a file that was already included is watched, and
+    a new `include.path` is itself an alert; an include of `~/.gitconfig`
+    brings the user's keys into the baseline, which only matters if they
+    change. `includeIf` conditions match paths, branches and config, so
+    evaluating them runs nothing. The user's and the system's config are
+    otherwise out of the session's reach. The keys: `core.fsmonitor`,
+    `core.sshCommand`, `core.pager`, `core.editor`, `core.askPass`,
+    `core.gitProxy`, `core.alternateRefsCommand`, `credential.helper` and
+    `credential.<url>.helper`, `sequence.editor`, `filter.*.clean`,
+    `.smudge` and `.process`, `diff.external`, `diff.*.command` and
+    `.textconv`, `difftool.*.cmd` and `.path`, `merge.*.driver`,
+    `mergetool.*.cmd` and `.path`, every `alias.*` (one without `!` still
+    runs a command through `rebase --exec` or `fetch --upload-pack`), every
+    `pager.*`, `gpg.program`, `gpg.*.program`, `gpg.ssh.defaultKeyCommand`,
+    `interactive.diffFilter`, `gc.recentObjectsHook`, `remote.*.uploadpack`,
+    `.receivepack` and `.vcs`, `submodule.*.update` (its `!command` form),
+    `tar.*.command`, `trailer.*.command` and `.cmd`, `imap.tunnel`,
+    `instaweb.httpd`, `browser.*`, `man.*` and `guitool.*` commands,
+    `sendemail`'s `smtpServer`, `sendmailCmd`, `toCmd`, `ccCmd` and
+    `headerCmd`, Git LFS's `lfs.customtransfer.*.path` and `.args`,
+    `lfs.standalonetransferagent` (and per URL) and
+    `lfs.extension.*.clean` and `.smudge`, and, though they run nothing
+    themselves, `include.path` and `includeIf.*.path`, `protocol.allow` and
+    `protocol.*.allow` (which can let an `ext::` URL run a command), and
+    `url.*.insteadOf` and `.pushInsteadOf` (which can turn a remote's URL
+    into one, or into a remote helper's). `uploadpack.packObjectsHook` is
+    left out: git honours it only from protected (system, global or
+    command-line) config. Branch, remote URL and fetch, and user keys never
+    alert, so `git push -u`, `git remote add` and `git config user.name`
+    stay quiet; routine commands never write the keys above.
+  - git stays off the critical path. A pass judges the directories first,
+    and runs git only when a file it would read has changed (`.git`,
+    `HEAD`, `commondir`, the config, the worktree config and every include,
+    by lstat signature), and always at launch. Each of those is looked at
+    with `stat` before git opens it: one that is not a regular file (a FIFO
+    would stall git) or is over 1 MB is an alert of its own, once, and git
+    is not run until it changes. git gets a second at most, and discovery
+    stops at the workspace (`GIT_CEILING_DIRECTORIES`), so a removed `.git`
+    does not lead git to an enclosing repository.
   - These are alerts only: nothing is blocked or quarantined because of
     them. The watcher cannot tell the user's change from the session's,
     and husky sets `core.hooksPath=.husky` by design.
@@ -111,7 +129,8 @@ new git hooks, while the session runs; warn in outer shells.
     judged as usual.
 - **A scan at launch.** Before the agent starts, each watched directory is
   compared with a baseline the previous launch kept under
-  `/run/claude-sandbox` (root-owned); a shadow that is not in it is
+  `/run/claude-sandbox` (owned by the launching user, and masked in the
+  jail); a shadow that is not in it is
   quarantined and reported as a launch warning, so the pause shows it. The
   workspace's `core.hooksPath` and watched config keys are compared with
   what the previous launch (or a change during the last session) kept
@@ -180,10 +199,11 @@ Options rejected:
   restore it with `chmod +x .git/hooks/<name>`, or run `pre-commit install`
   again outside the sandbox.
 - Not covered: a directory that does not exist at launch has no mount guard
-  (the watcher and the next launch's checks still apply); a remote helper
-  that a remote URL names (`<transport>::<address>` runs
-  `git-remote-<transport>` from PATH, which need not shadow anything); git
-  config keys outside the list above, and the user's and system config;
+  (the watcher and the next launch's checks still apply); a direct change
+  to a remote's URL, which can name a remote helper
+  (`<transport>::<address>` runs `git-remote-<transport>` from PATH, which
+  need not shadow anything); git config keys outside the list above, and
+  the user's and system config;
   and code in the workspace, the venv's `site-packages` or the caches that
   the user runs outside the sandbox. Review that like any contribution.
 - The threat model gains a section, "What a session leaves behind".

@@ -102,7 +102,7 @@ through `npm install`, loses its execute bit this way, by design. Check the
 hook, then restore it with `chmod +x .git/hooks/<name>`, or run
 `pre-commit install` again outside the sandbox.
 
-Two alerts only warn and change nothing:
+These alerts only warn and change nothing:
 
 - `core.hooksPath ... changed from ... to ...`: the repository's hooks
   directory setting changed during a session, or, prefixed
@@ -113,6 +113,10 @@ Two alerts only warn and change nothing:
   `core.fsmonitor`, `core.pager`, `credential.helper`, a filter or diff
   driver, an alias or an `include.path`) appeared, changed or went. Remotes,
   upstream branches and `user.*` never alert.
+- `the git config of ... was not read: ...`: a file the repository's
+  config is read from is not a regular file (a FIFO, say) or is over 1 MB,
+  so the watcher stopped reading the config until that file changes. Look
+  at it before you run git outside the sandbox.
 
 If you made the change yourself, clear the alert. Otherwise, check the
 value before you run git outside the sandbox: `git config --local --list`
