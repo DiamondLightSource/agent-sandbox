@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # claude-sandbox: warn at the prompt of every outer shell when the PATH
-# watcher has quarantined something a session left behind (ADR 27).
+# watcher has quarantined or noticed something a session left behind (ADR 27).
 #
 # Installed root-owned as /etc/profile.d/claude-sandbox-alerts.sh by the
 # opt-in Python shadow, and sourced from /etc/bash.bashrc and /etc/zsh/zshrc.
@@ -38,7 +38,7 @@ if [ -n "${BASH_VERSION:-}${ZSH_VERSION:-}" ] && [ -z "${__cs_alerts_loaded:-}" 
                     __cs_new=$__cs_all
                 fi
                 if [ -n "$__cs_new" ]; then
-                    printf '\033[1;31mclaude-sandbox: quarantined what a sandboxed session left:\033[0m\n%s' "$__cs_new" >&2
+                    printf '\033[1;31mclaude-sandbox: alerts about what a sandboxed session left:\033[0m\n%s' "$__cs_new" >&2
                     printf '\033[1;31mReview the session that created it; `claude-sandbox alerts --clear` once done.\033[0m\n' >&2
                 fi
                 __cs_alerts_seen=$__cs_n

@@ -195,8 +195,7 @@ def run(
             )
             for action in session.scan_at_launch():
                 term.warn(
-                    f"quarantined at launch: {action}. Review the session that"
-                    " created it."
+                    f"found at launch: {action}. Review the session that created it."
                 )
         terminal, launch_env = terminal_command(built.argv, env, host)
         term.pause(verify)

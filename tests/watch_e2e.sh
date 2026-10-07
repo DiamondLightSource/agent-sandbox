@@ -10,7 +10,8 @@
 # bin and a pre-push hook in the workspace's repository, and waits while
 # this script checks, from outside, that each was neutralised within about a
 # second. Once with the egress jail on (the watcher is a thread of the
-# launcher), once with it off (a forked watcher). Run in a throwaway
+# launcher), once with it off (a forked watcher). Then git config changes,
+# between sessions and in one: alerts only. Run in a throwaway
 # container.
 set -euo pipefail
 
@@ -90,7 +91,7 @@ session() {  # MODE: one launch, checked from outside while it runs
     # Without a controlling terminal, so it cannot take this one's foreground.
     prompt="$(setsid -w bash -i <<< 'exit' 2>&1 >/dev/null)"
     case "$prompt" in
-        *"quarantined what a sandboxed session left:"*"$venv_bin/git"*) ;;
+        *"alerts about what a sandboxed session left:"*"$venv_bin/git"*) ;;
         *) fail "$mode: no warning at an interactive bash prompt: $prompt" ;;
     esac
     pass "$mode: an interactive bash warns at its prompt"
@@ -107,7 +108,7 @@ session() {  # MODE: one launch, checked from outside while it runs
     wait "$pid" || fail "$mode: the session failed: $(cat session.out)"
     [ ! -s state-seen ] || fail "$mode: the session could see the watcher's state: $(cat state-seen)"
     if [ "$mode" = jail-on ]; then
-        grep -q "quarantined during this session" session.out \
+        grep -q "alerts from this session" session.out \
             || fail "$mode: no summary at the session's end: $(cat session.out)"
         pass "$mode: the session could not see the alerts; its end printed a summary"
     else
@@ -130,3 +131,33 @@ grep -qE "^  ok +entry points " <<< "$report" || fail "doctor: $report"
 "${cli[@]}" alerts --clear
 [ -z "$("${cli[@]}" alerts)" ] || fail "claude-sandbox alerts --clear left alerts"
 pass "claude-sandbox alerts lists them and --clear empties the list; doctor reports them"
+
+# Git config: core.hooksPath changed between sessions (as husky sets it), and
+# core.fsmonitor added in one, alert and quarantine nothing; a remote, an
+# upstream and user.name raise no alert.
+mkdir .husky
+printf '#!/bin/sh\nexit 0\n' > .husky/pre-commit
+chmod 755 .husky/pre-commit
+git config core.hooksPath .husky
+cat > "$real" <<'EOF'
+#!/bin/bash
+# Inside the jail.
+set -e
+git init -q --bare bare.git
+git remote add origin "$PWD/bare.git"
+git config user.name "Someone else"
+git -c user.email=probe@example.invalid commit -q --allow-empty -m probe
+git push -q -u origin HEAD
+git config core.fsmonitor /nonexistent/fsmonitor-hook
+EOF
+claude < /dev/null > session.out 2>&1 || fail "git config: the session failed: $(cat session.out)"
+grep -qF "found at launch: between sessions, core.hooksPath of $work changed from (unset) to .husky" session.out \
+    || fail "git config: no launch warning: $(cat session.out)"
+expected="between sessions, core.hooksPath of $work changed from (unset) to .husky
+core.fsmonitor in the git config of $work changed from (unset) to \"/nonexistent/fsmonitor-hook\""
+[ "$(cut -d' ' -f3- "$alerts")" = "$expected" ] || fail "git config: the alerts are: $(cat "$alerts")"
+[ -x .husky/pre-commit ] || fail "git config: .husky/pre-commit was quarantined"
+[ "$(git -c core.fsmonitor=false config branch."$(git -c core.fsmonitor=false branch --show-current)".remote)" = origin ] \
+    || fail "git config: the probe did not set an upstream"
+pass "git config: a hooksPath change between sessions and core.fsmonitor alerted, nothing quarantined; routine keys did not"
+"${cli[@]}" alerts --clear

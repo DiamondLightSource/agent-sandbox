@@ -259,7 +259,7 @@ def test_the_path_watcher_around_a_launch(
     fx.run()  # the first launch keeps a baseline
     executable(venv / "git")  # left by something since
     fx.run()
-    assert "claude-sandbox: quarantined at launch: cleared the execute bits of" in (
+    assert "claude-sandbox: found at launch: cleared the execute bits of" in (
         capsys.readouterr().err
     )
     assert not os.access(venv / "git", os.X_OK)

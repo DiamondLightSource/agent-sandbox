@@ -480,13 +480,13 @@ def test_prompt_hook(tmp_path: Path, shell: str) -> None:
     ]
     assert shown == [
         "-- empty",
-        "claude-sandbox: quarantined what a sandboxed session left:\033[0m",
+        "claude-sandbox: alerts about what a sandboxed session left:\033[0m",
         "  one",
         "-- one",
-        "claude-sandbox: quarantined what a sandboxed session left:\033[0m",
+        "claude-sandbox: alerts about what a sandboxed session left:\033[0m",
         "  two",
         "-- two",
-        "claude-sandbox: quarantined what a sandboxed session left:\033[0m",
+        "claude-sandbox: alerts about what a sandboxed session left:\033[0m",
         "  three",
         "-- 3",
     ], proc.stderr
@@ -609,3 +609,135 @@ def test_git_hooks_path_survives_git_failing(
 
     monkeypatch.setattr(subprocess, "run", broken)
     assert watch.git_hooks_path(str(lay.work)) is None
+
+
+def test_runs_command() -> None:
+    """Keys that make git run a command; routine ones never alert."""
+    for key in (
+        "core.fsmonitor",
+        "core.sshcommand",
+        "credential.https://example.com.helper",
+        "filter.lfs.process",
+        "diff.my.driver.textconv",  # a subsection may hold dots
+        "includeif.gitdir:/x/.path",
+        "alias.st",
+        "pager.log",
+        "gpg.ssh.defaultkeycommand",
+        "remote.origin.uploadpack",
+    ):
+        assert watch.runs_command(key), key
+    for key in (
+        "core.hookspath",  # an alert of its own
+        "core.bare",
+        "branch.main.remote",
+        "branch.main.merge",
+        "remote.origin.url",
+        "remote.origin.fetch",
+        "user.name",
+        "user.email",
+        "filter.lfs.required",
+        "uploadpack.packobjectshook",  # protected config only
+    ):
+        assert not watch.runs_command(key), key
+
+
+def test_git_config_alerts_in_a_session(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A watched key that appears, changes or goes is an alert, its values
+    escaped; nothing is quarantined, and routine keys stay quiet."""
+    monkeypatch.setenv("HOME", str(lay.root))  # no user config
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    s = lay.session()
+    s.start()
+    git("remote", "add", "origin", "../elsewhere", cwd=lay.work)
+    git("config", "branch.main.remote", "origin", cwd=lay.work)
+    git("config", "user.name", "Someone", cwd=lay.work)
+    assert s.tick() == []
+    where = f"in the git config of {lay.work} changed"
+    git("config", "core.fsmonitor", 'x"\x1b[2J\\', cwd=lay.work)
+    assert s.tick() == [f'core.fsmonitor {where} from (unset) to "x\\"\\x1b[2J\\\\"']
+    git("config", "--add", "alias.st", "!true", cwd=lay.work)
+    git("config", "--add", "alias.st", "x" * 200, cwd=lay.work)
+    git("config", "--unset", "core.fsmonitor", cwd=lay.work)
+    assert s.tick() == [
+        f'alias.st {where} from (unset) to "!true", "{"x" * 160}..."',
+        f'core.fsmonitor {where} from "x\\"\\x1b[2J\\\\" to (unset)',
+    ]
+    # The worktree config, when the repository uses it; a key with no value.
+    git("config", "extensions.worktreeConfig", "true", cwd=lay.work)
+    with (lay.work / ".git/config.worktree").open("a") as f:
+        f.write("[core]\n\tpager\n")
+    assert s.tick() == [f"core.pager {where} from (unset) to (no value)"]
+    assert len(lay.alerts()) == 4
+    assert s.summary().startswith("\033[1;31mclaude-sandbox: alerts from this")
+    s.config = None  # nothing known before: this look is a baseline
+    git("config", "core.editor", "vi", cwd=lay.work)
+    assert s.tick() == []
+    # A config git cannot read: git runs nothing from it either.
+    (lay.work / ".git/config").write_text("[broken\n")
+    assert watch.git_config(str(lay.work)) == {}
+
+    def nowhere(name: str) -> None:
+        return None
+
+    monkeypatch.setattr(watch, "find_tool", nowhere)  # git cannot be asked
+    assert watch.git_config(str(lay.work)) is None
+    assert s.tick() == []  # nothing known: the last look stands
+
+
+def test_git_changes_between_sessions(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """core.hooksPath and the watched config, between sessions: alerts at
+    the next launch, nothing quarantined; the first launch is a baseline."""
+    monkeypatch.setenv("HOME", str(lay.root))
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    git("config", "core.pager", "less", cwd=lay.work)
+    assert lay.session().scan_at_launch() == []  # the first: a baseline
+    # As husky does, and a new watched key.
+    executable(lay.work / ".husky/pre-commit")
+    git("config", "core.hooksPath", ".husky", cwd=lay.work)
+    git("config", "core.fsmonitor", "watchman-hook", cwd=lay.work)
+    git("config", "user.name", "Someone", cwd=lay.work)
+    assert lay.session().scan_at_launch() == [
+        f"between sessions, core.hooksPath of {lay.work} changed from (unset)"
+        " to .husky",
+        f"between sessions, core.fsmonitor in the git config of {lay.work}"
+        ' changed from (unset) to "watchman-hook"',
+    ]
+    assert mode(lay.work / ".husky/pre-commit") == 0o755
+    assert lay.session().scan_at_launch() == []  # kept: said once
+    # A change in a session is kept too: the next launch does not repeat it.
+    s = lay.session()
+    s.start()
+    git("config", "--unset", "core.pager", cwd=lay.work)
+    assert len(s.tick()) == 1
+    assert lay.session().scan_at_launch() == []
+    assert len(lay.alerts()) == 3
+    # No state directory: nothing kept, nothing compared.
+    s = watch.Session(s.path, s.roots, str(lay.work), None)
+    assert s.scan_at_launch() == []
+
+
+def test_load_git_state_refuses_what_it_did_not_write(lay: Layout) -> None:
+    state, work = str(lay.state), str(lay.work)
+    assert watch.load_git_state(state, work) is None
+    watch.save_git_state(state, work, "hooks", {"core.pager": ("less", None)})
+    kept = ("hooks", {"core.pager": ("less", None)})
+    assert watch.load_git_state(state, work) == kept
+    (path,) = (lay.state / watch.GIT_STATES).iterdir()
+    cases: list[tuple[object, object]] = [
+        ([], None),
+        ({"workspace": "/elsewhere", "hooks_path": None, "config": {}}, None),
+        ({"workspace": work, "hooks_path": 1, "config": {}}, None),
+        ({"workspace": work, "hooks_path": None, "config": None}, (None, None)),
+        ({"workspace": work, "hooks_path": None, "config": {"a.b": 1}}, (None, {})),
+    ]
+    for doc, loaded in cases:
+        path.write_text(json.dumps(doc))
+        assert watch.load_git_state(state, work) == loaded
+    path.write_text("not json")
+    assert watch.load_git_state(state, work) is None
