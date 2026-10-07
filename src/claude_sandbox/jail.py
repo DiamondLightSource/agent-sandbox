@@ -108,6 +108,18 @@ JAIL_CALLBACK_PORTS = "CLAUDE_JAIL_CALLBACK_PORTS"
 # diagnostics.
 PASTA_LOG = "/tmp/claude-pasta.log"
 
+# What an old pasta logs when it cannot attach from inside a container.
+# Debian 12's passt (2023-03) drops its capabilities before it opens the
+# holder's namespaces and its own log file, and both opens then fail with
+# EACCES; the passt in Ubuntu 24.04 and Debian 13 opens them first. The jail
+# stays closed either way; this only says why.
+PASTA_CANNOT_OPEN = "Couldn't open"
+PASTA_TOO_OLD = (
+    "\n  This passt is too old to attach to a namespace from inside a container"
+    "\n  (Debian 12's is); use a base image with a newer passt, such as"
+    "\n  Ubuntu 24.04 or Debian 13."
+)
+
 # pasta flags. IPv4-only keeps all traffic within the routing policy (the
 # netns has no IPv6 to blackhole). Port forwarding and gateway-to-loopback
 # mapping are off (ADR 19): loopback crosses only through the relays below.
@@ -604,7 +616,10 @@ def _start(
 
     rc, _ = ops.run([pasta, *PASTA_FLAGS, str(holder.pid)], env, stderr_to=PASTA_LOG)
     if rc != 0:
-        raise JailError(f"— pasta failed to attach to the netns (see {PASTA_LOG})")
+        raise JailError(
+            f"— pasta failed to attach to the netns (see {PASTA_LOG})"
+            + (PASTA_TOO_OLD if PASTA_CANNOT_OPEN in ops.read(PASTA_LOG) else "")
+        )
     signals.check()
     ops.touch(holder_env[JAIL_READY])
 

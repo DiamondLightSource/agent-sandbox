@@ -89,6 +89,7 @@ class FakeOps(Ops):
         self.sleeps = 0
         self.env: dict[str, str] = {}
         self.netns_ready = True
+        self.contents: dict[str, str] = {}  # what read() returns for a path
 
     def find_tool(self, name: str) -> str | None:
         return None if name in self.missing else f"/usr/bin/{name}"
@@ -103,6 +104,8 @@ class FakeOps(Ops):
         return path.endswith(".sock") and path not in self.missing
 
     def read(self, path: str) -> str:
+        if path in self.contents:
+            return self.contents[path]
         if path == "/proc/self/ns/net":
             return "net:[1]"
         if path.endswith("/ns/net"):
@@ -299,6 +302,19 @@ def test_callback_relay_that_never_listens_fails_soft() -> None:
         " browser logins on that port will not reach this session."
     ]
     assert ops.env["CLAUDE_JAIL_CALLBACK_PORTS"] == ""
+
+
+def test_an_old_pasta_is_named_as_the_cause() -> None:
+    ops = FakeOps()
+    ops.fail.add(" ".join(["pasta", *PASTA[1:]]))
+    ops.contents[jail.PASTA_LOG] = (
+        "Couldn't open user namespace /proc/42/ns/user: Permission denied\n"
+    )
+    assert launch(ops, None) == 1
+    (error,) = map(str, ops.errors())
+    assert error.startswith("claude-sandbox: egress jail — pasta failed to attach")
+    assert "too old to attach" in error and "Ubuntu 24.04" in error
+    assert ("touch", READY) not in ops.log
 
 
 @pytest.mark.parametrize(

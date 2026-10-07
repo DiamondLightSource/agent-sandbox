@@ -20,7 +20,11 @@ devcontainer, add this run argument and rebuild:
 ```
 
 Missing tun, pasta or namespace support makes agent launch fail closed.
-Use rootless Podman: rootful Docker cannot host the default jail.
+Use rootless Podman: rootful Docker cannot host the default jail. The
+devcontainer's base image must also have a recent enough `passt`:
+Debian 12's (2023-03, in `node:22-slim` and other bookworm images) cannot
+attach from inside a container, and the launch says so. Ubuntu 24.04 and
+Debian 13 images work.
 
 ## Keep a lab device or internal forge reachable
 
