@@ -40,6 +40,7 @@ mechanism when inotify is unavailable. Standard library only: this module is
 on the launch path (ADR 26).
 """
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -80,30 +81,49 @@ class Target:
     hooks: bool = False
 
 
-def git_hooks_dir(workspace: str) -> str | None:
-    """The workspace's git hooks directory, resolved, if it exists.
+def _read_small(path: str) -> str | None:
+    """The text of regular file ``path`` (its first 4 KiB), or None. Opened
+    without blocking, so a FIFO the session left there cannot stall the
+    watcher."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, 4096).decode(errors="surrogateescape")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def git_dirs(workspace: str) -> tuple[str, str] | None:
+    """The workspace's git directory and its common directory (the same
+    but in a linked worktree), or None when ``.git`` names neither.
 
     ``.git`` is the git directory, or in a worktree a file naming it; a
-    worktree's hooks live in the common directory its ``commondir`` names.
-    ``core.hooksPath`` is ``git_hooks_path``'s.
+    worktree's ``commondir`` names the common directory.
     """
     dot = os.path.join(workspace, ".git")
     gitdir = dot
-    if os.path.isfile(dot):
-        try:
-            with open(dot, encoding="utf-8", errors="surrogateescape") as f:
-                line = f.readline().strip()
-        except OSError:
-            return None
+    if not os.path.isdir(dot):
+        line = (_read_small(dot) or "").partition("\n")[0].strip()
         if not line.startswith("gitdir:"):
             return None
         gitdir = os.path.join(workspace, line.removeprefix("gitdir:").strip())
-    try:
-        with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as f:
-            gitdir = os.path.join(gitdir, f.read().strip())
-    except OSError:
-        pass
-    hooks = os.path.realpath(os.path.join(gitdir, "hooks"))
+    common = _read_small(os.path.join(gitdir, "commondir"))
+    return gitdir, os.path.join(gitdir, common.strip()) if common else gitdir
+
+
+def git_hooks_dir(workspace: str) -> str | None:
+    """The workspace's git hooks directory, resolved, if it exists: in the
+    common directory. ``core.hooksPath`` is ``git_hooks_path``'s."""
+    dirs = git_dirs(workspace)
+    if dirs is None:
+        return None
+    hooks = os.path.realpath(os.path.join(dirs[1], "hooks"))
     return hooks if os.path.isdir(hooks) else None
 
 
@@ -116,64 +136,142 @@ def git_hooks_path(workspace: str) -> str | None:
     return value if rc == 0 and value else None
 
 
+GIT_TIMEOUT = 1.0  # seconds; a config read takes milliseconds
+
+
 def _git_config(workspace: str, *args: str) -> tuple[int, str]:
     """``git config args`` in the workspace's repository, and its output;
-    127 when there is no git (or no workspace), or it did not finish.
+    127 when there is no git (or no workspace), or it did not finish in
+    GIT_TIMEOUT.
 
     git comes from the fixed tool path, with a scrubbed environment and
     fsmonitor off: ``git config`` reads configuration and runs nothing from
-    the repository, which the session can write.
+    the repository, which the session can write. Discovery stops at the
+    workspace, so a removed ``.git`` does not lead git to an enclosing
+    repository.
     """
     git = find_tool("git")
     if git is None or not workspace:
         return 127, ""
     argv = [git, "-C", workspace, "-c", "core.fsmonitor=false", "config", *args]
-    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/root")}
-    return output(argv, env, timeout=5)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": os.environ.get("HOME", "/root"),
+        "GIT_CEILING_DIRECTORIES": os.path.dirname(os.path.abspath(workspace)),
+    }
+    if "XDG_CONFIG_HOME" in os.environ:
+        env["XDG_CONFIG_HOME"] = os.environ["XDG_CONFIG_HOME"]
+    return output(argv, env, timeout=GIT_TIMEOUT)
 
 
-# Keys of a repository's own config that make git on the host run a command,
-# matched on git's lower-cased section and variable names. core.hooksPath is
-# not here: it has its own alert, and its directory is watched.
-#
-# Two-level keys, ``section.variable``.
-RUNS_KEYS = frozenset({
+MAX_CONFIG = 1 << 20  # bytes: a larger config file is not read
+MAX_KEY_ALERTS = 20  # alert lines for the config at one look
+
+
+def config_files(workspace: str) -> tuple[list[str], str | None]:
+    """The files git reads for the workspace repository's own config: the
+    ``.git`` file, HEAD and ``commondir`` (git reads them to find the
+    repository), the config, the worktree config and, transitively, every
+    file an ``include.path`` or ``includeIf.*.path`` names, whatever its
+    condition. And why git must not be asked to read them, or None.
+
+    Each is looked at with stat before git opens it: one that is not a
+    regular file (a FIFO would stall git) or is over MAX_CONFIG is a
+    reason. So is git not answering in time.
+    """
+    files = [os.path.join(workspace, ".git")]
+    dirs = git_dirs(workspace)
+    if dirs is None:
+        return files, None
+    gitdir, common = dirs
+    files += [os.path.join(gitdir, "HEAD"), os.path.join(gitdir, "commondir")]
+    configs = [os.path.join(common, "config"), os.path.join(gitdir, "config.worktree")]
+    for path in files[:]:
+        problem = _unreadable(path)
+        if problem is not None:
+            return files, problem
+    while configs and len(files) < 64:
+        path = configs.pop(0)
+        if path in files:
+            continue
+        files.append(path)
+        if not os.path.lexists(path):
+            continue
+        problem = _unreadable(path)
+        if problem is not None:
+            return files, problem
+        # From /, not the workspace: git in a repository reads its config,
+        # includes and all, before anything else.
+        rc, text = _git_config("/", "--file", path, "--no-includes", "--list", "-z")
+        if rc == 127:
+            return files, f"git did not read {_shown(path)} within {GIT_TIMEOUT:g} s"
+        for key, values in _entries(text).items():
+            if key == "include.path" or re.fullmatch(r"includeif\..*\.path", key):
+                configs += [_include(path, value) for value in values if value]
+    return files, None
+
+
+def _unreadable(path: str) -> str | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode):
+        return f"{_shown(path)} is not a regular file"
+    if st.st_size > MAX_CONFIG:
+        return f"{_shown(path)} is over {MAX_CONFIG >> 20} MB"
+    return None
+
+
+def _include(origin: str, value: str) -> str:
+    """Where an include in ``origin`` points: ``~`` expanded, relative to
+    the including file's directory."""
+    return os.path.normpath(
+        os.path.join(os.path.dirname(origin), os.path.expanduser(value))
+    )
+
+
+# Keys of a repository's config that make git on the host run a command, as
+# patterns on git's lower-cased names (``*`` matches a subsection, dots
+# and all). core.hooksPath is not here: it has its own alert, and its
+# directory is watched.
+RUNS_COMMAND = (
     "core.fsmonitor", "core.sshcommand", "core.pager", "core.editor",
     "core.askpass", "core.gitproxy", "core.alternaterefscommand",
-    "credential.helper", "sequence.editor", "diff.external", "gpg.program",
-    "interactive.difffilter", "gc.recentobjectshook", "imap.tunnel",
-    "instaweb.httpd", "sendemail.smtpserver", "sendemail.tocmd",
-    "sendemail.cccmd", "sendemail.headercmd",
-    # No command themselves: include.path reads more config (not followed
-    # here), and protocol.allow can let an ext:: URL run one.
-    "include.path", "protocol.allow",
-})  # fmt: skip
-# Three-level keys, ``section.<anything>.variable``.
-RUNS_ANY_SUBSECTION = frozenset({
-    "credential.helper", "filter.clean", "filter.smudge", "filter.process",
-    "diff.command", "diff.textconv", "difftool.cmd", "difftool.path",
-    "merge.driver", "mergetool.cmd", "mergetool.path", "gpg.program",
-    "gpg.defaultkeycommand", "remote.uploadpack", "remote.receivepack",
-    "submodule.update", "tar.command", "trailer.command", "trailer.cmd",
-    "browser.cmd", "browser.path", "man.cmd", "man.path", "guitool.cmd",
-    "sendemail.smtpserver", "sendemail.tocmd", "sendemail.cccmd",
-    "sendemail.headercmd", "includeif.path", "protocol.allow",
-})  # fmt: skip
-# Whole sections. An alias that does not start with ``!`` still runs a
-# command through an option (``rebase --exec``, ``fetch --upload-pack``).
-RUNS_SECTIONS = frozenset({"alias", "pager"})
+    "credential.helper", "credential.*.helper", "sequence.editor",
+    "interactive.difffilter", "gc.recentobjectshook",
+    "filter.*.clean", "filter.*.smudge", "filter.*.process",
+    "diff.external", "diff.*.command", "diff.*.textconv",
+    "difftool.*.cmd", "difftool.*.path", "merge.*.driver",
+    "mergetool.*.cmd", "mergetool.*.path",
+    "gpg.program", "gpg.*.program", "gpg.ssh.defaultkeycommand",
+    "remote.*.uploadpack", "remote.*.receivepack", "remote.*.vcs",
+    "submodule.*.update", "tar.*.command", "trailer.*.command",
+    "trailer.*.cmd", "imap.tunnel", "instaweb.httpd", "browser.*.cmd",
+    "browser.*.path", "man.*.cmd", "man.*.path", "guitool.*.cmd",
+    "sendemail.smtpserver", "sendemail.*.smtpserver", "sendemail.tocmd",
+    "sendemail.*.tocmd", "sendemail.cccmd", "sendemail.*.cccmd",
+    "sendemail.headercmd", "sendemail.*.headercmd", "sendemail.sendmailcmd",
+    "sendemail.*.sendmailcmd",
+    # Git LFS runs these for git, through its filter.
+    "lfs.customtransfer.*.path", "lfs.customtransfer.*.args",
+    "lfs.standalonetransferagent", "lfs.*.standalonetransferagent",
+    "lfs.extension.*.clean", "lfs.extension.*.smudge",
+    # An alias need not start with ``!`` to run a command: ``rebase --exec``,
+    # ``fetch --upload-pack``. A pager.<cmd> is a command.
+    "alias.*", "pager.*",
+    # No command themselves: an include reads more config, protocol.allow
+    # can let an ext:: URL run one, and url.*.insteadOf can turn a remote's
+    # URL into one (or into a remote helper's ``transport::``).
+    "include.path", "includeif.*.path", "protocol.allow", "protocol.*.allow",
+    "url.*.insteadof", "url.*.pushinsteadof",
+)  # fmt: skip
 
 
 def runs_command(key: str) -> bool:
     """``key`` (as ``git config --list`` names it) can make git run a
-    command. Branch, remote, user and other routine keys cannot."""
-    section, _, rest = key.partition(".")
-    subsection, _, variable = rest.rpartition(".")
-    if section in RUNS_SECTIONS:
-        return True
-    if subsection:
-        return f"{section}.{variable}" in RUNS_ANY_SUBSECTION
-    return key in RUNS_KEYS
+    command. Branch, remote URL, user and other routine keys cannot."""
+    return any(fnmatch.fnmatchcase(key, pattern) for pattern in RUNS_COMMAND)
 
 
 # Each watched key and its values, in the order git reads them; None for a
@@ -195,14 +293,16 @@ def _entries(text: str) -> GitConfig:
 def git_config(workspace: str) -> GitConfig | None:
     """The keys of the workspace repository's own config (and of its
     worktree config, when ``extensions.worktreeConfig`` is on) for which
-    ``runs_command``. Not the user's or the system's: the session cannot
-    write those. Includes are not followed: ``include.path`` is a key here.
+    ``runs_command``, includes followed. Not the user's or the system's
+    config, unless an include brings it in: the session cannot write those.
+    An ``include.path`` is a key here too, so a new one is an alert.
 
     {} when git cannot read the config (no repository, or a broken file):
     git on the host runs nothing from it either. None when git could not
-    be asked, so nothing is known.
+    be asked, so nothing is known. ``config_files`` first: git must not be
+    pointed at a FIFO.
     """
-    read = ("--no-includes", "--list", "-z")
+    read = ("--includes", "--list", "-z")
     rc, text = _git_config(workspace, "--local", *read)
     if rc == 127:
         return None
@@ -211,28 +311,34 @@ def git_config(workspace: str) -> GitConfig | None:
     found = _entries(text)
     worktree = found.get("extensions.worktreeconfig", ("false",))[-1]
     if worktree is None or worktree.lower() in ("true", "yes", "on", "1"):
-        _, text = _git_config(workspace, "--worktree", *read)
+        rc, text = _git_config(workspace, "--worktree", *read)
+        if rc == 127:
+            return None
         for key, values in _entries(text).items():
             found[key] = found.get(key, ()) + values
     return {key: values for key, values in found.items() if runs_command(key)}
+
+
+def _cut(text: str, limit: int = 160) -> str:
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _shown(text: str) -> str:
+    """``describe``d and cut short: for anything the session wrote."""
+    return _cut(describe(text))
 
 
 def show_values(values: Sequence[str | None]) -> str:
     """A key's values for an alert line: each quoted, escaped as
     ``describe`` does (the session wrote them) and cut short; ``(unset)``
     when there are none."""
-    if not values:
-        return "(unset)"
-    shown: list[str] = []
-    for value in values:
+
+    def quoted(value: str | None) -> str:
         if value is None:
-            shown.append("(no value)")
-            continue
-        text = describe(value).replace('"', '\\"')
-        if len(text) > 160:
-            text = text[:160] + "..."
-        shown.append(f'"{text}"')
-    return ", ".join(shown)
+            return "(no value)"
+        return '"' + _shown(value).replace('"', '\\"') + '"'
+
+    return ", ".join(map(quoted, values)) if values else "(unset)"
 
 
 def _hooks_path_dir(workspace: str, value: str) -> str | None:
@@ -583,40 +689,88 @@ class Session:
     actions: list[str] = field(default_factory=list[str])
     hooks_path: str | None = None  # core.hooksPath at the last look
     config: GitConfig | None = None  # git_config at the last look
+    git_files: list[str] = field(default_factory=list[str])  # config_files
+    gate: tuple[Sig | None, ...] | None = None  # their signatures then
+    unreadable: str | None = None  # why config_files refused, then
 
     def targets(self) -> list[Target]:
         return targets(self.path, self.roots, self.workspace, self.hooks_path)
 
-    def _git_changed(self, when: str = "") -> list[str]:
+    def _git_changed(
+        self, when: str = "", *, always: bool = False, baseline: bool = False
+    ) -> list[str]:
         """Look at core.hooksPath and the repository's config again: an
         alert for each change since the last look (``when`` says when that
         was), and the new state kept for the next launch. Alerts only:
-        nothing tells the user's change from the session's."""
+        nothing tells the user's change from the session's.
+
+        Unless ``always``, git runs only when a file it would read has
+        changed since (``config_files``, by signature), and never on a file
+        that could stall it: that is an alert of its own, once. A
+        ``baseline`` look takes the values without comparing them.
+        """
+        if find_tool("git") is None or not self.workspace:
+            return []
+        gate = tuple(signature(path) for path in self.git_files)
+        if gate == self.gate and not always:
+            return []
+        self.git_files, problem = config_files(self.workspace)
+        self.gate = tuple(signature(path) for path in self.git_files)
         where = describe(self.workspace)
-        before, self.hooks_path = self.hooks_path, git_hooks_path(self.workspace)
         done: list[str] = []
-        if before != self.hooks_path:
-            done.append(
-                f"{when}core.hooksPath of {where} changed from"
-                f" {describe(before or '(unset)')} to"
-                f" {describe(self.hooks_path or '(unset)')}"
-            )
-        config = git_config(self.workspace)
-        if config is not None:  # else nothing is known: keep the last look
-            old, self.config = self.config, config
-            if old is not None:
-                done += [
-                    f"{when}{describe(key)} in the git config of {where} changed"
-                    f" from {show_values(old.get(key, ()))} to"
-                    f" {show_values(config.get(key, ()))}"
-                    for key in sorted(old.keys() | config.keys())
-                    if old.get(key, ()) != config.get(key, ())
-                ]
+        if problem is not None and problem != self.unreadable:
+            done.append(f"{when}the git config of {where} was not read: {problem}")
+        self.unreadable = problem
+        now = None if problem else self._git_read()
+        if now is not None:  # else nothing is known: the last look stands
+            before, old = self.hooks_path, self.config
+            self.hooks_path, self.config = now
+            config = self.config
+            if not baseline and before != self.hooks_path:
+                done.append(
+                    f"{when}core.hooksPath of {where} changed from"
+                    f" {_shown(before or '(unset)')} to"
+                    f" {_shown(self.hooks_path or '(unset)')}"
+                )
+            if not baseline and old is not None:
+                done += self._config_alerts(when, old, config)
         if done:
             record(self.state, done)
             self.actions += done
             self._save_git()
         return done
+
+    def _git_read(self) -> tuple[str | None, GitConfig] | None:
+        """core.hooksPath and ``git_config`` now; None if git did not
+        answer in time."""
+        config = git_config(self.workspace)
+        if config is None:
+            return None
+        rc, value = _git_config(self.workspace, "--get", "core.hooksPath")
+        if rc == 127:
+            return None
+        return (value if rc == 0 and value else None), config
+
+    def _config_alerts(self, when: str, old: GitConfig, new: GitConfig) -> list[str]:
+        """One line per key that changed, up to MAX_KEY_ALERTS."""
+        where = describe(self.workspace)
+        keys = [
+            key
+            for key in sorted(old.keys() | new.keys())
+            if old.get(key, ()) != new.get(key, ())
+        ]
+        lines = [
+            f"{when}{_cut(describe(key), 120)} in the git config of {where} changed"
+            f" from {show_values(old.get(key, ()))} to"
+            f" {show_values(new.get(key, ()))}"
+            for key in keys[:MAX_KEY_ALERTS]
+        ]
+        if len(keys) > MAX_KEY_ALERTS:
+            lines.append(
+                f"{when}and {len(keys) - MAX_KEY_ALERTS} more keys in the git"
+                f" config of {where} changed"
+            )
+        return lines
 
     def _save_git(self) -> None:
         if self.state is not None:
@@ -651,11 +805,10 @@ class Session:
         if self.state is not None:
             kept = load_git_state(self.state, self.workspace)
         if kept is None:  # the first launch here: a baseline only
-            self.hooks_path = git_hooks_path(self.workspace)
-            self.config = git_config(self.workspace)
+            done += self._git_changed(always=True, baseline=True)
         else:
             self.hooks_path, self.config = kept
-            done += self._git_changed("between sessions, ")
+            done += self._git_changed("between sessions, ", always=True)
         self._save_git()
         for target in self.targets():
             current = snapshot(target.directory)
@@ -672,21 +825,21 @@ class Session:
     def start(self) -> None:
         """Take the session's baseline: what is there now is left alone."""
         self.seen.clear()
-        self.hooks_path = git_hooks_path(self.workspace)
-        self.config = git_config(self.workspace)
+        self._git_changed(always=True, baseline=True)
         for target in self.targets():
             self.baseline[target.directory] = snapshot(target.directory)
 
     def tick(self) -> list[str]:
         """One pass. A directory that appeared since the start has an empty
-        baseline: everything in it is new. A change of core.hooksPath or of
-        a watched git config key is an alert of its own, and the directory
-        core.hooksPath names is watched from then."""
-        done = self._git_changed()
+        baseline: everything in it is new. Then, so that git never delays
+        that, a change of core.hooksPath or of a watched git config key is
+        an alert of its own, and the directory core.hooksPath names is
+        watched from the next pass."""
+        done: list[str] = []
         for target in self.targets():
             base = self.baseline.setdefault(target.directory, {})
             done += self._judge(target, snapshot(target.directory), base)
-        return done
+        return done + self._git_changed()
 
     def summary(self) -> str:
         if not self.actions:

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -624,6 +624,11 @@ def test_runs_command() -> None:
         "pager.log",
         "gpg.ssh.defaultkeycommand",
         "remote.origin.uploadpack",
+        "remote.origin.vcs",
+        "lfs.customtransfer.x.path",
+        "lfs.https://example.com/.standalonetransferagent",
+        "sendemail.sendmailcmd",
+        "url.https://evil.example/.insteadof",
     ):
         assert watch.runs_command(key), key
     for key in (
@@ -685,6 +690,191 @@ def test_git_config_alerts_in_a_session(
     monkeypatch.setattr(watch, "find_tool", nowhere)  # git cannot be asked
     assert watch.git_config(str(lay.work)) is None
     assert s.tick() == []  # nothing known: the last look stands
+
+
+def test_git_runs_only_when_its_files_change(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(lay.root))
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    s = lay.session()
+    s.start()
+    calls: list[tuple[str, ...]] = []
+    real = watch._git_config  # pyright: ignore[reportPrivateUsage]
+
+    def counted(workspace: str, *args: str) -> tuple[int, str]:
+        calls.append(args)
+        return real(workspace, *args)
+
+    monkeypatch.setattr(watch, "_git_config", counted)
+    assert s.tick() == [] and calls == []
+    git("config", "user.name", "Someone", cwd=lay.work)
+    assert s.tick() == [] and calls
+
+
+def test_includes_are_followed_and_watched(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An include that was already there is read, and a change in it
+    alerts; a new include alerts; a FIFO or a huge file is never read."""
+    monkeypatch.setenv("HOME", str(lay.root))
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    (lay.work / "extra").write_text("[core]\n\tpager = less\n")
+    (lay.work / ".git/more").write_text("")
+    git("config", "include.path", "../extra", cwd=lay.work)
+    s = lay.session()
+    s.start()
+    assert s.config is not None and s.config["core.pager"] == ("less",)
+    where = f"in the git config of {lay.work} changed"
+    (lay.work / "extra").write_text("[core]\n\tpager = evil\n")
+    assert s.tick() == [f'core.pager {where} from "less" to "evil"']
+    (lay.work / "extra").write_text("[include]\n\tpath = .git/more\n")
+    assert s.tick() == [
+        f'core.pager {where} from "evil" to (unset)',
+        f'include.path {where} from "../extra" to "../extra", ".git/more"',
+    ]
+    # A FIFO an include names: an alert, once; git never opens it.
+    (lay.work / ".git/more").unlink()
+    os.mkfifo(lay.work / ".git/more")
+    started = time.monotonic()
+    executable(lay.venv / "ls")
+    assert s.tick() == [
+        lay.shadows("ls"),
+        f"the git config of {lay.work} was not read:"
+        f" {lay.work}/.git/more is not a regular file",
+    ]
+    assert time.monotonic() - started < 1
+    assert s.tick() == []
+    # Too big.
+    (lay.work / ".git/more").unlink()
+    (lay.work / ".git/more").write_text("#" * (watch.MAX_CONFIG + 1))
+    assert s.tick()[0].endswith(f"{lay.work}/.git/more is over 1 MB")
+    # Readable again: compared with the last look.
+    (lay.work / ".git/more").write_text("[alias]\n\tx = !true\n")
+    assert s.tick() == [f'alias.x {where} from (unset) to "!true"']
+
+
+def test_a_fifo_config_never_stalls_the_launch_or_a_pass(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(lay.root))
+    (lay.work / ".git/HEAD").write_text("ref: refs/heads/main\n")
+    os.mkfifo(lay.work / ".git/config")
+    started = time.monotonic()
+    assert lay.session().scan_at_launch() == [
+        f"the git config of {lay.work} was not read:"
+        f" {lay.work}/.git/config is not a regular file"
+    ]
+    assert time.monotonic() - started < 1
+
+
+def test_git_not_answering_and_its_environment(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(lay.root))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(lay.root / "xdg"))
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    seen: list[Mapping[str, str] | None] = []
+    real = watch.output
+
+    def slow(
+        argv: Sequence[str], env: Mapping[str, str] | None = None, **kw: float
+    ) -> tuple[int, str]:
+        seen.append(env)
+        return (127, "") if "--file" in argv else real(argv, env, **kw)
+
+    monkeypatch.setattr(watch, "output", slow)
+    s = lay.session()
+    assert s.scan_at_launch() == [
+        f"the git config of {lay.work} was not read: git did not read"
+        f" {lay.work}/.git/config within 1 s"
+    ]
+    assert watch.git_config(str(lay.work)) == {}
+    env = seen[-1] or {}
+    assert env["XDG_CONFIG_HOME"] == str(lay.root / "xdg")
+    assert env["GIT_CEILING_DIRECTORIES"] == str(lay.root / "rw")
+    # git answers, but not for the worktree config.
+    monkeypatch.setattr(watch, "output", real)
+    git("config", "extensions.worktreeConfig", "true", cwd=lay.work)
+
+    def no_worktree(workspace: str, *args: str) -> tuple[int, str]:
+        return (127, "") if "--worktree" in args else real_config(workspace, *args)
+
+    real_config = watch._git_config  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(watch, "_git_config", no_worktree)
+    assert watch.git_config(str(lay.work)) is None
+    s.start()  # nothing known: the last look stands
+    s.gate = None
+    assert s.tick() == [] and s.config is None
+
+    def no_hooks_path(workspace: str, *args: str) -> tuple[int, str]:
+        return (127, "") if "--get" in args else real_config(workspace, *args)
+
+    git("config", "extensions.worktreeConfig", "false", cwd=lay.work)
+    monkeypatch.setattr(watch, "_git_config", no_hooks_path)
+    before = s.config
+    git("config", "core.pager", "evil", cwd=lay.work)
+    assert s.tick() == [] and s.config is before
+
+
+def test_git_files_that_could_stall_git(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HEAD or a .git file that is a FIFO, an include cycle, a read error."""
+    monkeypatch.setenv("HOME", str(lay.root))
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    git("config", "include.path", "config", cwd=lay.work)  # itself
+    work = str(lay.work)
+    assert watch.config_files(work)[1] is None
+    (lay.work / ".git/HEAD").unlink()
+    os.mkfifo(lay.work / ".git/HEAD")
+    assert watch.config_files(work)[1] == f"{work}/.git/HEAD is not a regular file"
+    shutil.rmtree(lay.work / ".git")
+    os.mkfifo(lay.work / ".git")
+    assert watch.git_dirs(work) is None
+    os.unlink(lay.work / ".git")
+    (lay.work / ".git").write_text("gitdir: elsewhere\n")
+
+    def broken(fd: int, n: int) -> bytes:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "read", broken)
+    assert watch.git_dirs(work) is None
+
+
+def test_discovery_stops_at_the_workspace(
+    lay: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A removed .git does not lead git to an enclosing repository."""
+    monkeypatch.setenv("HOME", str(lay.root))
+    git("init", "-q", cwd=lay.root / "rw")
+    git("config", "core.pager", "evil", cwd=lay.root / "rw")
+    shutil.rmtree(lay.work / ".git")
+    assert watch.git_config(str(lay.work)) == {}
+
+
+def test_config_alerts_are_capped(lay: Layout, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(lay.root))
+    shutil.rmtree(lay.work / ".git")
+    git("init", "-q", cwd=lay.work)
+    s = lay.session()
+    s.start()
+    with (lay.work / ".git/config").open("a") as f:
+        f.write("[alias]\n" + "".join(f"\ta{i:02} = x\n" for i in range(25)))
+        f.write(f'[diff "{"d" * 300}"]\n\ttextconv = x\n')
+    done = s.tick()
+    assert len(done) == 21
+    assert done[0].startswith("alias.a00 in the git config")
+    assert done[-1] == f"and 6 more keys in the git config of {lay.work} changed"
+    long = watch.Session(s.path, s.roots, str(lay.work), None)
+    lines = long._config_alerts(  # pyright: ignore[reportPrivateUsage]
+        "", {}, {f"diff.{'d' * 300}.textconv": ("x",)}
+    )
+    assert lines[0].startswith(f"diff.{'d' * 115}... in the git config")
 
 
 def test_git_changes_between_sessions(
