@@ -43,8 +43,9 @@ already extended here:
   session. Why: launcher <= 0.3 baked the agent + args as the container
   command, so `start -ai` replayed them and `--agent`/args were silently
   ignored on reuse, and a `--shell` (unsandboxed bash for `gh-auth`) would
-  have baked bash as every later launch. Now only `--host-net`/`--mount`
-  are create-time, the launcher says so on reuse, and `is_keeper` refuses
+  have baked bash as every later launch. Now only the create-time options
+  (`--bridge`, `--peers`, `--gpu`, `--device`, `--mount`, `--mount-rw`)
+  are fixed at create, the launcher says so on reuse, and `is_keeper` refuses
   pre-0.4 containers (starting one would run its baked agent detached).
   Refuse: baking the agent back into the create command; making `--shell`
   a sandboxed session (it exists precisely to run the outside-the-jail CLI).
@@ -88,8 +89,11 @@ already extended here:
   from the DLS python-copier template, wired in `ci.yml`), so wheel == image
   tag (4.0.0 onward; nothing in the tree to bump). The entry point pins `CLAUDE_SANDBOX_IMAGE` to its own version and
   sets `CLAUDE_SANDBOX_LAUNCHER` (`uvx` or `pip`), which picks the outdated
-  hint and the name the launcher calls itself. Verbs `claude|codex|pi|shell` replaced `--agent` /
-  `--shell` (old spellings exit 2 with the new form — no aliases);
+  hint and the name the launcher calls itself. Verbs `claude|codex|pi|shell` replaced the bash launcher's
+  `--agent` / `--shell`. There are no aliases and no refusal: an unknown
+  first word ends the launcher's options, so `claude-sandbox --agent codex`
+  runs claude with `--agent codex` (Claude Code has its own `--agent`
+  flag, so refusing the old spelling would break it);
   **host-net is the default**, `--bridge` opts out (create-time). The
   launcher refuses inside a container (`/run/.containerenv` or
   `/.dockerenv`; `CLAUDE_SANDBOX_NESTED=1` overrides — also the test seam:

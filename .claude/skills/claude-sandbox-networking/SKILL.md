@@ -84,7 +84,8 @@ address queried — a translated reply and a lost packet are indistinguishable.
 That cost real time in #11: the server was answering correctly the whole while.
 
 Reveal it with `recvfrom` printing the peer (perl is present in the sandbox;
-`dig` and `python3` are not, and `nslookup` is BusyBox — no `-vc`, and it
+`dig` is not, `python3` is only whatever the project venv's `bin` (appended
+to the jail's PATH) provides, and `nslookup` is BusyBox — no `-vc`, and it
 predates most flags you'd reach for):
 
 ```bash
@@ -161,6 +162,23 @@ holder: `blackhole` 10/8 + 172.16/12 + 192.168/16 + the **connected subnet**,
 the **pasta DNS forwarder** `192.0.2.53` (/32 via gw — non-routable TEST-NET,
 terminates in pasta, NOT a real host), and **`allow-ip`** devices (/32 via gw).
 Blackholes fail-closed; forwarder/device punches fail-soft.
+
+**Rebuild, don't layer (5.0, after CI on an Azure runner reached
+169.254.169.254 from inside the jail).** pasta mirrors EVERY outer route,
+once, at attach: DHCP host routes (Azure's `169.254.169.254` and
+`168.63.129.16` via the gateway), a VPN's split routes (`10.24.0.0/16 via
+…`). Each is more specific than its blackhole and won. 4.x's bash holder had
+the same flaw. `lock_routes` now `ip -4 route flush table main` (NEVER the
+local table: loopback and the namespace's own addresses, which the relays
+and forwarder use) and builds exactly the allowlist (gateway /32 pinned
+before the default through it, `src` the interface's address on each punch,
+Azure's WireServer blackholed beside link-local), switches IPv6 off through
+its sysctls, then reads back every table and `ip rule` and refuses the launch
+on any difference. **Refuse:** going back to adding routes on top of what
+pasta left; flushing the local table; dropping the read-back. Guards:
+`test_jail.py` (Azure-shaped table, leftovers, rules, IPv6) and
+`test_jail_netns.py` (real table == allowlist, injected host routes dropped,
+agent's userns cannot change a route).
 
 **Resolvers get NO /32 — do not re-add them** (issue #11, fixed 2026-08-14).
 Until then the holder punched a /32 per `/etc/resolv.conf` resolver, justified

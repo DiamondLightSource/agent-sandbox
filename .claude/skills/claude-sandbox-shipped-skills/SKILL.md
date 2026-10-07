@@ -24,8 +24,9 @@ manifest or opt-in list to keep in step. A repo-dev skill that a user wants
 anyway is theirs to copy into their own `~/.claude/skills` by hand; the
 sandbox never does that for them.
 
-`.claude/skills/vscode-headless` is a **symlink** to `../../skills/vscode-headless`
-so the skill still loads while developing here. Add the same symlink for any
+`.claude/skills/browser-testing`, `verify-sandbox` and `vscode-headless` are
+**symlinks** to their `../../skills/` copies so the skills still load while
+developing here. Add the same symlink for any
 new shipped skill only if it is useful for repo work; most will not need it.
 
 ## How a shipped skill reaches the session

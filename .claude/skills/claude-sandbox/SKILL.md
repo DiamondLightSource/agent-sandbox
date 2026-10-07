@@ -156,8 +156,9 @@ not repo-scoped credentials. Don't conflate the two.
 **Refuse as regressions:**
 - New persistent-credential mounts (volume, bind, anywhere) for
   `gh` or `glab` PATs.
-- Re-purposing the (currently deleted) `/cache` Docker volume for
-  tokens. Restoring `/cache` for *caches* is fine; for tokens, not.
+- Putting tokens on the `/cache` named volume (`claude-sandbox-cache`,
+  which the launcher mounts on every create and every project container
+  shares). It holds caches and venvs only; never tokens.
 
 If a future request says "stop re-pasting the PAT" — surface this
 tradeoff before implementing the shortcut.
