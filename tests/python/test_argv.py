@@ -260,9 +260,10 @@ def test_venv_bin_is_appended_to_path(tmp_path: Path) -> None:
 def test_uv_dirs_reach_the_jail() -> None:
     """8c: the image's baked interpreter and tool dir, so uv neither
     re-downloads nor re-installs into the ephemeral home every session."""
-    env = {**ROOT, "UV_PYTHON_INSTALL_DIR": "/opt/uv/python"}
+    store = "/usr/libexec/claude-sandbox/python"
+    env = {**ROOT, "UV_PYTHON_INSTALL_DIR": store}
     argv = build({**env, "UV_TOOL_DIR": "/cache/uv-tools"})
-    assert setenv(argv, "UV_PYTHON_INSTALL_DIR") == ["/opt/uv/python"]
+    assert setenv(argv, "UV_PYTHON_INSTALL_DIR") == [store]
     assert setenv(argv, "UV_TOOL_DIR") == ["/cache/uv-tools"]
 
 

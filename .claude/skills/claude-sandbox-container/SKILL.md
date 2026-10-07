@@ -152,8 +152,11 @@ already extended here:
   return bare version strings). **#81** per-project
   `.claude-sandbox.conf` — see the Invariant 4 carve-out in the
   `claude-sandbox` skill.
-- **Image-only Python (2026-09-11)**: the `claude-sandbox` stage bakes a
-  uv-managed interpreter at `/opt/uv/python` and an active venv at
+- **Image-only Python (2026-09-11; one Python and one uv since issue
+  #85)**: the `claude-sandbox` stage points `UV_PYTHON_INSTALL_DIR` at the
+  sandbox's own pinned interpreter, `/usr/libexec/claude-sandbox/python`
+  (root-owned, outside every `allow-write`; the prune keeps C headers and
+  `ensurepip` for project use), and builds an active venv at
   `/cache/venv` (`UV_PROJECT_ENVIRONMENT`, `VIRTUAL_ENV`, `UV_CACHE_DIR`,
   `UV_TOOL_DIR` all under `/cache`, which the shipped conf already
   `allow-write`s). Why `/cache` and not the workspace: the mounted dir has
@@ -163,7 +166,13 @@ already extended here:
   dogfood ≈ guest would then push a venv into every clone+install
   devcontainer, when the agent's Python is the guest project's business
   (the sandbox's OWN root-owned interpreter under `/usr/libexec`, ADR 26,
-  is a different thing and never the agent's). **Refuse:** moving these
+  is never the agent's: projects share its interpreter read-only through
+  their venvs' links, but never its venv, which runs with `-I`). The build
+  deletes the installer's pinned uv in the install layer once it has
+  provisioned (the base image's uv serves projects; a reinstall refetches
+  and checks it) rather than trusting the base's unpinned uv. Refuse
+  re-adding a second interpreter (`uv python install` in the Dockerfile)
+  or keeping the installer's uv in the image. **Refuse:** moving these
   steps into the installer or the `developer` stage; pointing
   `UV_PROJECT_ENVIRONMENT` back into the workspace; binding `~/.cache`
   back "so Playwright persists" (home is ephemeral on purpose — the fix

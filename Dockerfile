@@ -55,15 +55,35 @@ WORKDIR /opt/claude-sandbox
 # /usr/libexec/claude-sandbox and hands over to the Python installer.
 # Runtime mounts and the namespace probe are handled by the entrypoint when
 # the image starts on its host.
+# The pinned uv is dropped in the same layer: it has done its one job
+# (provisioning), the base image already ships a uv for projects, and a
+# reinstall in a container fetches and checks it again. One uv in the image,
+# and the installer never has to trust the base image's unpinned one.
 RUN bash .devcontainer/claude-sandbox/install.sh --image-build \
+    && rm -rf /usr/libexec/claude-sandbox/uv \
     && apt-get install -y --no-install-recommends vim \
     && rm -rf /var/lib/apt/lists/*
 
 # Python for the agent — IMAGE-ONLY by design. The devcontainer stage and
 # clone+install guests get none of this (the agent's venv is the guest
 # project's business). Here there is no project
-# devcontainer to supply one, so the image does: a uv-managed interpreter
-# baked into the read-only root, and a shared venv + uv cache + tool dir
+# devcontainer to supply one, so the image does: the sandbox's own pinned
+# CPython, which the installer above provisioned root-owned and outside
+# every allow-write under /usr/libexec/claude-sandbox/python, is also the
+# projects' interpreter (one Python in the image, issue #85). uv finds it
+# as a managed Python through UV_PYTHON_INSTALL_DIR; a project venv only
+# links to it, so sharing it gives the jail no write access to it, and the
+# sandbox's own venv stays separate and runs with -I. A build that cannot
+# find it fails here rather than downloading a second copy.
+# UV_PYTHON_DOWNLOADS=manual: uv never fetches an interpreter on its own.
+# The entrypoint runs `uv venv` as root in the project directory, so
+# otherwise a project file the agent wrote (requires-python, a uv.toml
+# python-install-mirror) could make root download an interpreter of the
+# agent's choosing into this store. Another version is a deliberate
+# `uv python install` from `claude-sandbox shell`; a reinstall of the
+# sandbox removes such extras. (Not passed into the jail, which cannot
+# write the store anyway.)
+# The venv, the uv cache and the tool dir live
 # under /cache, which the shipped conf already binds rw (allow-write =
 # /cache). The launcher puts /cache on a named volume shared by every
 # project container, laid out as the DLS python-copier devcontainer does:
@@ -80,16 +100,17 @@ RUN bash .devcontainer/claude-sandbox/install.sh --image-build \
 # it. The shadow passes VIRTUAL_ENV and the UV_* vars through --clearenv
 # and appends $VIRTUAL_ENV/bin to the jail PATH (never prepends —
 # Invariant 1). Home stays ephemeral on purpose.
-# Keep requires-python in the root pyproject.toml <= this PYTHON_VERSION.
-ARG PYTHON_VERSION=3.13
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+# Keep requires-python in the root pyproject.toml <= the installer's
+# PYTHON_VERSION (installer/provision.py).
+ENV UV_PYTHON_INSTALL_DIR=/usr/libexec/claude-sandbox/python \
+    UV_PYTHON_DOWNLOADS=manual \
     UV_PROJECT_ENVIRONMENT=/cache/venv \
     VIRTUAL_ENV=/cache/venv \
     UV_CACHE_DIR=/cache/uv \
     UV_TOOL_DIR=/cache/uv-tools \
     PATH=/opt/venv/bin:$PATH
-RUN uv python install --no-progress "$PYTHON_VERSION" \
-    && uv venv /cache/venv --python "$PYTHON_VERSION" \
+RUN uv venv --no-python-downloads --managed-python /cache/venv \
+    && grep -q '^home = /usr/libexec/claude-sandbox/python/cpython-' /cache/venv/pyvenv.cfg \
     && ln -s /cache/venv /opt/venv \
     && uv cache clean --quiet
 

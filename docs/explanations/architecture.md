@@ -82,7 +82,7 @@ runs:
 ## Installation and updates
 
 The PyPI package, the published image and custom devcontainers use the same
-Python installer. It places a pinned CPython (about 55 MB after pruning)
+Python installer. It places a pinned CPython (about 60 MB after pruning)
 and a venv holding only this package under `/usr/libexec/claude-sandbox/`,
 root-owned and byte-compiled. The interpreter never runs from uv's cache,
 which is writable from inside the jail. Projects reference the installer

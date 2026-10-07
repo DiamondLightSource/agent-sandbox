@@ -137,6 +137,7 @@ def test_provision_pins_prunes_and_hardens(tmp_path: Path) -> None:
         f"python/{NAME}",
         f"python/{NAME}/bin",
         f"python/{NAME}/bin/python3.13",
+        f"python/{NAME}/include",
         f"python/{NAME}/lib",
         f"python/{NAME}/lib/python3.13",
         f"python/{NAME}/lib/python3.13/lib-dynload",

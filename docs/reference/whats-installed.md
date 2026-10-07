@@ -9,9 +9,9 @@ into your own devcontainer.
 | Path | Purpose |
 |---|---|
 | `/usr/local/bin/{claude,codex,pi}` | The same three-line wrapper. It runs the sandbox's own interpreter, which selects an agent profile by command name |
-| `/usr/libexec/claude-sandbox/python/` | Pinned CPython for the sandbox, pruned to about 55 MB, root-owned and byte-compiled |
+| `/usr/libexec/claude-sandbox/python/` | Pinned CPython for the sandbox, pruned to about 60 MB, root-owned and byte-compiled. In the published image it is also the projects' Python: project venvs link to it but cannot change it |
 | `/usr/libexec/claude-sandbox/venv/` | The `claude_sandbox` package and nothing else: it has no runtime dependencies |
-| `/usr/libexec/claude-sandbox/uv/` | The pinned uv that installed that CPython, kept so a reinstall need not fetch it again |
+| `/usr/libexec/claude-sandbox/uv/` | The pinned uv that installed that CPython, kept so a reinstall need not fetch it again. The published image drops it after installation and keeps one uv, its base image's, for projects |
 | `/usr/libexec/claude-sandbox/claude` | Claude binary, relocated off PATH |
 | `/usr/libexec/claude-sandbox/codex-dist/` | Codex release, including its bundled helpers; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-dist/` | Standalone Pi executable and assets; read-only inside the sandbox |
@@ -64,6 +64,14 @@ recommended version, backing up changed files. See
 
 The published image includes Python, uv, Node.js, npm and Vim. Custom
 containers keep their own toolchain choices.
+
+The image's Python is the sandbox's own pinned interpreter, and uv there
+never downloads another on its own (`UV_PYTHON_DOWNLOADS=manual`). For a
+project that needs a different version, run `uv python install 3.12` (for
+example) from `claude-sandbox shell`, then recreate the project's venv; an
+agent session cannot install one. Don't run `uv python uninstall 3.13` from
+that shell: it removes the sandbox's interpreter and every agent launch
+fails. `uvx claude-sandbox --recreate` recovers it.
 
 Shipped skills provide installers for optional tools, run outside the agent:
 

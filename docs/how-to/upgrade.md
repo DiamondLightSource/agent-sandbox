@@ -68,8 +68,9 @@ Release 5.0.0 replaces the Bash implementation with a Python one
 ({ref}`ADR 26 <adr-python-implementation>`). Commands, launcher options and
 `/etc/claude-sandbox.conf` keep their meaning. Upgrade as above; in your own
 devcontainer the installer also places a pinned Python interpreter (about
-55 MB) and the pinned uv that installs it (about 46 MB) under
-`/usr/libexec/claude-sandbox/`, about 100 MB in all. One helper behaves
+60 MB) and the pinned uv that installs it (about 46 MB) under
+`/usr/libexec/claude-sandbox/`, about 105 MB in all. The published image
+adds nothing: its projects share that interpreter, and it keeps one uv. One helper behaves
 differently: `gh-auth` and `glab-auth` now refuse inside an agent session,
 as `update` does. Run them from the host or a container terminal. A conf
 `allow-write` line must be an absolute path: a relative one now refuses
