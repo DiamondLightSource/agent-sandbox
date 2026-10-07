@@ -195,7 +195,7 @@ jobs:
               # The opt-in writes only under /usr/libexec/claude-sandbox.
               [ "$(ls -A "$HOME/.local/bin" 2>/dev/null)" = "$before" ] || {
                 echo "the Python shadow install changed ~/.local/bin"; exit 1; }
-              # Nor uv's cache: the interpreter is never fetched through it.
+              # Nor the uv cache: the interpreter is never fetched through it.
               [ "$(ls -d "$HOME/.cache/uv" 2>/dev/null)" = "$cached" ] || {
                 echo "the Python install created ~/.cache/uv"; exit 1; }
               grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
