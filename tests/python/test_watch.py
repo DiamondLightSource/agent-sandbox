@@ -576,7 +576,13 @@ def test_core_hooks_path(lay: Layout, monkeypatch: pytest.MonkeyPatch) -> None:
     shutil.rmtree(lay.work / ".git")
     git("init", "-q", cwd=lay.work)
     assert watch.git_hooks_path(str(lay.work)) is None
-    assert watch.git_hooks_path(str(lay.work), git="/nonexistent/git") is None
+
+    def nowhere(name: str) -> None:
+        return None
+
+    with monkeypatch.context() as m:
+        m.setattr(watch, "find_tool", nowhere)  # no git at all
+        assert watch.git_hooks_path(str(lay.work)) is None
     assert watch.git_hooks_path("") is None
     s = lay.session()
     s.start()

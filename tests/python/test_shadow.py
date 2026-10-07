@@ -63,6 +63,15 @@ class Fixture:
         return exc.value.code
 
 
+# A git that knows one identity, as `git config --get KEY` prints it.
+IDENTITY = """#!/bin/sh
+case "$3" in
+    user.name) echo "A U Thor" ;;
+    user.email) echo a@example.invalid ;;
+esac
+"""
+
+
 def executable(path: Path, text: str = "#!/bin/sh\n") -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -92,7 +101,7 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     tools = tmp_path / "tools"
     executable(tools / "script")
     executable(tools / "bwrap")
-    identity = {"user.name": "A U Thor", "user.email": "a@example.invalid"}
+    executable(tools / "git", IDENTITY)
     forked: list[watch.Session] = []
     host = shadow.Host(
         config_path=str(tmp_path / "etc/claude-sandbox.conf"),
@@ -100,7 +109,6 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
         shipped_skills_dir=str(tmp_path / "skills"),
         profiles=profiles,
         execve=fake_execve,
-        git_config_get=lambda key, env: identity[key],
         mountinfo=str(tmp_path / "mountinfo"),
         find_tool=lambda name: find_tool(name, search=(str(tools),)),
         state_dir=str(tmp_path / "state"),
@@ -585,23 +593,16 @@ def test_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert shadow.working_directory({}) == real
 
 
-def test_git_identity_comes_from_the_fixed_tool_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_read_git_config(tmp_path: Path) -> None:
     cfg = tmp_path / "gitconfig"
     cfg.write_text("[user]\n\tname = Real Name\n")
-    env = {"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": str(cfg)}
+    env = {"PATH": str(tmp_path), "GIT_CONFIG_GLOBAL": str(cfg)}
     env["GIT_CONFIG_NOSYSTEM"] = "1"
-    assert shadow.read_git_config("user.name", env) == "Real Name"
-    assert shadow.read_git_config("user.email", env) == ""
-    env["PATH"] = str(tmp_path)  # PATH plays no part
-    assert shadow.read_git_config("user.name", env) == "Real Name"
-
-    def nowhere(name: str) -> None:
-        return None
-
-    monkeypatch.setattr(shadow, "find_tool", nowhere)  # no git at all
-    assert shadow.read_git_config("user.name", env) == ""
+    git = find_tool("git")
+    assert shadow.read_git_config(git, "user.name", env) == "Real Name"
+    assert shadow.read_git_config(git, "user.email", env) == ""
+    assert shadow.read_git_config(None, "user.name", env) == ""  # no git at all
+    assert shadow.read_git_config("/nonexistent/git", "user.name", env) == ""
 
 
 def test_pause_needs_a_person_at_the_terminal(
@@ -734,29 +735,30 @@ def test_dunder_main_dispatches(
     assert "usage:" in capsys.readouterr().err
 
 
-def test_as_pid_1_script_is_a_child_and_the_watcher_a_thread(fx: Fixture) -> None:
+def test_as_pid_1_script_is_a_child_and_the_watcher_a_thread(
+    fx: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """PID 1 (the image's default command): a forked watcher would be
     orphaned to script(1) itself and each would wait for the other."""
-    spawned: list[list[str]] = []
     watched: list[watch.Session] = []
+    marker = fx.root / "watching"
 
     @contextmanager
     def watching(
         session: watch.Session, report: Callable[[str], None]
     ) -> Generator[None]:
         watched.append(session)
+        marker.touch()
         yield
 
-    def spawn(path: str, argv: list[str], env: Mapping[str, str]) -> int:
-        assert watched, "the watcher starts before script"
-        spawned.append(argv)
-        return 3
-
-    host = replace(fx.host, getpid=lambda: 1, spawn=spawn, watching=watching)
+    # script(1), run as a child: 3 once the watcher has started, else 9.
+    executable(
+        fx.root / "tools/script", f"#!/bin/sh\n[ -e {marker} ] && exit 3\nexit 9\n"
+    )
+    monkeypatch.setattr(os, "getpid", lambda: 1)
     with pytest.raises(SystemExit) as exc:
-        shadow.run("claude", [], fx.env, host)
+        shadow.run("claude", [], fx.env, replace(fx.host, watching=watching))
     assert exc.value.code == 3
-    assert spawned[0][0] == str(fx.root / "tools/script")
     assert len(watched) == 1 and fx.forked == []
 
 

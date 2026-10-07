@@ -17,7 +17,7 @@ import os
 import re
 import stat
 from collections.abc import Iterable, Mapping, Sequence
-from typing import NamedTuple, Protocol
+from typing import NamedTuple
 
 from .config import Config, lines, words
 from .errors import SandboxError
@@ -112,47 +112,20 @@ PASS_ENV_DENY = frozenset(
 PASS_ENV_DENY_PREFIX = "LD_"
 
 
-class Probe(Protocol):
-    """The filesystem facts the builder may ask for. Each follows symlinks,
-    as the bash ``test`` operators do."""
+class Probe:
+    """The filesystem facts the builder may ask for: the real filesystem,
+    or a test's. Each follows symlinks, as the shell's ``test`` operators
+    do. A test replaces the first four; the rest derive from ``mode``."""
 
-    def is_dir(self, path: str) -> bool: ...  # [ -d ]
-    def is_file(self, path: str) -> bool: ...  # [ -f ]
-    def exists(self, path: str) -> bool: ...  # [ -e ]
-    def readable(self, path: str) -> bool: ...  # [ -r ]
-    def is_char_device(self, path: str) -> bool: ...  # [ -c ]
-    def is_block_device(self, path: str) -> bool: ...  # [ -b ]
-    def realpath(self, path: str) -> str: ...  # realpath -e; raises OSError
-    def glob(self, pattern: str) -> list[str]: ...  # sorted pathname expansion
-
-
-def _mode_is(path: str, test: int) -> bool:
-    try:
-        return stat.S_IFMT(os.stat(path).st_mode) == test
-    except OSError:
-        return False
-
-
-class HostProbe:
-    """The real filesystem."""
-
-    def is_dir(self, path: str) -> bool:
-        return os.path.isdir(path)
-
-    def is_file(self, path: str) -> bool:
-        return os.path.isfile(path)
-
-    def exists(self, path: str) -> bool:
-        return os.path.exists(path)
+    def mode(self, path: str) -> int:
+        """``st_mode``, or 0 when ``path`` does not resolve."""
+        try:
+            return os.stat(path).st_mode
+        except OSError:
+            return 0
 
     def readable(self, path: str) -> bool:
         return os.access(path, os.R_OK)
-
-    def is_char_device(self, path: str) -> bool:
-        return _mode_is(path, stat.S_IFCHR)
-
-    def is_block_device(self, path: str) -> bool:
-        return _mode_is(path, stat.S_IFBLK)
 
     def realpath(self, path: str) -> str:
         # `realpath -e` as GNU coreutils does it, which is close to the
@@ -181,8 +154,17 @@ class HostProbe:
         # only the order of binds onto distinct destinations differs.
         return sorted(_glob.glob(pattern))
 
+    def is_dir(self, path: str) -> bool:
+        return stat.S_ISDIR(self.mode(path))
 
-HOST = HostProbe()
+    def is_file(self, path: str) -> bool:
+        return stat.S_ISREG(self.mode(path))
+
+    def exists(self, path: str) -> bool:
+        return self.mode(path) != 0
+
+
+HOST = Probe()
 
 
 def path_ahead(
@@ -339,13 +321,11 @@ def bwrap_build(
             resolved = probe.realpath(device)
         except OSError as e:
             raise SandboxError(f"realpath: {device}: {e.strerror}") from None
+        mode = probe.mode(resolved)
         if (
             not device.startswith("/dev/")
             or not resolved.startswith("/dev/")
-            or (
-                not probe.is_char_device(resolved)
-                and not probe.is_block_device(resolved)
-            )
+            or not (stat.S_ISCHR(mode) or stat.S_ISBLK(mode))
         ):
             raise SandboxError(
                 "claude-sandbox: allow-device needs a character or block device"
@@ -359,7 +339,7 @@ def bwrap_build(
         # the binds are to distinct paths, so only their order can differ.
         for pattern in ("/dev/nvidia*", "/dev/nvidia-caps/*", "/dev/dri/*"):
             for device in probe.glob(pattern):
-                if probe.is_char_device(device):
+                if stat.S_ISCHR(probe.mode(device)):
                     argv += ["--dev-bind", device, device]
 
     # /run/{user,secrets} masks are emitted only when the host has the source

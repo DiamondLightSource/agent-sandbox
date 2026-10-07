@@ -34,11 +34,9 @@ from . import jail, watch
 from .bwrap import (
     ENTRY_POINTS,
     GITCONFIG_PATH,
-    HOST,
     SHADOW_DIR,
     STATE_DIR,
     Built,
-    Probe,
     bwrap_build,
     path_ahead_of_shadow,
 )
@@ -75,13 +73,12 @@ SHIM = (
 ExecVE = Callable[[str, list[str], Mapping[str, str]], NoReturn]
 
 
-def read_git_config(key: str, env: Mapping[str, str]) -> str:
+def read_git_config(git: str | None, key: str, env: Mapping[str, str]) -> str:
     """``$(git config --get KEY 2>/dev/null || true)``: empty when unset.
 
-    git comes from the fixed tool path (tools.py); without it the identity
-    is empty.
+    ``git`` comes from the fixed tool path (tools.py); without it the
+    identity is empty.
     """
-    git = find_tool("git")
     if git is None:
         return ""
     try:
@@ -130,8 +127,6 @@ class Host:
     shipped_skills_dir: str = SHIPPED_SKILLS_DIR
     profiles: Mapping[str, AgentProfile] = field(default_factory=lambda: PROFILES)
     execve: ExecVE = os.execve
-    probe: Probe = HOST
-    git_config_get: Callable[[str, Mapping[str, str]], str] = read_git_config
     find_tool: Callable[[str], str | None] = find_tool
     mountinfo: str = "/proc/self/mountinfo"
     state_dir: str = STATE_DIR
@@ -139,8 +134,6 @@ class Host:
         [watch.Session, Callable[[str], None]], AbstractContextManager[None]
     ] = watch.watching
     fork_watcher: Callable[[watch.Session], None] = watch.fork_watcher
-    getpid: Callable[[], int] = os.getpid
-    spawn: Callable[[str, list[str], Mapping[str, str]], int] = spawn_and_wait
 
 
 INSTALLED = Host()
@@ -185,7 +178,7 @@ def run(
             " explicitly."
         )
     _check_real_binary(profile)
-    check_entry_points(env, host.probe)
+    check_entry_points(env)
 
     # configure_launch: the conf (env wins over it), then the git identity.
     try:
@@ -226,7 +219,7 @@ def run(
         # them.
         if not verify:
             session = watch.Session(
-                env.get("PATH", ""), built.writable, workspace, state, host.probe
+                env.get("PATH", ""), built.writable, workspace, state
             )
             for action in session.scan_at_launch():
                 term.warn(
@@ -249,9 +242,9 @@ def run(
     # would wait for the other. There script runs as a child instead, and the
     # watcher is a thread, as with the jail on.
     if session is not None:
-        if host.getpid() == 1:
+        if os.getpid() == 1:
             with host.watching(session, term.warn_raw):
-                status = host.spawn(terminal[0], terminal, launch_env)
+                status = spawn_and_wait(terminal[0], terminal, launch_env)
             sys.exit(status)
         host.fork_watcher(session)
     _exec(host, terminal[0], terminal, launch_env)
@@ -351,7 +344,7 @@ def _check_real_binary(profile: AgentProfile) -> None:
         )
 
 
-def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
+def check_entry_points(env: Mapping[str, str]) -> None:
     """Refuse when an entry-point name precedes the shadow on PATH.
 
     Invariant 1: a plain claude, codex, pi or claude-sandbox reaches the
@@ -360,7 +353,7 @@ def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
     left (a plain file without execute bits, which a PATH lookup passes
     over) may stand there. Nothing is removed here: the user reviews it.
     """
-    for path, name in entry_point_problems(env.get("PATH", ""), probe):
+    for path, name in entry_point_problems(env.get("PATH", "")):
         _refuse(
             f"claude-sandbox: refusing to launch: {path} is ahead of"
             f" {SHADOW_DIR}/{name} on PATH, so a plain `{name}` may not reach"
@@ -370,11 +363,11 @@ def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
         )
 
 
-def entry_point_problems(path: str, probe: Probe = HOST) -> list[tuple[str, str]]:
+def entry_point_problems(path: str) -> list[tuple[str, str]]:
     """(path, name) for each entry-point name ahead of the shadow on ``path``
     that is anything but an empty mount point the guard left."""
     found: list[tuple[str, str]] = []
-    for directory in path_ahead_of_shadow(path, probe):
+    for directory in path_ahead_of_shadow(path):
         for name in ENTRY_POINTS:
             entry = f"{directory}/{name}"
             try:
@@ -394,9 +387,10 @@ def write_gitconfig(host: Host, env: Mapping[str, str], *, no_forge: bool) -> No
     user.name. Written to a temporary file and renamed, so a reader never
     sees half a file; the temporary file goes on any exit.
     """
+    git = host.find_tool("git")
     text = render_gitconfig(
-        host.git_config_get("user.name", env),
-        host.git_config_get("user.email", env),
+        read_git_config(git, "user.name", env),
+        read_git_config(git, "user.email", env),
         no_forge=no_forge,
     )
     path = host.gitconfig_path
@@ -577,7 +571,6 @@ def build_argv(
         shipped_skills_dir=host.shipped_skills_dir,
         gitconfig_path=host.gitconfig_path,
         state_dir=host.state_dir,
-        probe=host.probe,
     )
     return built, workspace
 

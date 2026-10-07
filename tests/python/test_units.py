@@ -4,6 +4,7 @@ of the argv builder only some hosts reach (a fake host stands in for them).
 
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from claude_sandbox.bwrap import (
     ENTRY_GUARD_ENV,
     ENTRY_POINTS,
     HOST,
+    Probe,
     bwrap_argv,
     path_ahead_of_shadow,
 )
@@ -129,27 +131,17 @@ def test_gitconfig_text() -> None:
     assert "[credential" not in render_gitconfig("", "", no_forge=True)
 
 
-class HostWithEverything:
+class HostWithEverything(Probe):
     """A host that has what CI runners lack: /run/secrets, readable
     /etc/shadow, GPU nodes, a block device and a resolver override."""
 
-    def is_dir(self, path: str) -> bool:
-        return path.startswith("/run/")
-
-    def is_file(self, path: str) -> bool:
-        return False
-
-    def exists(self, path: str) -> bool:
-        return False
+    def mode(self, path: str) -> int:
+        if path.startswith("/run/"):
+            return stat.S_IFDIR
+        return {"/dev/nvidia0": stat.S_IFCHR, "/dev/sda": stat.S_IFBLK}.get(path, 0)
 
     def readable(self, path: str) -> bool:
         return True
-
-    def is_char_device(self, path: str) -> bool:
-        return path == "/dev/nvidia0"
-
-    def is_block_device(self, path: str) -> bool:
-        return path == "/dev/sda"
 
     def realpath(self, path: str) -> str:
         return path
@@ -173,7 +165,7 @@ def test_host_only_branches() -> None:
         "--tmpfs", "/h",
     ]  # fmt: skip
     # A GPU glob can list a dangling link; the real probe says "no".
-    assert not HOST.is_char_device("/dev/no-such-claude-device")
+    assert HOST.mode("/dev/no-such-claude-device") == 0
     i = argv.index("/h/.ICEauthority") + 1
     assert argv[i : i + 12] == [
         "--bind", "/dev/null", "/etc/shadow",
@@ -216,11 +208,9 @@ class GuardProbe(HostWithEverything):
     """No /usr/local/bin on this host, and one writable path that is gone by
     the time it is resolved."""
 
-    def is_dir(self, path: str) -> bool:
-        return path in {"/w", "/w/bin", "/c", "/c/venv/bin", "/elsewhere/bin"}
-
-    def exists(self, path: str) -> bool:
-        return path in {"/c", "/gone", "/"}
+    def mode(self, path: str) -> int:
+        dirs = {"/", "/w", "/w/bin", "/c", "/c/venv/bin", "/elsewhere/bin"}
+        return stat.S_IFDIR if path in dirs else stat.S_IFREG * (path == "/gone")
 
     def readable(self, path: str) -> bool:
         return False

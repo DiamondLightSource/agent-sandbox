@@ -51,7 +51,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import NoReturn, cast
 
-from .bwrap import HOST, STATE_DIR, Probe, inside, path_ahead, watched_path_dirs
+from .bwrap import STATE_DIR, inside, path_ahead, watched_path_dirs
 from .tools import find_tool
 
 # Where the alerts go when /run cannot be written (bwrap masks /tmp).
@@ -102,7 +102,7 @@ def git_hooks_dir(workspace: str) -> str | None:
     return hooks if os.path.isdir(hooks) else None
 
 
-def git_hooks_path(workspace: str, git: str | None = None) -> str | None:
+def git_hooks_path(workspace: str) -> str | None:
     """The workspace repository's ``core.hooksPath``, as git reads it, or
     None when it is unset (or there is no repository, or no git).
 
@@ -110,7 +110,7 @@ def git_hooks_path(workspace: str, git: str | None = None) -> str | None:
     fsmonitor off: ``git config --get`` reads configuration (includes too)
     and runs nothing from the repository, which the session can write.
     """
-    git = git or find_tool("git")
+    git = find_tool("git")
     if git is None or not workspace:
         return None
     argv = [git, "-C", workspace, "-c", "core.fsmonitor=false"]
@@ -139,18 +139,14 @@ def _hooks_path_dir(workspace: str, value: str) -> str | None:
 
 
 def targets(
-    path: str,
-    roots: Sequence[str],
-    workspace: str,
-    probe: Probe = HOST,
-    hooks_path: str | None = None,
+    path: str, roots: Sequence[str], workspace: str, hooks_path: str | None = None
 ) -> list[Target]:
     """Every directory to watch now: they come and go during a session.
     ``hooks_path`` is the repository's ``core.hooksPath``, when set."""
-    order = path_ahead(path, (), probe)  # every PATH directory, in order
+    order = path_ahead(path, ())  # every PATH directory, in order
     found = [
         Target(d, tuple(order[order.index(d) + 1 :]))
-        for d in watched_path_dirs(path, roots, probe)
+        for d in watched_path_dirs(path, roots)
     ]
     hooks = [git_hooks_dir(workspace)] if workspace else []
     if workspace and hooks_path is not None:
@@ -443,7 +439,6 @@ class Session:
     roots: Sequence[str]
     workspace: str
     state: str | None
-    probe: Probe = HOST
     baseline: dict[str, dict[str, Sig]] = field(
         default_factory=dict[str, dict[str, Sig]]
     )
@@ -452,9 +447,7 @@ class Session:
     hooks_path: str | None = None  # core.hooksPath at the last look
 
     def targets(self) -> list[Target]:
-        return targets(
-            self.path, self.roots, self.workspace, self.probe, self.hooks_path
-        )
+        return targets(self.path, self.roots, self.workspace, self.hooks_path)
 
     def _hooks_path_changed(self) -> list[str]:
         """Look at core.hooksPath again; an alert if it changed."""
