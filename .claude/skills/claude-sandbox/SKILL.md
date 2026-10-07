@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox
-description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `skills/verify-sandbox/SKILL.md` — or before any Python change that could cross the ADR 26 guardrails (a runtime dependency or third-party import in the package, an interpreter found via PATH or run without -I, a bwrap bind/env outside bwrap.py, spreading the audit core) or any suggestion to revert to bash-only, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
+description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (the Python shadow, the installer, the updater guard). Surface before editing `src/claude_sandbox/`, `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `skills/verify-sandbox/SKILL.md` — or before any Python change that could cross the ADR 26 guardrails (a runtime dependency or third-party import in the package, an interpreter found via PATH or run without -I, a bwrap bind/env outside bwrap.py, spreading the audit core) or any suggestion to revert to bash, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the updater guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
 ---
 
 # claude-sandbox
@@ -21,26 +21,28 @@ the checks need were silently blanked when injected from the .md —
 07/10/17/20 false-failed on awk syntax errors before any shell ran. A
 file on disk dodges that, the shebang pins bash (no zsh `nomatch` glob
 abort), and `/usr/libexec` placement makes it ro inside the sandbox so a
-compromised session can't rewrite the verifier to print PASS. install.sh
-places it via `install_guard_scripts`; the smoke test asserts
-placement/mode and that it runs-to-format-and-exits-nonzero outside a
-sandbox.
+compromised session can't rewrite the verifier to print PASS. The battery
+stays bash (ADR 26: it probes the jail from inside with shell commands).
+The installer places it (`installer/steps.py` `RUNTIME_FILES`); the smoke
+test asserts placement/mode and that it runs-to-format-and-exits-nonzero
+outside a sandbox.
 
 ## Invariant 0 — ONE shadow file, many agents, dispatching on `argv[0]`
 
-The sandbox wraps Claude Code **and** OpenAI's Codex CLI (the client
-for GPT-6 Astra). `install.sh` places the *same* `claude-shadow` at
-`/usr/local/bin/claude` and `/usr/local/bin/codex`; `detect_agent`
-picks the profile from the name it was invoked as, and
-`agent_profile` holds everything that differs — the real binary, the
-`$HOME` login paths, the injected flags (`--no-chrome` is Claude-only
-and would abort codex), and the per-agent `--setenv` list. See
-{ref}`ADR 18 <adr-multi-agent-shadow>`.
+The sandbox wraps Claude Code, OpenAI's Codex CLI (the client for GPT-6
+Astra) **and** Pi. The installer places the *same* three-line shim
+(`.devcontainer/claude-sandbox/claude-shim`) at `/usr/local/bin/claude`,
+`codex` and `pi`; it execs the root-owned interpreter with
+`-m claude_sandbox _shadow "${0##*/}"`, and `profiles.detect_agent` picks
+the profile from the name it was invoked as. `profiles.PROFILES` holds
+everything that differs — the real binary, the `$HOME` login paths, the
+injected flags (`--no-chrome` is Claude-only and would abort codex), and
+the per-agent `--setenv` list. See {ref}`ADR 18 <adr-multi-agent-shadow>`.
 
 **Refuse as regressions:**
 - A separate `codex-shadow` (or any per-agent copy of the bwrap argv
-  builder). Duplicating ~800 security-critical lines rebuilds exactly
-  the surface Reversal 1 walked back from, and the copies drift
+  builder, `bwrap.py`). Duplicating security-critical code rebuilds
+  exactly the surface Reversal 1 walked back from, and the copies drift
   silently — a hardening fix lands in one and quietly not the other.
 - Binding `~/.claude` into a codex session or `~/.codex` into a
   claude one. Each agent sees only its own credentials; that
@@ -50,14 +52,15 @@ and would abort codex), and the per-agent `--setenv` list. See
   contents are third-party-defined), putting shipped-skill ro binds
   inside it (they stay in each agent's own dir, ADR 24), or relaxing
   check 03's "`.agents` holds only `skills`".
-- Dropping the `~/.codex/packages` tmpfs mask, or moving it above
-  the `~/.codex` bind. The vendor unpacks the codex binary INSIDE
+- Dropping the `~/.codex/packages` tmpfs mask (`home_tmpfs` in the codex
+  profile), or moving it above the `~/.codex` bind. The vendor unpacks the codex binary INSIDE
   `CODEX_HOME`, so without the mask a compromised session has a
   writable copy of its own binary to re-enter through.
 - Relocating `bin/codex` alone. Codex is a PACKAGE — the vendor's own
   validity check requires `codex-package.json`, `bin/codex`,
   `bin/codex-code-mode-host`, `codex-path/rg` (ripgrep) and
-  `codex-resources/bwrap` together — so `install.sh` copies the whole
+  `codex-resources/bwrap` together — so the installer
+  (`installer/system.py` `install_codex_binary`) copies the whole
   release dir to `/usr/libexec/claude-sandbox/codex-dist/` (resolving
   the vendor's symlink first; relocating the link relocates nothing)
   and the shadow execs it IN PLACE, no bind-back. Don't "simplify"
@@ -70,7 +73,7 @@ and would abort codex), and the per-agent `--setenv` list. See
   uid/gid 1001 and tar-as-root cannot restore that ownership, so the
   whole install aborts. Both were found the hard way.
 - Making `CLAUDE_SANDBOX_AGENT` accept anything outside the closed
-  `claude|codex` set, or letting it name a binary path.
+  profile set (`claude|codex|pi`), or letting it name a binary path.
 - Installing the `codex` shadow *conditionally* on the codex binary
   being present. The shadow must own the name on `$PATH` before the
   vendor's installer can claim it (Invariant 1 applies identically);
@@ -78,17 +81,16 @@ and would abort codex), and the per-agent `--setenv` list. See
 - Adding an agent by touching the argv builder rather than adding a
   profile entry.
 
-Codex's guard is Invariant 5's twin, one tier over:
-`/etc/codex/requirements.toml` (hard, admin-only) carries the same
-two hooks; `/etc/codex/managed_config.toml` disables the update
-check. **Do not** set `allow_managed_hooks_only` — same call as
-`allowManagedHooksOnly`. TOML is *owned, not merged* (the bash
-installer has no TOML parser; jq reads only JSON): a
-`requirements.toml` we did not write is left alone with a warning,
-never half-parsed.
+Codex's updater guard is Invariant 5's twin, one tier over:
+`/etc/codex/managed_config.toml` disables the startup update check. That
+file is *owned, not merged*: it carries a marker line, and one we did not
+write is left alone with a warning, never half-parsed
+(`installer/steps.py` `plan_codex_managed`). A site's own
+`/etc/codex/requirements.toml` is never touched.
 
-`tests/bwrap_argv.sh` scenario 14 and the codex block at the end of
-`tests/smoke.sh` guard all of this — including that the two installed
+`tests/python/test_argv.py` (`test_codex_profile`, `test_pi_profile`),
+`test_installer_steps.py` and the codex block at the end of
+`tests/smoke.sh` guard all of this — including that the three installed
 shadows are byte-identical.
 
 ## Invariant 1 — plain `claude` / `codex` MUST resolve to the shadow
@@ -102,30 +104,32 @@ same way, so `install_codex_binary` performs the same relocation, to
 `/usr/libexec/claude-sandbox/codex-dist/bin/codex` (the whole release
 package, not a bare binary — see Invariant 0).
 
-`install_claude_binary` fixes this by relocating the real binary to
-`/usr/libexec/claude-sandbox/claude` (off the user's PATH). The
-shadow binds it back to `~/.local/bin/claude` *inside* the sandbox
-so Claude's `installMethod=native` self-check still sees the
-conventional path. The Python shadow binds it **read-only**: the bash
-bound it read-write, which let a session rewrite the binary every later
-session runs.
+`install_claude_binary` (`installer/system.py`) fixes this by relocating
+the real binary to `/usr/libexec/claude-sandbox/claude` (off the user's
+PATH). The shadow binds it back to `~/.local/bin/claude` *inside* the
+sandbox so Claude's `installMethod=native` self-check still sees the
+conventional path. The bind is **read-only**: the bash shadow (before
+5.0) bound it read-write, which let a session rewrite the binary every
+later session runs. The installer places the shim under all three names
+first, before any vendor installer runs, and `steps.check_shadow` refuses
+to continue unless every name holds it.
 
 **Refuse as regressions:**
 - Any "simplification" that skips the relocate-after-curl step.
 - Removing the unconditional bind-back of `~/.local/bin/claude`
   inside the sandbox — the dest is created on the in-sandbox tmpfs
   `$HOME`, so don't gate it on the host file existing.
-- `tests/bwrap_argv.sh` scenarios 1 & 4a guard the bind pair; update
-  both if you change the bind.
-- Making the Python shadow's bind-back read-write again
-  (`test_the_real_binary_is_bound_back_read_only`).
+- `tests/python/test_argv.py` (`test_vanilla`, `test_home_partial`) and
+  `test_units.py` (`test_the_real_binary_is_bound_back_read_only`) guard
+  the bind pair; update them if you change the bind.
+- Making the bind-back read-write again.
 - Weakening the PATH watcher (ADR 27, `watch.py`): it quarantines
   executables a session adds ahead of system commands on PATH, and new git
   hooks, while the session runs, and warns in outer shells. Refuse
   following links when quarantining, judging only a list of names, dropping
   the jail-off watcher, or showing the alerts inside the jail
   (`bwrap.py` masks `/run/claude-sandbox`).
-- Dropping the Python shadow's entry-point guard, or moving its binds
+- Dropping the shadow's entry-point guard, or moving its binds
   above the read-write binds they sit inside. It protects the sandbox's
   entry-point names: a session cannot create a command named claude,
   codex, pi or claude-sandbox in a writable directory that precedes the
@@ -144,8 +148,9 @@ of keeping blast radius small: fine-grained PATs typically cover
 multiple repos, so any path mounted across devcontainers would let
 a compromised session reach every repo the PAT touches.
 
-`~/.claude` and `~/.claude.json` *are* cross-container (via
-`link_terminal_config` symlinks) because they hold one Claude login,
+`~/.claude` and `~/.claude.json` *are* cross-container (via the
+installer's shared-config links, `steps.plan_shared_links`, once
+`link_terminal_config`) because they hold one Claude login,
 not repo-scoped credentials. Don't conflate the two.
 
 **Refuse as regressions:**
@@ -174,26 +179,29 @@ failure modes cascade in this order:
    the bwrap step (+ `mkdir -p "$HOME/.claude" "$HOME/.cache"`).
 
 All three are required, in order. `.github/workflows/ci.yml` applies
-them — five push-and-iterate cycles to land this; don't re-discover.
+them to the `test` job (the smoke test's bwrap sanity check), and the
+sysctl to the `egress-jail` job, which runs the jail's tests in real
+namespaces on the runner — five push-and-iterate cycles to land this;
+don't re-discover.
 
 ## Design principle — keep dogfood ≈ guest
 
 The repo's own devcontainer (dogfood) and a `git clone + ./install`
 inside any other devcontainer (guest) should go through the same
-setup path. Prefer `install.sh` over `devcontainer.json` /
-`postCreate.sh` / `initializeCommand.sh` when a fix can live in
-either — guest devcontainers then get it for free, and the audit
-surface stays single-track.
+setup path. Prefer the installer (`src/claude_sandbox/installer/`) over
+`devcontainer.json` / `postCreate.sh` / `initializeCommand.sh` when a fix
+can live in either — guest devcontainers then get it for free, and the
+audit surface stays single-track.
 
-Sample: per-file binds for `/root/.claude{,.json}` were dropped once
-`link_terminal_config` covered both paths uniformly; only the shared
+Sample: per-file binds for `/root/.claude{,.json}` were dropped once the
+shared-config links covered both paths uniformly; only the shared
 `/user-terminal-config` bind remains in `devcontainer.json`.
 
 **Refuse as regressions:** dogfood-only `postCreate` /
 `initializeCommand` work, or `devcontainer.json` mounts that could
-have been done in `install.sh`. Ask "would this work for a
+have been done in the installer. Ask "would this work for a
 clone+install inside an unrelated devcontainer?" — if not, push it
-into `install.sh`.
+into the installer.
 
 ## Design principle — never auto-edit `devcontainer.json`
 
@@ -206,10 +214,13 @@ The user knows whether they've wired the line or need to chain it.
 "Strip and re-insert comments" isn't simpler either — re-insert needs
 stable anchors that survive the edit. Print the snippet; trust them.
 
-**Source-guard pattern**: `install.sh` ends with
-`[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"` so the container image
-build (Dockerfile) can `source install.sh` to reuse its functions
-without re-running `main`. Don't remove the guard.
+**The bootstrap stays a bootstrap**: `install.sh` only fetches the pinned
+uv, provisions the root-owned interpreter and execs
+`python -I -m claude_sandbox.installer`. The Dockerfile runs it with
+`--image-build`, and the image's entrypoint runs the installer's own
+`--container-start` and `--probe-userns`. Install steps go in the Python
+installer, never back into bash. (Its source guard is there only so
+`test_provision.py` can read the pins the way `main` does.)
 
 ## Historical reversals — raise before re-treading
 
@@ -222,7 +233,8 @@ before proceeding.
 
 History: embedded bash → standalone bash → Python package + typer CLI →
 bash-only (`bf65407`, 2026-05-12, issue #14 / PR #15; ADR 8) → **Python
-again (ADR 26, 2026-10-06, supersedes ADR 8; migration in issue #72)**.
+again (ADR 26, 2026-10-06, supersedes ADR 8; issue #72), the only
+implementation since 5.0.0**.
 
 Why bash-only was right then: the tool was one bash function building a
 bwrap argv, two ~80-line files; the first Python package spread the
@@ -235,11 +247,12 @@ bash is the *less* auditable choice — the opposite of ADR 8's intent. Both
 ADRs serve the same principle: the core must stay small enough to audit in
 one read.
 
-**Do not re-litigate either way.** Refuse "go back to bash-only / remove
-pyproject, uv, pytest" (ADR 26 is accepted), and equally refuse Python that
-crosses the guardrails. Until issue #72 phase 5 the bash stays the shipped
-default; the root `pyproject.toml` wheel bundles it verbatim (ADR 23,
-amended by ADR 26).
+**Do not re-litigate either way.** Refuse "go back to bash / remove
+pyproject, uv, pytest" (ADR 26 is accepted and shipped), and equally refuse
+Python that crosses the guardrails. What stays bash is fixed by ADR 26: the
+installer bootstrap and `install` shim, the three-line shims, the battery,
+`codex-launch`, `pi-run`, `container/entrypoint.sh` and the end-to-end
+suites. Don't port those to Python, and don't grow sandbox logic in them.
 
 **Refuse without justification (the ADR 26 guardrails):**
 - Runtime dependencies. The package is stdlib-only: no third-party import
@@ -280,8 +293,8 @@ is prior art, **not** maintained.
 
 ### Reversal 3 — `just promote` (copy-by-value into targets)
 
-`just promote` (PR #20, ADR 0010) copied the install machinery —
-`install.sh`, `claude-shadow`, the guard scripts, the battery — by
+`just promote` (PR #20, ADR 0010) copied the install machinery — then
+`install.sh`, the bash shadow, the guard scripts, the battery — by
 value into target workspaces so they became self-sufficient hosts.
 Removed 2026-07-24 (ADR 0017): frozen per-project copies of
 security-critical code have no update channel (a fix here never
@@ -297,8 +310,8 @@ variant ADR 0010 rightly declined (that ran whatever HEAD happened
 to be checked out).
 
 **Refuse without justification:**
-- Re-adding any mechanism that copies `install.sh` / `claude-shadow` /
-  the guard scripts into a consuming repo (promote by another name,
+- Re-adding any mechanism that copies the installer, the package, the
+  shims or the battery into a consuming repo (promote by another name,
   vendoring recipes, "sync" scripts).
 - Pointing a target's `postCreate` at a mutable shared clone's HEAD —
   pin a tag or SHA instead.
@@ -335,16 +348,17 @@ entry → genuine inversion leak; tighten the bwrap argv.
 Concrete miss (2026-05): Chrome `NativeMessagingHosts` dirs under
 `~/.config/` — initially flagged as a bind leak; mountinfo showed
 no bind. It was Claude Code's startup write registering the browser
-extension. Fix: `--no-chrome` injection in the shadow, check 03
-stayed strict.
+extension. Fix: `--no-chrome` injection in the claude profile
+(`profiles.py`), check 03 stayed strict.
 
 ## Invariant 4 — config is host-global at `/etc`, never read from the workspace
 
-`claude-shadow` reads its config from `/etc/claude-sandbox.conf`
-(`CONFIG_PATH`), placed by `install.sh`'s `install_conf` from the clone's
-`.devcontainer/claude-sandbox.conf` and re-stamped on every rebuild via
-postCreate. It is NOT read from `$PWD/.devcontainer/claude-sandbox.conf`
-anymore (that call site moved in PR for the global-conf change).
+The shadow reads its config from `/etc/claude-sandbox.conf`
+(`config.CONFIG_PATH`), placed by the installer (`steps.plan_conf`) from
+the clone's `.devcontainer/claude-sandbox.conf` and re-stamped on every
+rebuild via postCreate (and by the image's entrypoint, unless a conf is
+mounted over it). It is NOT read from
+`$PWD/.devcontainer/claude-sandbox.conf`.
 
 Two reasons, one load-bearing for the threat model:
 
@@ -363,8 +377,9 @@ Two reasons, one load-bearing for the threat model:
   across rebuilds is an open follow-up. Teams bake persistent conf into
   the pinned clone before `./install` runs.
 
-`parse_config` still takes the path as `$1` (tests pass a fixture); only
-the launch-time call site is pinned to `CONFIG_PATH`. Env vars
+`config.parse_config` takes the path as an argument (tests pass a
+fixture); only the launch-time call site (`shadow.py`, `config_path`
+defaulting to `CONFIG_PATH`) is pinned to `/etc`. Env vars
 (`CLAUDE_SANDBOX_*`) still override per session. A team ships custom
 conf by writing it into the clone before `postCreate` runs `./install`
 (see docs/how-to/sandbox-a-team-devcontainer.md).
@@ -385,85 +400,57 @@ conf by writing it into the clone before `postCreate` runs `./install`
 - "Make allow-write per-repo again so projects can opt in" reopens the
   cross-session bind-escalation vector. Per-session env vars are the
   supported override; the global conf is the only file.
-- Guards to keep: verify-sandbox check 18 (installed shadow reads
-  `/etc`, no `$PWD/.devcontainer` read) and `tests/bwrap_argv.sh`
-  scenario 8b (`$VIRTUAL_ENV/bin` appended — not prepended — to PATH;
-  harness unsets the runner's `VIRTUAL_ENV`/`UV_*`).
+- A relative `allow-write` entry is refused at launch (`bwrap.py`): bwrap
+  would resolve it against the writable workspace. Don't relax that to a
+  skip or a resolve.
+- Guards to keep: verify-sandbox check 18 (the installed shim runs the
+  root-owned package, which pins `/etc`; no `$PWD/.devcontainer` read)
+  and `tests/python/test_argv.py` `test_venv_bin_is_appended_to_path`
+  (`$VIRTUAL_ENV/bin` appended — not prepended — to PATH).
 
-## Invariant 5 — the integrity guard is GLOBAL via MANAGED settings (`/etc` + `/usr/libexec`), and the in-container auto-updater stays OFF
+## Invariant 5 — the updater guard is GLOBAL via MANAGED settings (`/etc`), and the in-container auto-updater stays OFF
 
-The guard that asserts "we are actually inside the shadow" is delivered
-through Claude Code's **managed-settings** layer — the highest-precedence
-settings tier, which a user **cannot override or remove** by editing
-their own `~/.claude/settings.json`. Two hooks, wired by
-`install_guard_scripts` + `wire_managed_settings`:
+Claude Code's **managed-settings** layer
+(`/etc/claude-code/managed-settings.json`) is the highest-precedence
+settings tier, which a user **cannot override or remove** by editing their
+own `~/.claude/settings.json`. The installer
+(`steps.plan_managed_settings`) merges the updater controls into it,
+keeping every other key and the administrator's own hooks.
 
-- `SessionStart` → `/usr/libexec/claude-sandbox/sandbox-verify.sh`: full
-  integrity battery, warns loudly when unwrapped. **Cannot block**
-  (SessionStart only injects messages/context — exit 2 does *not* abort).
-- `UserPromptSubmit` → `/usr/libexec/claude-sandbox/sandbox-gate.sh`:
-  lean fail-closed gate, `exit 2` (blocks the prompt) unless
-  `IS_SANDBOX=1`. Escape hatch: the ROOT-OWNED flag
-  `/etc/claude-code/allow-unwrapped` (stamped by `install.sh` when
-  `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1`, or `sudo touch`). It is a flag under `/etc`, NOT an
-  env var, because a confined Claude can write `~/.claude/settings.json`
-  (host-shared) and Claude Code exports its `env` block into later
-  sessions — so the old `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` env hatch was
-  forgeable from inside the jail and persistently neutralised the gate on
-  a later unwrapped launch (deep-review H4). `/etc` is ro in the sandbox
-  and not host-shared. Both hooks skip on `CLAUDE_CODE_REMOTE=true`.
-  **Refuse as a regression:** re-introducing an env-var escape hatch for
-  the gate (or any gate-bypass signal a sandbox-rw / host-shared path can
-  set) — it reopens H4. The gate test in `tests/smoke.sh` asserts the
-  retired env var no longer bypasses.
-
-**Why managed-settings + `/usr/libexec`, not user-scope `~/.claude`**
-(this is the tamper-resistance that makes the native devcontainer
-safe-by-construction):
-- Hook **entries** in `/etc/claude-code/managed-settings.json` are
-  highest-precedence and un-removable from user-scope. Editing
-  `~/.claude/settings.json` (the shared cross-container file) cannot
-  disable the guard — only `root` editing `/etc` or a deliberate
-  `./install` can. This closes the "user edits shared settings and drops
-  the hooks" reopening of the silent-disable hole.
-- Hook **scripts** in `/usr/libexec/claude-sandbox/` are root-owned,
-  off-PATH, and **ro inside the sandbox** (`--ro-bind / /`) — exactly
-  like the relocated real binary. Under `~/.claude` they'd be rw-bound
-  and a compromised session could rewrite `sandbox-gate.sh` to `exit 0`.
-- Same `/etc`-not-the-rw-workspace discipline as Invariant 4.
-
-This also superseded an earlier per-repo design (project `.claude/`
-hooks) — that left folders with no project `.claude/` unguarded — and an
-intermediate user-scope-`~/.claude` design (removable by editing the
-shared file). Cross-scope hooks are **additive/union** (verified), and
-managed hooks fire *in addition to* user/project hooks; we deliberately
-do **not** set `allowManagedHooksOnly` (that would block the owner's own
-hooks). The user-scope `~/.claude/settings.json` now holds only the
-statusline preference, and `wire_user_statusline` **prunes** any guard
-hooks an earlier install left there (single authoritative home).
+History: until `afc1560` (2026-09-15) the same file also carried a
+SessionStart verifier and a UserPromptSubmit gate
+(`sandbox-verify.sh`, `sandbox-gate.sh`, ADR 13) with a root-owned
+`/etc/claude-code/allow-unwrapped` escape hatch. They were removed; the
+shadow on PATH (Invariant 1) and the battery (`claude-sandbox verify`)
+are the assurance now, and only the updater controls remain.
 
 **Why the auto-updater is hard-disabled** (`env.DISABLE_AUTOUPDATER=1`
 + `autoUpdates:false`, in managed settings): root-cause removal of the
-bypass re-arm. Updates become a deliberate `./install`, which
-re-relocates the current binary and re-asserts the shadow.
-`autoUpdatesChannel:"stable"` only *slows* updates — it would NOT fix
-this.
+bypass re-arm — a self-update re-creates `~/.local/bin/claude`, which
+would resolve ahead of the shadow. Updates become a deliberate
+reinstall, which re-relocates the current binary and re-asserts the
+shadow. `autoUpdatesChannel:"stable"` only *slows* updates — it would
+NOT fix this. Codex's twin is `/etc/codex/managed_config.toml`
+(Invariant 0).
 
 **Refuse as regressions:**
-- Moving the guard back into per-repo project `.claude/` or into
-  user-scope `~/.claude` (removable). It must stay in managed settings.
-- Putting the guard scripts under `~/.claude` or anywhere in the sandbox
-  rw set — they must stay in `/usr/libexec` (off-PATH, ro in sandbox).
+- Moving the updater controls into per-repo project `.claude/` or into
+  user-scope `~/.claude` (removable). They must stay in managed settings.
+- Re-adding a gate-bypass signal (an env var, or anything a sandbox-rw or
+  host-shared path can set) if guard hooks ever come back: a confined
+  Claude can write `~/.claude/settings.json`, and Claude Code exports its
+  `env` block into later sessions (deep-review H4).
 - Setting `allowManagedHooksOnly` (would silence the owner's own hooks).
 - Re-enabling the in-container auto-updater, or relying on
   `autoUpdatesChannel` instead of `DISABLE_AUTOUPDATER`.
-- A hard-fail (vs warn-and-skip) on a non-JSON managed/user settings
-  file — bricking install over a file we don't exclusively own is worse
-  than skipping the merge with a loud warning.
-- `tests/smoke.sh` covers all of the above (managed-merge, updater keys,
-  prune migration, gate/escape-hatch behaviour) via the
-  `INSTALL_PREFIX`/`INSTALL_USER_HOME` tmpdir seams — the suite never
-  touches the real `/etc` or `~/.claude`. Keep those seams.
+- A hard-fail (vs warn-and-skip) on a non-JSON or non-object
+  managed/user settings file — bricking install over a file we don't
+  exclusively own is worse than skipping the merge with a loud warning
+  (and the install summary must then say the updater is NOT disabled).
+- `tests/python/test_installer_steps.py` and `tests/smoke.sh` cover the
+  merge, the updater keys and the warn-and-skip cases through the
+  `INSTALL_PREFIX`/`INSTALL_USER_HOME` seams — the suites never touch the
+  real `/etc` or `~/.claude`. Keep those seams.
 
 ## Boundary discipline — sockets and env vars crossing the jail (#73/#74)
 
@@ -504,25 +491,23 @@ surfaced in user-facing docs or in code messages:
 
 - `CLAUDE_SANDBOX_EGRESS_JAIL=0` / conf `egress-jail = 0`: never named
   in how-tos, the tutorial, README, shipped-conf comments, or the
-  shadow's error/warning messages (`jail_fail` names only the real fix).
-  Reference pages say "an operator opt-out exists but is deliberately
-  not documented"; explanations keep their *analytical* mentions — the
-  fail-closed-plus-hatch design is a fact auditors need.
-- `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1` (install-time seam;
-  renamed 2026-07-24 from `ALLOW_UNWRAPPED`, whose old name is dead —
-  smoke asserts it no longer stamps the flag; the flag path
-  `/etc/claude-code/allow-unwrapped` is unchanged). Managing the flag is
-  documented ONLY on `docs/how-to/enforce-org-wide.md`, the IT-operator
-  page — and the DLS pages (`docs/dls/`) must NOT link that page, since
-  linking it surfaces the hatch to every reader.
+  shadow's error/warning messages (`jail.py`'s refusals name only the
+  real fix). Reference pages say "an operator opt-out exists but is
+  deliberately not documented"; explanations keep their *analytical*
+  mentions — the fail-closed-plus-hatch design is a fact auditors need.
+- Operator-only pages: anything an operator manages that weakens the
+  sandbox is documented ONLY on `docs/how-to/enforce-org-wide.md`, the
+  IT-operator page — and the DLS pages (`docs/dls/`) must NOT link that
+  page. (The `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED` install seam and
+  its `/etc/claude-code/allow-unwrapped` flag went with the guard hooks in
+  `afc1560`; don't bring back a comfortable name for any such seam.)
 - Verification is not a user chore: quickstarts carry no verify step;
   the verify how-to is reachable as a Next-steps pointer.
 
 **Refuse as regressions:** any doc or message change that re-advertises
 a weakening switch (naming `EGRESS_JAIL=0` in an error, restoring a
 "disable the jail" section, a conf comment showing the disable line,
-linking enforce-org-wide from the DLS pages), and shortening the
-`DANGEROUSLY_` name back to something comfortable.
+linking enforce-org-wide from the DLS pages).
 
 Style note for `docs/dls/` pages: no em dashes — rewrite with colons,
 parentheses, or semicolons (owner preference).
@@ -530,7 +515,7 @@ parentheses, or semicolons (owner preference).
 ## `install` picks a RELEASE by default — `--here` installs the checkout
 
 `install` (the root shim, not `install.sh`) resolves **which revision** to
-install before exec'ing `install.sh`:
+install before exec'ing `install.sh` (the bootstrap):
 
 | invocation | installs |
 |---|---|
@@ -542,7 +527,10 @@ Why the default is a tag, not the checkout: the documented one-liner clones
 `main` (unreleased work) while `claude-sandbox update` has always installed
 the newest tag — so a first install and every later update disagreed about
 what "current" means. Release selection now lives in `install` only, and
-`cmd_update` delegates to it: **one** implementation of "what is current".
+`claude-sandbox update` (`helpers/commands.py`) clones and runs it:
+**one** implementation of "what is current". A wheel install (stamped
+`uvx` in `/usr/libexec/claude-sandbox/installer`) refuses `update` and
+points at `uvx claude-sandbox@latest install`: the wheel is the pin.
 
 Prereleases are excluded by an explicit filter. A beta sorts *above* the
 release it precedes (`2.1.0-beta.1` > `2.0.0`), so "newest tag" without the
@@ -561,7 +549,7 @@ nothing in the diff to show for it.
   devcontainer — without it a rebuild replaces the branch under test with
   the last release) or from
   `docs/how-to/sandbox-a-team-devcontainer.md`.
-- Re-adding tag selection to `cmd_update` (two implementations that drift).
+- Re-adding tag selection to `update` (two implementations that drift).
 - Removing the prerelease filter, or the `bash -c` argv trick around the
   checkout — `git checkout` rewrites `install` while bash is still reading
   it, so everything after the checkout must live in argv, not in the file.
@@ -589,12 +577,10 @@ root inside and why `/etc` is still a meaningful trust boundary for the sandbox
 `sudo mkdir -p /run/secrets` and the AppArmor/sysctl steps are correct there,
 because the runner user is *not* root. Don't "fix" those.
 
-Known wart (unfixed): several shipped strings still say `sudo` at users who
-will be root-in-container — `sandbox-gate.sh`'s BLOCKED message and
-`docs/explanations/integrity-guard.md` (`sudo touch
-/etc/claude-code/allow-unwrapped`), and the `diagnostics/probe-network-*.sh`
-install hints (`sudo apt-get install passt`). They're aimed at "the host
-operator", who in the DLS devcontainer flow is root already.
+Known wart (unfixed): the `diagnostics/probe-network-*.sh` install hints
+still say `sudo apt-get install passt` at users who will be
+root-in-container, and the installer's userns refusal suggests `sudo
+sysctl` (that one is aimed at the host operator, who does need it).
 
 ## glab / gh helper-CLI foot-guns (`claude-sandbox glab-auth`)
 
@@ -608,9 +594,9 @@ Verified against glab 1.36 / gh 2.45 while fixing #11-adjacent breakage:
   why `gh-auth` needed no protocol handling and `glab-auth` did.
 - **`glab config set <k> <v>` without `--global` or `-h` writes the
   REPOSITORY-local `.git/glab-cli/config.yml`**, and *fails outright* outside a
-  git repo (`not a git repository`) — which under the CLI's `set -euo pipefail`
-  aborts the command right after a successful login. Always pass `--global` or
-  `-h <host>`.
+  git repo (`not a git repository`) — which stops `glab-auth`
+  (`helpers/auth.py`, each step checked) right after a successful login.
+  Always pass `--global` or `-h <host>`.
 - **`glab auth login` wires the git credential helper itself**; `gh` needs an
   explicit `gh auth setup-git`. Don't add a setup-git equivalent for glab.
 - Testing recipe: `GLAB_CONFIG_DIR=$(mktemp -d)` isolates a real login from the
@@ -620,48 +606,54 @@ Verified against glab 1.36 / gh 2.45 while fixing #11-adjacent breakage:
 
 ## Running the test suites from inside a jailed session
 
-`tests/smoke.sh` run as-is inside a jailed claude cascade-fails ~21
-checks: `link_terminal_config` operates on the real `$HOME`, where the
-jail's `~/.claude.json` file bind goes ESTALE after Claude Code's
-rename-replace, and `_is_mount`'s `[ -e ]` misreads ESTALE as absent.
-Workaround (verified 2026-07-24, 59/59):
+`tests/smoke.sh` run as-is inside a jailed claude touches the real `$HOME`
+through the installer's shared-config step, where the jail's
+`~/.claude.json` file bind goes ESTALE after Claude Code's rename-replace.
+Point it at a scratch home:
 
 ```bash
 HOME=$(mktemp -d) CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
 ```
 
-`tests/bwrap_argv.sh` runs fine in-jail. `tests/egress_jail.sh` cannot
-(needs `unshare`, and namespaces don't nest here) — trust CI for it.
+`uv run pytest` runs in-jail; `tests/python/test_jail_netns.py` skips
+there (it needs `unshare`, and namespaces don't nest) — trust CI for it,
+or run `tests/jail_python.sh` in the image.
 
 ## Third consumer — the published container image
 
-The image `ghcr.io/diamondlightsource/claude-sandbox` + `container/claude-container`
-launcher (PR #78) is the third consumer after dogfood and guest. Its
-design decisions (image build sources `install.sh`, entrypoint re-runs,
-PAT scoping via named containers, ro-mounted conf, notify-only launcher
-versioning, parked issues #79/#80/#81) live in the
-**`claude-sandbox-container` skill** — split out so they load only on
-image/launcher topics. Touch the root `Dockerfile`, `container/*`, or
-`.github/workflows/container.yml` → read that skill first.
+The image `ghcr.io/diamondlightsource/claude-sandbox` + the host launcher
+(`uvx claude-sandbox`, `src/claude_sandbox/host/`) is the third consumer
+after dogfood and guest. Its design decisions (the image build runs the
+same installer, entrypoint re-runs, PAT scoping via named containers,
+ro-mounted conf, notify-only launcher versioning, parked issues) live in
+the **`claude-sandbox-container` skill** — split out so they load only on
+image/launcher topics. Touch the root `Dockerfile`, `container/*`,
+`src/claude_sandbox/host/`, or `.github/workflows/container.yml` → read
+that skill first.
 
 ## Where things live
 
 | Concern                       | File                                                |
 |-------------------------------|-----------------------------------------------------|
-| bwrap argv construction + agent profiles | `.devcontainer/claude-sandbox/claude-shadow` (installed as BOTH `claude` and `codex`) |
-| Codex managed guard (`/etc/codex/*.toml`) | `wire_codex_managed` in `.devcontainer/claude-sandbox/install.sh` |
-| Installer (relocate + wire)   | `.devcontainer/claude-sandbox/install.sh`           |
-| Root-shim installer entry     | `install`                                           |
-| bwrap argv unit tests         | `tests/bwrap_argv.sh`                               |
+| bwrap argv construction (the only place binds/env are added) | `src/claude_sandbox/bwrap.py` |
+| Agent profiles                | `src/claude_sandbox/profiles.py`                    |
+| One launch, top to bottom     | `src/claude_sandbox/shadow.py`, entered from `__main__.py` (`_shadow`) |
+| Egress jail and relays        | `src/claude_sandbox/jail.py` (`claude-sandbox-networking` skill) |
+| PATH watcher (ADR 27)         | `src/claude_sandbox/watch.py`                       |
+| Conf parsing, port checks     | `src/claude_sandbox/config.py`                      |
+| The shims on PATH             | `.devcontainer/claude-sandbox/claude-shim` (installed as `claude`, `codex`, `pi`), `claude-sandbox-shim` |
+| Installer bootstrap           | `.devcontainer/claude-sandbox/install.sh` (uv + interpreter, then hands over) |
+| Installer                     | `src/claude_sandbox/installer/` (`steps.py` files, `system.py` apt/probes/downloads, `provision.py` interpreter) |
+| Codex managed config (`/etc/codex/managed_config.toml`) | `installer/steps.py` `plan_codex_managed` |
+| Root-shim installer entry (revision selection) | `install`                          |
+| Helper CLI (gh-auth, glab-auth, update, verify, doctor, alerts, version) | `src/claude_sandbox/cli.py`, `helpers/` |
+| Host launcher                 | `src/claude_sandbox/host/` (`claude-sandbox-container` skill) |
+| Unit tests                    | `tests/python/` (`test_argv.py` for the argv)       |
 | End-to-end install smoke test | `tests/smoke.sh`                                    |
 | CI workflow                   | `.github/workflows/ci.yml`                          |
-| Container image / launcher design | `claude-sandbox-container` skill (root `Dockerfile`, `container/*`, `.github/workflows/container.yml`) |
-| Live verification spec (why)  | `skills/verify-sandbox/SKILL.md`                |
+| Live verification spec (why)  | `skills/verify-sandbox/SKILL.md`                    |
 | Phase-1 battery script (what) | `.devcontainer/claude-sandbox/verify-sandbox-battery.sh` |
-| Global SessionStart verifier  | `.devcontainer/claude-sandbox/sandbox-verify.sh`    |
-| Global UserPromptSubmit gate  | `.devcontainer/claude-sandbox/sandbox-gate.sh`      |
 | Threat model + binds rationale| [sphinx docs](https://diamondlightsource.github.io/claude-sandbox/explanations/threat-model.html) |
-| Helper CLI (gh-auth, glab-auth, update, verify, version) | `.devcontainer/claude-sandbox/claude-sandbox` |
 | Shipped skills (ro-bound into every agent session) | `skills/` + `claude-sandbox-shipped-skills` skill |
 | Network egress / firewall / lateral-movement design | `claude-sandbox-networking` skill (kept separate so it loads only on network topics) |
 

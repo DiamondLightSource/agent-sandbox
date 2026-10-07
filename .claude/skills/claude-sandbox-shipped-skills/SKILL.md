@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox-shipped-skills
-description: How agent skills ship to claude-sandbox users (ADR 24). The top-level `skills/` tree is installed root-owned under /usr/libexec and ro-bound per skill into each agent's own skills dir INSIDE the jail; `.claude/skills/` is for developing this repo and never ships. Surface before adding, moving or removing a skill, before touching `install_shipped_skills`, `SHIPPED_SKILLS_DIR`, `AGENT_SKILLS_REL`, or before any proposal to copy skills into the user's ~/.claude, install them via a marketplace, or make the bind writable.
+description: How agent skills ship to claude-sandbox users (ADR 24). The top-level `skills/` tree is installed root-owned under /usr/libexec and ro-bound per skill into each agent's own skills dir INSIDE the jail; `.claude/skills/` is for developing this repo and never ships. Surface before adding, moving or removing a skill, before touching `installer/steps.py` `plan_skills`, `profiles.py` `SHIPPED_SKILLS_DIR` or a profile's `skills_rel`, the skill binds in `bwrap.py`, or before any proposal to copy skills into the user's ~/.claude, install them via a marketplace, or make the bind writable.
 ---
 
 # claude-sandbox-shipped-skills
@@ -30,25 +30,25 @@ new shipped skill only if it is useful for repo work; most will not need it.
 
 ## How a shipped skill reaches the session
 
-1. `install_shipped_skills` (install.sh) copies `skills/*/` (dirs with a
+1. The installer's `plan_skills` step (`src/claude_sandbox/installer/steps.py`,
+   reported as `install_shipped_skills`) copies `skills/*/` (dirs with a
    `SKILL.md`) to `/usr/libexec/claude-sandbox/skills/`, root-owned,
    world-readable. The tree is **replaced**, not merged, so a skill deleted
    from the repo stops shipping on the next install.
-2. `bwrap_argv_build` (claude-shadow) emits one `--ro-bind` **per skill**
-   from that tree onto `$HOME/$AGENT_SKILLS_REL/<name>`. `AGENT_SKILLS_REL`
-   is a profile knob: `.claude/skills` (Claude), `.codex/skills` (Codex),
-   `.pi/agent/skills` (Pi).
-3. The launch body pre-creates `~/$AGENT_SKILLS_REL` on the host when
+2. `bwrap.py` emits one `--ro-bind` **per skill** from that tree
+   (`profiles.SHIPPED_SKILLS_DIR`) onto `$HOME/<skills_rel>/<name>`.
+   `skills_rel` is a profile field (`profiles.py`): `.claude/skills`
+   (Claude), `.codex/skills` (Codex), `.pi/agent/skills` (Pi).
+3. The shadow (`shadow.py`) pre-creates `~/<skills_rel>` on the host when
    anything ships (the one deliberate host write; `~/.claude` always exists,
    either in the container or as the shared mount) and warns when a host
    skill of the same name is masked for the session
    (`prepare_shipped_skills`). bwrap leaves an empty mount point per shipped
    skill in that host dir. The warning therefore ignores an empty dir, or
    every launch after the first would warn.
-4. The wheel force-includes `skills/` (root `pyproject.toml`) and
-   the Dockerfile's `install.sh` function list calls
-   `install_shipped_skills`, so clone, wheel and image all ship the same
-   tree. CI byte-diffs the wheel's copy against the checkout.
+4. The wheel force-includes `skills/` into its bundled tree (root
+   `pyproject.toml`) and the image build runs the same installer, so clone,
+   wheel and image all ship the same tree. CI byte-diffs the wheel's copy against the checkout.
 
 Why per skill and not per tree: Claude Code, Codex and Pi all discover
 `<skills dir>/<name>/SKILL.md` exactly one level deep, so binding the tree
@@ -87,9 +87,13 @@ repository-only `.claude/commands/verify-sandbox.md` has been removed.
   that mount exists only inside the jail.
 - Prefix names distinctively enough that they will not collide with a user's
   own skill: a collision is masked for the session, with a warning.
-- Tests: `tests/bwrap_argv.sh` scenario 15 (per-skill ro bind at each
-  agent's path, builder stays pure, empty mount point does not warn);
-  `tests/smoke.sh` (installed tree byte-equals `skills/`, nothing written under the test home's
+- Tests: `tests/python/test_argv.py`
+  (`test_shipped_skills_are_bound_read_only_per_skill` at each agent's path,
+  the builder stays pure; `test_no_shipped_skills`,
+  `test_skills_come_in_code_point_order`); `tests/python/test_shadow.py`
+  (`test_shipped_skills_warn_only_when_they_mask_something`: an empty mount
+  point does not warn); `tests/python/test_installer_steps.py` (the tree is
+  replaced, only dirs with a `SKILL.md` ship); `tests/smoke.sh` (installed tree byte-equals `skills/`, nothing written under the test home's
   `~/.claude/skills`). CI's wheel job diffs `tree/skills` against `skills/`.
 
 ## Refuse as regressions
@@ -100,8 +104,9 @@ repository-only `.claude/commands/verify-sandbox.md` has been removed.
 - Turning the per-skill `--ro-bind` into `--bind`, or binding the whole
   tree onto the skills dir (hides the user's own skills, wrong depth).
 - Making `SHIPPED_SKILLS_DIR` an env or conf seam: a bind source chosen
-  from outside the trust boundary is a new way into the jail. Tests set the
-  variable after sourcing the shadow.
+  from outside the trust boundary is a new way into the jail. Tests pass a
+  directory as an argument to `bwrap_argv` (and the shadow's host paths),
+  never through the environment.
 - Merging instead of replacing the installed tree (stale skills keep
   shipping with no source to audit).
 - Shipping anything under `.claude/skills/` by widening the copy glob.

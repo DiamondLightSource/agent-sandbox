@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox-container
-description: Design decisions for the published container image `ghcr.io/diamondlightsource/claude-sandbox` and its host-side launcher. Covers image-build-sources-install.sh (never a parallel install path), entrypoint re-runs of build-time skips, named-container PAT scoping, ro-mounted conf, tag-vs-latest publishing, notify-only launcher versioning (refuse --self-update), and parked issues #79/#80/#81. Surface before edits to the root Dockerfile, container/entrypoint.sh, container/claude-container, or .github/workflows/container.yml. Core shadow/installer invariants live in the claude-sandbox skill.
+description: Design decisions for the published container image `ghcr.io/diamondlightsource/claude-sandbox` and its host-side launcher. Covers the image build running the same installer (never a parallel install path), entrypoint re-runs of build-time skips, named-container PAT scoping, ro-mounted conf, tag-vs-latest publishing, notify-only launcher versioning (refuse --self-update), and parked issues #79/#80/#81. Surface before edits to the root Dockerfile, container/entrypoint.sh, src/claude_sandbox/host/ (the launcher), or .github/workflows/container.yml. Core shadow/installer invariants live in the claude-sandbox skill.
 ---
 
 # claude-sandbox-container
@@ -16,13 +16,19 @@ on image/launcher topics.
 `ghcr.io/diamondlightsource/claude-sandbox` (built by `.github/workflows/container.yml`
 from the root Dockerfile's `claude-sandbox` stage, `FROM` the `developer`
 stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
-`container/claude-container` launcher. Principles already extended here:
+`uvx claude-sandbox` host launcher (`src/claude_sandbox/host/`; the bash
+`container/claude-container` it replaced is gone since 5.0). Principles
+already extended here:
 
-- **Dogfood ≈ guest ≈ image**: the image build *sources* `install.sh` and runs
-  main()'s function sequence — never a parallel install path. Two deliberate
-  build-time skips (both re-run by `container/entrypoint.sh` at start):
-  `probe_userns_or_refuse` (a builder probe proves nothing about the runtime
-  host) and `link_terminal_config` — the DLS base ships an EMPTY
+- **Dogfood ≈ guest ≈ image**: the image build runs the same
+  `.devcontainer/claude-sandbox/install.sh --image-build` (the bootstrap)
+  and so the same Python installer, in the same step order — never a
+  parallel install path. Two deliberate build-time skips (both re-run by
+  `container/entrypoint.sh` at start, through the installer's own
+  `--probe-userns` and `--container-start`, from the root-owned venv with
+  `-I`): the userns probe (`system.probe_userns_or_refuse`; a builder probe
+  proves nothing about the runtime host) and the shared-config links
+  (`steps.plan_shared_links`, once `link_terminal_config`) — the DLS base ships an EMPTY
   `/user-terminal-config` stub, and wiring it at build symlinks
   `~/.claude.json` to a zero-length file the official installer rejects as
   corrupted JSON ("Unexpected EOF"). The entrypoint also seeds `{}` into a
@@ -43,19 +49,23 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   Refuse: baking the agent back into the create command; making `--shell`
   a sandboxed session (it exists precisely to run the outside-the-jail CLI).
 - **Invariant 4 mapping**: durable user conf = host file ro-mounted at the
-  canonical `/etc/claude-sandbox.conf`; the entrypoint detects the mount
-  (`_is_mount`) and skips re-stamping. Conf stays outside the sandbox rw set.
+  canonical `/etc/claude-sandbox.conf`; the installer's `--container-start`
+  detects the mount (`steps.is_mount`) and skips re-stamping
+  (`test_installer_units.test_a_mounted_config_is_left_as_it_is`). Conf stays outside the sandbox rw set.
 - A git tag publishes `ghcr.io/...:<tag>` without touching `:latest`
   (`latest` is default-branch-only) — beta images are safe to cut anytime.
 - **Launcher versioning (notify-only, by design)**: on a tag build CI
   bakes the tag into the Dockerfile `ARG` → OCI label
-  `io.diamondlightsource.claude-sandbox.launcher-version` (else the script's
-  `VERSION=` literal, which only a copied script relies on); the uvx entry
-  point passes the wheel's tag in as `CLAUDE_SANDBOX_LAUNCHER_VERSION`.
-  Each run the launcher compares itself against
-  the LOCAL image's label (instant, offline, no container start) and
-  prints a curl pinned to `org.opencontainers.image.revision` when
-  outdated, or a pull+`--recreate` hint when newer. **Refuse:** a
+  `io.diamondlightsource.claude-sandbox.launcher-version` (off a tag, the
+  last release tag the build descends from, `git describe --tags
+  --abbrev=0`); the console script passes the wheel's tag in as
+  `CLAUDE_SANDBOX_LAUNCHER_VERSION`. Each run the launcher
+  (`host/launcher.py` `warn_if_outdated`) compares itself against
+  the LOCAL image's label (instant, offline, no container start) and,
+  when outdated, prints `uvx claude-sandbox@latest` (run by uvx, which sets
+  `UV`) or `pipx upgrade claude-sandbox` (a pipx or pip install), each
+  with a pin to the image's version; when newer, a pull+`--recreate`
+  hint. **Refuse:** a
   `--self-update` flag (the launcher runs unsandboxed on the host —
   replacing it must stay a deliberate, reviewable act), and hard-failing
   the build on an empty `LAUNCHER_VERSION` ARG (the label is advisory;
@@ -67,27 +77,31 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
 - **PyPI front door (ADR 23, 2026-09-13)**: `uvx claude-sandbox` is the
   launcher and `uvx claude-sandbox install` the guest-devcontainer installer.
   The wheel (root `pyproject.toml` since ADR 26 replaced `packaging/pypi/`;
-  hatchling, wheel-only) bundles the bash VERBATIM via `force-include` and
-  one module execs it — until issue #72 phase 5, when the Python
-  implementation becomes what runs; the version is
+  hatchling, wheel-only) IS the implementation since 5.0: the console script
+  (`claude_sandbox:main`) runs the Python CLI, and `install` runs the bash
+  bootstrap the wheel bundles under `claude_sandbox/tree/` (`force-include`:
+  the `install` shim, `install.sh`, the shims, in-jail wrappers, battery,
+  conf, status line and `skills/` — what the installer reads as its
+  `--source`; provisioning copies the package into the venv without it);
+  the version is
   the git tag via hatch-vcs (`_dist.yml`/`_pypi.yml`/`_release.yml` copied
   from the DLS python-copier template, wired in `ci.yml`), so wheel == image
   tag (4.0.0 onward; nothing in the tree to bump). The entry point pins `CLAUDE_SANDBOX_IMAGE` to its own version and
-  sets `CLAUDE_SANDBOX_LAUNCHER=uvx`, which flips the outdated hint from
-  curl to `uvx claude-sandbox@latest`; a copied script keeps `:latest` +
-  the label check. Verbs `claude|codex|pi|shell` replaced `--agent` /
+  sets `CLAUDE_SANDBOX_LAUNCHER` (`uvx` or `pip`), which picks the outdated
+  hint and the name the launcher calls itself. Verbs `claude|codex|pi|shell` replaced `--agent` /
   `--shell` (old spellings exit 2 with the new form — no aliases);
   **host-net is the default**, `--bridge` opts out (create-time). The
   launcher refuses inside a container (`/run/.containerenv` or
-  `/.dockerenv`; `CLAUDE_SANDBOX_NESTED=1` overrides — also the test seam,
-  `tests/launcher.sh` runs against a fake engine); the entry point refuses
-  `install` OUTSIDE one (`CLAUDE_SANDBOX_HOST_INSTALL=1` overrides).
-  `install.sh` stamps `/usr/libexec/claude-sandbox/installer` = `uvx` so
-  `claude-sandbox update` points back at uvx instead of cloning past the
-  pin. **Refuse:** sandbox logic in the entry point beyond locate + env +
-  exec while bash is the default (new Python logic goes in its own ADR 26
-  modules, not wired into the front door until phase 5; the Python shadow
-  ships behind an opt-in switch first);
+  `/.dockerenv`; `CLAUDE_SANDBOX_NESTED=1` overrides — also the test seam:
+  `tests/launcher.sh` drives the CLI as a black box against a fake engine,
+  run by `tests/python/test_bash_suites.py`, beside `test_host.py`); the
+  entry point refuses `install` OUTSIDE one (`CLAUDE_SANDBOX_HOST_INSTALL=1`
+  overrides). The installer stamps `/usr/libexec/claude-sandbox/installer`
+  = `uvx` (`steps.plan_installer`) so `claude-sandbox update` points back at
+  uvx instead of cloning past the pin. **Refuse:** sandbox logic in the
+  front door (`src/claude_sandbox/__init__.py`) beyond the image pin, the
+  environment and handing over to the CLI or the bootstrap (it lives in
+  the ADR 26 modules);
   a second console script or package (reopens `--from` for `@latest`);
   an sdist (a second copy of the tree); a devcontainer *feature* as the
   guest path (considered, slow to start, and useless for the host
@@ -111,39 +125,42 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   `allow-write`s). Why `/cache` and not the workspace: the mounted dir has
   the same path on the host, so a workspace `.venv` ping-pongs between the
   host's interpreter and the container's, and its `bin/python` symlink
-  dangles on whichever side didn't build it last. Why not `install.sh`:
+  dangles on whichever side didn't build it last. Why not the installer:
   dogfood ≈ guest would then push a venv into every clone+install
   devcontainer, when the agent's Python is the guest project's business
   (the sandbox's OWN root-owned interpreter under `/usr/libexec`, ADR 26,
   is a different thing and never the agent's). **Refuse:** moving these
-  steps into `install.sh` or the `developer` stage; pointing
+  steps into the installer or the `developer` stage; pointing
   `UV_PROJECT_ENVIRONMENT` back into the workspace; binding `~/.cache`
   back "so Playwright persists" (home is ephemeral on purpose — the fix
   is `pass-env`/`PLAYWRIGHT_BROWSERS_PATH` under `/cache`). The
-  pass-through of `UV_PYTHON_INSTALL_DIR`/`UV_TOOL_DIR` in the shadow is
+  pass-through of `UV_PYTHON_INSTALL_DIR`/`UV_TOOL_DIR` (in `bwrap.py`) is
   what stops uv re-downloading the baked interpreter each session;
-  `tests/bwrap_argv.sh` scenario 8c guards it.
+  `tests/python/test_argv.py` `test_uv_dirs_reach_the_jail` guards it.
 - **Image-only Node (2026-09-11)**: node/npm/npx copied from
   `node:22-slim` into `/usr/local` in the `claude-sandbox` stage — NOT
   apt `npm` (npm 9 on EOL Node 18 + ~360 packages, and Playwright's npm
   package refuses < 20). Enables `pi install npm:...` (persists on the
-  shared `~/.pi`). The apt `nodejs` 18 in `apt_install` stays: guests may
-  rely on it, and it is merely shadowed by PATH order in the image.
-  Refuse: swapping `nodejs`→`npm` in `apt_install`; moving the COPY into
+  shared `~/.pi`). The apt `nodejs` 18 the installer installs
+  (`installer/system.py` `APT_PACKAGES`) stays: guests may rely on it, and
+  it is merely shadowed by PATH order in the image.
+  Refuse: swapping `nodejs`→`npm` in `APT_PACKAGES`; moving the COPY into
   the `developer` stage.
   `/usr/local/etc/npmrc` sets `ignore-scripts=true` (image-only, ro
   in-session; overridable by ~/.npmrc so a default not a gate) — pi's own
   npm call passes no `--ignore-scripts`. Don't drop it "because package X
   needs postinstall": that is the case for asking the user.
-- **Launcher verbs are forwarded (PR #40, 2026-09-14)**: `claude-sandbox`
-  names two commands — the host launcher (first word = agent) and the
-  in-container helper CLI (first word = verb). The launcher now execs
-  `gh-auth|glab-auth|verify|pi-local|version|update` inside the project
-  container, so the same spelling works on either side. Refuse: renaming
-  the inner CLI (docs, wheel console script and muscle memory all carry
-  the name; a rename would not stop the host launcher swallowing the
-  verb as an agent arg anyway). Everything else after the options is
-  still agent argv (`uvx claude-sandbox --resume` must keep working).
+- **Launcher verbs are forwarded (PR #40, 2026-09-14; one CLI since ADR
+  26)**: `claude-sandbox` is one argparse CLI on the host, in the container
+  and in the jail (`context.py`, `cli.py`). A helper declared
+  `@requires(CONTAINER, ..., forward_from=HOST)` (`gh-auth`, `glab-auth`,
+  `verify`, `pi-local`, `version`, `update`, ...) is exec'd inside the
+  project container when typed on the host, so the same spelling works on
+  either side, and no hand-kept verb list exists. Refuse: renaming the
+  in-container command (docs, wheel console script and muscle memory all
+  carry the name). Everything else after the launcher's options is still
+  agent argv (`uvx claude-sandbox --resume` must keep working;
+  `host/options.py` parses by hand for that reason).
 - **Testing a branch end to end (2026-09-15, PR #49)** — the two-command
   naming is a recurring foot-gun: on the HOST, `claude-sandbox verify`
   forwards into the *published image*, so it never tests a branch. Always
@@ -236,7 +253,9 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
 - **Testing a shadow branch in the launcher container**: `uvx
   claude-sandbox shell`, clone the branch, `./install --here`; verify
   with `cat /usr/libexec/claude-sandbox/version` (branch hash, not a
-  tag) and a grep for the new code in `/usr/local/bin/claude`. It lives
+  tag) and a grep for the new code in the package under
+  `/usr/libexec/claude-sandbox/venv/lib/python3*/site-packages/claude_sandbox/`
+  (`/usr/local/bin/claude` is only the three-line shim). It lives
   only in that named container: `--recreate` or `clean` reverts it. The
   checks must run INSIDE — on the host `uvx claude-sandbox version`
   launched claude with `version` as its prompt until PR #40.
@@ -245,13 +264,13 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   unsupported sequences (`␛[>4;2m`, the modifyOtherKeys enable every
   agent emits) instead of dropping them; it reproduces with a native
   host `claude`, so the sandbox is not the cause. A chunk-safe node
-  filter on `script`'s output (`pty_launch`) was built, tested, and
+  filter on `script`'s output (the bash shadow's `pty_launch`) was built, tested, and
   installed on a DLS box — the junk stayed, and mouse-selection drew
   more of the same, so the user abandoned it as a losing game against
   that terminal. Don't propose stripping sequences again; the real
   answers are a capable terminal or tmux ≥ 3.2 in front of the old one.
-  Branch `fix/xtmodkeys-filter` kept. One finding from it is STILL
-  UNFIXED on main: the shadow runs `script -q -E never` without `-e`, so
-  script always exits 0 and the agent's exit status never reaches the
-  caller — `claude-sandbox verify`'s "non-zero on failure" promise is
-  broken. Fix is one flag (`script -q -e -E never`) plus a test.
+  Branch `fix/xtmodkeys-filter` kept. One finding from it (the bash shadow
+  ran `script -q -E never` without `-e`, so the agent's exit status never
+  reached the caller) is fixed in the Python shadow: `shadow.py` runs
+  `script --return`, and `tests/python/test_terminal.py` checks the status
+  comes back through it. Refuse dropping `--return`.

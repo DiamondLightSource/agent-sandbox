@@ -40,8 +40,8 @@ pre-2026-06-18 state.
 
 ## ALL DNS goes through pasta `--dns-forward` (issues #60, #11 — both fixed)
 
-`jail_stage_dns()` **always** binds a `resolv.conf` naming `192.0.2.53` over
-Claude's (via `CLAUDE_SANDBOX_JAIL_RESOLV`, applied in `bwrap_argv_build`),
+`jail.stage_dns()` **always** stages a `resolv.conf` naming `192.0.2.53`, which
+`bwrap.py` binds over Claude's (named by `CLAUDE_SANDBOX_JAIL_RESOLV`),
 copying the host's `search`/`domain`/`options` lines across — dropping those
 breaks short-name resolution at sites with a search list. pasta attaches with
 `--dns-forward 192.0.2.53` (RFC5737 TEST-NET — non-routable, outside every
@@ -191,24 +191,31 @@ protection. Even with a full *effective* cap set gained via a child `unshare
 -rUm` userns, remount-rw `/`, bind-over a `--ro-bind` path, and `sethostname` all
 `EPERM` — bwrap's locked mounts are immutable from a descendant userns. Inert.
 
-**Structure:** the setup is inlined as `netns_launch()` / `netns_holder()` (+ the
-`egress_jail_enabled` predicate) *inside* `claude-shadow`, NOT a sourced module — preserves the single-file auditability ADR 0014 / 0008 rest
-on. Revisit extraction (its own ADR) only if the net code outgrows the shadow.
+**Structure:** the jail is `src/claude_sandbox/jail.py` (`launch` outside,
+`holder_main`/`lock_routes` inside the holder, `stage_dns`, the relays), one of
+the four audit-core modules of ADR 26 (with `bwrap.py`, `shadow.py`,
+`watch.py`), readable top to bottom; the `egress_jail_enabled` predicate and
+the `egress-jail`/`allow-ip` keys are in `config.py`. Every side effect goes
+through an `Ops` object so the unit tests replace it. Don't spread the jail
+across more modules (the `bf65407` failure ADR 26 guards against).
 
 **STATUS — IMPLEMENTED + END-TO-END VALIDATED (2026-06-18).** Probe + real
 binary both green on a real rootless host: `CLAUDE_SANDBOX_EGRESS_JAIL=1 claude
 -p` reaches the API through the jail; route-immutability battery passes; Cohort B
-`allow-ip` device path confirmed reachable; same-subnet host blackholed. Lives in
-`claude-shadow` (`parse_config` `egress-jail`/`allow-ip` keys, `egress_jail_enabled`
-predicate + inlined `netns_holder`/`netns_launch`), **ON by default** — disable
+`allow-ip` device path confirmed reachable; same-subnet host blackholed. (Then
+in the bash shadow; since 5.0 `jail.py`, with the `parse_config`
+`egress-jail`/`allow-ip` keys and the `egress_jail_enabled` predicate in
+`config.py`.) **ON by default** — disable
 with `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env) or `egress-jail = 0` in
 `/etc/claude-sandbox.conf`. Requires `/dev/net/tun` (`devcontainer.json` runArgs
 `--device=/dev/net/tun`) — the one hard container-side dep; **fail-closed** if
-pasta/unshare/tun missing (`claude` won't launch — the error names the `=0`
-escape hatch), never a silent unjailed fallback. Interactive
+pasta/unshare/tun missing (`claude` won't launch — the error names only the
+real fix, never the `=0` escape hatch; see the claude-sandbox skill's
+weakening-switch policy), never a silent unjailed fallback. Interactive
 `claude` + `/verify-sandbox` both confirmed live in a jailed session (18/18 pass
 — check 06 asserts `CapEff=0`, which holds). Phase-2 landed on **PR #58** (refs
-#56): `install.sh` installs `passt`; CapEff/CapBnd doc corrections; cap-ceiling
+#56): the installer installs `passt` (now `installer/system.py`
+`APT_PACKAGES`); CapEff/CapBnd doc corrections; cap-ceiling
 diligence probe written + PASSED unjailed (full `CapBnd` inert). Bridge/NAT now
 **VALIDATED** (see [[network-egress-pasta-jail-wip]]): `probe-network-jail.sh`
 run in a **bridge/NAT** container proves the gateway-collision + nested-pasta
@@ -228,7 +235,7 @@ host-`devcontainer.json` edits, so `install` must detect + error with
 instructions either way. **Blackholing must be intentional** — CRITICAL in
 non-host containers where the egress gateway is itself RFC1918 (or link-local
 `169.254.x.x`): blackholing those ranges can sever the default route and kill ALL
-egress. `netns_holder()` detects the default next-hop and pins a more-specific
+egress. The holder (`jail.lock_routes`) detects the default next-hop and pins a more-specific
 route to it FIRST: **protect-gateway → blackhole-the-rest → punch allow-ip** (implemented).
 PROVEN in a NON-host (bridge) container (validated 2026-06-18): (a) nested pasta
 (inner pasta inside an outer-pasta'd container) works; (b) the gateway-collision
@@ -238,7 +245,7 @@ container = the devcontainer with `--net=host` REMOVED**
 `--device=/dev/net/tun`), then rebuild and run `probe-network-jail.sh` from a
 normal (unjailed) terminal — revert + rebuild afterwards (the dogfood box needs
 host-net for X11 + EPICS CA). Throwaway alternative that leaves the devcontainer
-alone: `podman run --rm -it --device=/dev/net/tun -v "$PWD/probe-network-jail.sh:/probe.sh:ro" <devcontainer-image> bash -lc 'apt-get update -qq && apt-get install -y -qq passt bubblewrap iproute2 util-linux && bash /probe.sh'`.
+alone: `podman run --rm -it --device=/dev/net/tun -v "$PWD/diagnostics/probe-network-jail.sh:/probe.sh:ro" <devcontainer-image> bash -lc 'apt-get update -qq && apt-get install -y -qq passt bubblewrap iproute2 util-linux && bash /probe.sh'`.
 EXPECT: the `[holder]` line shows an RFC1918 gateway (podman `10.88.0.1`, docker
 `172.17.0.1`); `PASS internet routed via gateway` + connectivity PASS = proof
 that the `$gw/32` on-link route was pinned BEFORE `blackhole 10/8` survived
@@ -253,8 +260,9 @@ pasta's port forwarding and gateway mapping are OFF for every agent (`-t none
 -u none -T none -U none --no-map-gw`, ADR 19): auto-forwarding exposed
 unrelated host-loopback listeners. What crosses instead is one socat pair per
 port over a private Unix socket in the jail's `/tmp` relay dir (bwrap masks
-it), started by `netns_launch` (outer end) and `local_model_inner` (holder
-netns, before bwrap). Two directions, two conf keys:
+it), started by `jail.launch` (outer ends, `_outbound_relays` /
+`_callback_relays`) and the holder (inner ends, `_hold_with_relays`, in the
+netns before bwrap). Two directions, two conf keys:
 
 - **Outbound** `local-model-port` (shipped 1920, Pi's lllm2 discovery) +
   `local-port` lines / `CLAUDE_SANDBOX_LOCAL_PORTS` (ADR 20): inner socat
@@ -318,4 +326,5 @@ Don't reach for pasta `-t/-T` to "simplify" either direction.
 | Native dual-sandbox / Cohort A | issue **#33** (open) |
 | Egress-open decision / scope | ADRs `0005-network-egress-open`, `0002-credential-isolation-tool` |
 | Feasibility / route-immutability probes (now tracked under `diagnostics/`) | `diagnostics/probe-network-jail.sh` (full pasta egress + route-immutability battery), `diagnostics/probe-network-jail-caps.sh` (cap-ceiling diligence), `diagnostics/probe-network-layers.sh` (splits tun-INDEPENDENT core from tun-DEPENDENT forwarder) — run UNJAILED |
-| Egress-jail code (holder + pasta attach + route lock) — inlined, **implemented + on by default** | `.devcontainer/claude-sandbox/claude-shadow`: `egress_jail_enabled` predicate, `netns_launch()` orchestrator, `netns_holder()` (bwrap KEEPS omitting `--unshare-net`; the holder owns the netns) |
+| Egress-jail code (holder + pasta attach + route lock + relays) — **implemented + on by default** | `src/claude_sandbox/jail.py`: `launch` (outside), `holder_main` / `lock_routes` / `_hold_with_relays` (the holder, re-entered as `python -I -m claude_sandbox _jail_holder`), `stage_dns`; `config.py`: `egress_jail_enabled`, `allow-ip`, the port checks; `bwrap.py`: the staged `resolv.conf` bind (bwrap KEEPS omitting `--unshare-net`; the holder owns the netns) |
+| Egress-jail tests | `tests/python/test_jail.py` (unit, `Ops` replaced: argv, fail-closed paths, cleanup, signals); `tests/python/test_jail_netns.py` (real namespaces, pasta, socat — routes locked, DNS through the forwarder, relays, cleanup, Ctrl-C), run by `tests/jail_python.sh` with a skip as a failure, in the image (`container.yml`) and on the runner (`ci.yml` egress-jail job) |

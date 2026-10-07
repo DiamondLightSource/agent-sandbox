@@ -1,18 +1,23 @@
 # claude-sandbox
 
-A Python package (`src/claude_sandbox/`, root `pyproject.toml`) migrating
-from bash per ADR 26
+A Python package (`src/claude_sandbox/`, root `pyproject.toml`) per ADR 26
 (`docs/explanations/decisions/0026-python-implementation.md`, supersedes
-ADR 8) and issue #72. Until phase 5 of that issue, the **bash is the shipped
-default**: the wheel bundles the bash launcher and installer verbatim and
-execs them. Don't change bash behaviour as a side effect of Python work.
+ADR 8; implemented in 5.0.0, issue #72). The bash shadow, CLI, launcher and
+installer steps are gone. What stays bash, by ADR 26: the installer's
+bootstrap (`.devcontainer/claude-sandbox/install.sh`, which fetches uv and
+provisions the interpreter) and the `install` shim, the three-line shims
+(`claude-shim`, `claude-sandbox-shim`), the integrity battery
+(`verify-sandbox-battery.sh`), the in-jail wrappers (`codex-launch`,
+`pi-run`), `container/entrypoint.sh`, and the end-to-end suites in
+`tests/*.sh`. Don't port those to Python, and don't grow sandbox logic in
+them.
 
 Development: uv, pytest, ruff, pyright, and a committed dev lockfile
 (`uv.lock`). Version comes from the git tag (hatch-vcs).
 
 ```bash
 uv sync                      # dev environment from uv.lock
-uv run pytest --cov          # tests/python/, >=95% branch coverage (bash suites: tests/*.sh)
+uv run pytest --cov          # tests/python/, >=95% branch coverage (e2e suites: tests/*.sh)
 uv run ruff check
 uv run ruff format --check
 uv run pyright               # strict, src/ and tests/python/: fix code, don't relax
