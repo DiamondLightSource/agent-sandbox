@@ -63,9 +63,9 @@ class Fixture:
         return exc.value.code
 
 
-# A git that knows one identity, as `git config --get KEY` prints it.
+# A git that knows one identity, as `git -C / config --get KEY` prints it.
 IDENTITY = """#!/bin/sh
-case "$3" in
+case "$5" in
     user.name) echo "A U Thor" ;;
     user.email) echo a@example.invalid ;;
 esac

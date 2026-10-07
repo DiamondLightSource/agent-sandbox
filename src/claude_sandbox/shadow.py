@@ -350,12 +350,17 @@ def write_gitconfig(host: Host, env: Mapping[str, str], *, no_forge: bool) -> No
     Called on every launch because VS Code's dev.containers.copyGitConfig
     fires AFTER postCreate, so an install-time render can have an empty
     user.name. The identity is ``git config --get``'s, with git from the
-    fixed tool path: empty when unset, or with no git.
+    fixed tool path, run from / with a time limit: the workspace's own
+    config, which the session can write (with a FIFO, say), is not read.
+    Empty when unset, or with no git.
     """
     git = host.find_tool("git")
 
     def identity(key: str) -> str:
-        return "" if git is None else output([git, "config", "--get", key], env)[1]
+        if git is None:
+            return ""
+        argv = [git, "-C", "/", "config", "--get", key]
+        return output(argv, env, timeout=5)[1]
 
     text = render_gitconfig(
         identity("user.name"), identity("user.email"), no_forge=no_forge
