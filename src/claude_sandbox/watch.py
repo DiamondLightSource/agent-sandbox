@@ -13,10 +13,11 @@ and runs on the next outer ``git commit`` or ``git push``.
 
 So, from outside the jail and for as long as the session lasts:
 
-- The watched directories are the writable ones (inside a read-write bind,
-  per ``bwrap.py``) that a PATH lookup searches before the last system
-  command directory, and the workspace's git hooks directory and the one
-  its ``core.hooksPath`` names. A change of that setting is an alert.
+- The watched directories are the writable ones (inside a read-write bind
+  and not under a read-only one, per ``bwrap.py``) that a PATH lookup
+  searches before the last system command directory, and the workspace's
+  git hooks directory and the one its ``core.hooksPath`` names. A change
+  of that setting is an alert.
 - In a PATH directory, an executable (or a link to one) whose name a later
   PATH directory also has is a shadow. Its execute bits are cleared on the
   file itself, never through a link; a link is removed and its target
@@ -50,7 +51,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import NoReturn, cast
 
-from .bwrap import STATE_DIR, inside, path_ahead, watched_path_dirs
+from .bwrap import STATE_DIR, Writable, path_ahead, watched_path_dirs
 from .tools import find_tool, output, write_atomic
 
 # Where the alerts go when /run cannot be written (bwrap masks /tmp).
@@ -126,20 +127,20 @@ def _hooks_path_dir(workspace: str, value: str) -> str | None:
 
 
 def targets(
-    path: str, roots: Sequence[str], workspace: str, hooks_path: str | None = None
+    path: str, writable: Writable, workspace: str, hooks_path: str | None = None
 ) -> list[Target]:
     """Every directory to watch now: they come and go during a session.
     ``hooks_path`` is the repository's ``core.hooksPath``, when set."""
     order = path_ahead(path, ())  # every PATH directory, in order
     found = [
         Target(d, tuple(order[order.index(d) + 1 :]))
-        for d in watched_path_dirs(path, roots)
+        for d in watched_path_dirs(path, writable)
     ]
     hooks = [git_hooks_dir(workspace)] if workspace else []
     if workspace and hooks_path is not None:
         hooks.append(_hooks_path_dir(workspace, hooks_path))
     for directory in dict.fromkeys(hooks):
-        if directory is not None and inside(directory, roots):
+        if directory is not None and writable.holds(directory):
             found.append(Target(directory, hooks=True))
     return found
 
@@ -198,13 +199,14 @@ def runnable(path: str) -> bool:
 INTERPRETER = re.compile(r"python(3(\.\d+)?)?")
 
 
-def system_interpreter(path: str, roots: Sequence[str]) -> bool:
+def system_interpreter(path: str, writable: Writable) -> bool:
     """``path`` is a venv's link to an interpreter the session cannot write.
 
     A link (or a chain of them) named python, python3 or python3.N whose
-    final target is an executable named python* outside every read-write
-    root of the jail: what ``uv venv`` makes against /usr/bin/python3 or a
-    root-owned uv-managed Python. Recreating the venv in a session then
+    final target is an executable named python* the jail cannot write:
+    what ``uv venv`` makes against /usr/bin/python3, a root-owned
+    uv-managed Python, or one in uv's store, which ``bwrap.py`` binds
+    read-only. Recreating the venv in a session then
     leaves it working. A regular file of that name, or a link into anything
     the session can write, is still judged like any other.
     """
@@ -215,19 +217,19 @@ def system_interpreter(path: str, roots: Sequence[str]) -> bool:
     return (
         os.path.basename(real).startswith("python")
         and runnable(real)
-        and not inside(real, roots)
+        and not writable.holds(real)
     )
 
 
-def offends(target: Target, name: str, roots: Sequence[str] = ()) -> str | None:
-    """Why ``name`` in ``target`` must be quarantined, or None. ``roots``:
-    the jail's read-write roots, for ``system_interpreter``."""
+def offends(target: Target, name: str, writable: Writable) -> str | None:
+    """Why ``name`` in ``target`` must be quarantined, or None. ``writable``:
+    what the jail can write, for ``system_interpreter``."""
     path = os.path.join(target.directory, name)
     if not runnable(path):
         return None
     if target.hooks:
         return None if name.endswith(".sample") else "a git hook"
-    if system_interpreter(path, roots):
+    if system_interpreter(path, writable):
         return None
     for later in target.later:
         if runnable(os.path.join(later, name)):
@@ -411,12 +413,12 @@ def clear_alerts(states: Sequence[str] | None = None) -> bool:
 class Session:
     """One session's watch: what to look at and what has been done.
 
-    ``path`` is the launching PATH, ``roots`` the resolved roots of the
-    jail's read-write binds, ``workspace`` the bound workspace.
+    ``path`` is the launching PATH, ``writable`` what the jail can write
+    (``bwrap.Built``), ``workspace`` the bound workspace.
     """
 
     path: str
-    roots: Sequence[str]
+    writable: Writable
     workspace: str
     state: str | None
     baseline: dict[str, dict[str, Sig]] = field(
@@ -427,7 +429,7 @@ class Session:
     hooks_path: str | None = None  # core.hooksPath at the last look
 
     def targets(self) -> list[Target]:
-        return targets(self.path, self.roots, self.workspace, self.hooks_path)
+        return targets(self.path, self.writable, self.workspace, self.hooks_path)
 
     def _hooks_path_changed(self) -> list[str]:
         """Look at core.hooksPath again; an alert if it changed."""
@@ -452,7 +454,7 @@ class Session:
             if base.get(name) == sig or self.seen.get(key) == sig:
                 continue
             self.seen[key] = sig
-            why = offends(target, name, self.roots)
+            why = offends(target, name, self.writable)
             if why is None:
                 continue
             action = quarantine(target.directory, name)

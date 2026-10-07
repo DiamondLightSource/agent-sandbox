@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from claude_sandbox import watch
+from claude_sandbox.bwrap import Writable
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 
@@ -52,7 +53,7 @@ class Layout:
     def session(self, path: str | None = None) -> watch.Session:
         return watch.Session(
             path or f"{self.venv}:{self.sys}",
-            [str(self.root / "rw")],
+            Writable([str(self.root / "rw")]),
             str(self.work),
             str(self.state),
         )
@@ -90,7 +91,7 @@ def test_targets_and_git_hooks(lay: Layout, tmp_path: Path) -> None:
     # After the last system directory: not watched.
     assert lay.session(f"/usr/bin:{lay.venv}").targets()[:-1] == []
     # No workspace: no hooks.
-    s = watch.Session(str(lay.venv), [str(lay.root / "rw")], "", None)
+    s = watch.Session(str(lay.venv), Writable([str(lay.root / "rw")]), "", None)
     assert s.targets() == [watch.Target(str(lay.venv))]
     # A worktree: .git names the git dir; hooks are in its common dir.
     wt = tmp_path / "wt"
@@ -166,7 +167,7 @@ def test_session_quarantines_only_what_changed(lay: Layout) -> None:
     assert s.tick() == [cleared(lay.hooks / "pre-push", "a git hook")]
     assert len(lay.alerts()) == 5
     assert "Review the session that created them." in s.summary()
-    assert watch.Session("", [], "", None).summary() == ""
+    assert watch.Session("", Writable(()), "", None).summary() == ""
 
 
 def test_a_directory_that_appears_has_no_baseline(lay: Layout) -> None:
@@ -392,7 +393,8 @@ CHILD = """
 import os, sys, time
 sys.path.insert(0, {src!r})
 from claude_sandbox import watch
-s = watch.Session({path!r}, [{root!r}], {work!r}, {state!r})
+from claude_sandbox.bwrap import Writable
+s = watch.Session({path!r}, Writable([{root!r}]), {work!r}, {state!r})
 watch.fork_watcher(s)
 with open({git!r}, "w") as f:
     f.write("#!/bin/sh\\n")
@@ -556,13 +558,28 @@ def test_a_venv_interpreter_link_to_a_system_python_stays(lay: Layout) -> None:
     assert lay.session().scan_at_launch() == []
 
 
+def test_a_venv_interpreter_link_into_a_read_only_store_stays(lay: Layout) -> None:
+    """uv's Python store, bound read-only inside a read-write root: the
+    session cannot write it, so a venv link to it is left alone."""
+    store = lay.root / "rw/uv/python"
+    python = executable(store / "cpython-3.14/bin/python3.14")
+    (lay.venv / "python3").unlink()
+    (lay.venv / "python3").symlink_to(python)
+    link = str(lay.venv / "python3")
+    writable = Writable([str(lay.root / "rw")], [str(store)])
+    assert watch.system_interpreter(link, writable)
+    assert not watch.system_interpreter(link, lay.session().writable)
+    # Nor is a PATH directory inside the store watched.
+    assert watch.targets(str(python.parent), writable, "") == []
+
+
 def test_system_interpreter_needs_a_python_target(tmp_path: Path) -> None:
     other = executable(tmp_path / "sys/bash")
     (tmp_path / "python3").symlink_to(other)
-    assert not watch.system_interpreter(str(tmp_path / "python3"), [])
+    assert not watch.system_interpreter(str(tmp_path / "python3"), Writable(()))
     (tmp_path / "python3").unlink()
     (tmp_path / "python3").symlink_to(tmp_path / "sys/python-missing")
-    assert not watch.system_interpreter(str(tmp_path / "python3"), [])
+    assert not watch.system_interpreter(str(tmp_path / "python3"), Writable(()))
 
 
 def git(*args: str, cwd: Path) -> None:

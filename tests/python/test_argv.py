@@ -19,6 +19,7 @@ from claude_sandbox.bwrap import (
     ENTRY_GUARD_ENV,
     ENTRY_POINTS,
     GITCONFIG_PATH,
+    Built,
     bwrap_build,
 )
 from claude_sandbox.config import Config, parse_config
@@ -696,6 +697,87 @@ def test_entry_guard(tmp_path: Path, path: str, guarded: bool) -> None:
         and argv[i + 2].rpartition("/")[2] in ENTRY_POINTS
     ] == expected
     assert setenv(argv, ENTRY_GUARD_ENV) == ([venv_bin] if guarded else [])
+
+
+# --- uv's Python store, read-only (ADR 27) --------------------------------------
+
+
+def store_binds(tmp_path: Path, env: Mapping[str, str]) -> tuple[list[str], Built]:
+    """The read-only binds of a store, and the build, for a layout with
+    ``home`` and an ``allow-write`` of ``data``."""
+    env = {
+        "HOME": f"{tmp_path}/home",
+        "CLAUDE_SANDBOX_ALLOW_WRITE": f"{tmp_path}/data",
+        **env,
+    }
+    built = bwrap_build(
+        PROFILES["claude"], Config.from_env(env), env, "", REAL, [],
+        shipped_skills_dir="/nonexistent", state_dir="/nonexistent",
+    )  # fmt: skip
+    argv = built.argv
+    pairs = [
+        f"{argv[i + 1]} {argv[i + 2]}"
+        for i in range(len(argv) - 2)
+        if argv[i] == "--ro-bind" and argv[i + 1] in built.writable.readonly
+    ]
+    return pairs, built
+
+
+def test_uv_store_bound_read_only(tmp_path: Path) -> None:
+    tree(
+        tmp_path, "home/.local/share/uv/python/bin/", "data/py/", "data/xdg/uv/python/"
+    )
+    store = f"{tmp_path}/home/.local/share/uv/python"
+    pairs, built = store_binds(tmp_path, {"PATH": f"{store}/bin:/usr/bin"})
+    assert pairs == [f"{store} {store}"]
+    assert built.writable.readonly == [store]
+    # A PATH directory in it is not the session's to write: no guard there.
+    assert setenv(built.argv, ENTRY_GUARD_ENV) == []
+    # After the read-write bind it sits in.
+    argv = built.argv
+    assert argv.index(store) > argv.index(f"{tmp_path}/home/.local/share")
+    # UV_PYTHON_INSTALL_DIR replaces the default; XDG_DATA_HOME adds uv's
+    # outer default to the jail's, unless relative.
+    pairs, _ = store_binds(tmp_path, {"UV_PYTHON_INSTALL_DIR": f"{tmp_path}/data/py"})
+    assert pairs == [f"{tmp_path}/data/py {tmp_path}/data/py"]
+    xdg = f"{tmp_path}/data/xdg/uv/python"
+    pairs, _ = store_binds(tmp_path, {"XDG_DATA_HOME": f"{tmp_path}/data/xdg"})
+    assert pairs == [f"{xdg} {xdg}", f"{store} {store}"]
+    pairs, _ = store_binds(tmp_path, {"XDG_DATA_HOME": "data/xdg"})
+    assert pairs == [f"{store} {store}"]
+
+
+def test_uv_store_through_a_link_outside_the_jail(tmp_path: Path) -> None:
+    """``~/.local/share`` a link into ``allow-write``: bound where it lies
+    and where the jail sees it through the ``~/.local/share`` bind."""
+    tree(tmp_path, "home/.local/", "data/share/uv/python/")
+    (tmp_path / "home/.local/share").symlink_to(tmp_path / "data/share")
+    real = f"{tmp_path}/data/share/uv/python"
+    pairs, built = store_binds(tmp_path, {})
+    assert pairs == [f"{real} {tmp_path}/home/.local/share/uv/python", f"{real} {real}"]
+    assert built.writable.readonly == [real]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["absent", "planted link", "not writable", "allow-write of it", "relative"],
+)
+def test_uv_store_skipped(tmp_path: Path, case: str) -> None:
+    tree(tmp_path, "home/.local/share/", "data/elsewhere/", "ro/uv/python/")
+    env: dict[str, str] = {}
+    if case == "planted link":  # a session could have made it
+        (tmp_path / "home/.local/share/uv").symlink_to(tmp_path / "data/elsewhere")
+        tree(tmp_path, "data/elsewhere/python/")
+    elif case == "not writable":
+        env["UV_PYTHON_INSTALL_DIR"] = f"{tmp_path}/ro/uv/python"
+    elif case == "allow-write of it":
+        env["UV_PYTHON_INSTALL_DIR"] = f"{tmp_path}/data/elsewhere"
+        env["CLAUDE_SANDBOX_ALLOW_WRITE"] = f"{tmp_path}/data/elsewhere"
+    elif case == "relative":
+        env["UV_PYTHON_INSTALL_DIR"] = "data/elsewhere"
+    pairs, built = store_binds(tmp_path, env)
+    assert pairs == []
+    assert built.writable.readonly == []
 
 
 # --- Pi (pi.sh) ---------------------------------------------------------------

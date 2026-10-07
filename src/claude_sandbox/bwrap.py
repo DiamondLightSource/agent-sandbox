@@ -202,22 +202,63 @@ def inside(path: str, roots: Iterable[str]) -> bool:
     return any(os.path.commonpath([path, root]) == root for root in roots)
 
 
-def watched_path_dirs(
-    path: str, roots: Iterable[str], probe: Probe = HOST
-) -> list[str]:
-    """The writable directories (under ``roots``) a ``PATH`` lookup searches
-    before the last system command directory."""
-    roots = list(roots)
+class Writable(NamedTuple):
+    """What the jail can write, all resolved: under one of ``roots`` (its
+    read-write binds) and under none of ``readonly`` (read-only binds over
+    parts of them, none with a root inside)."""
+
+    roots: Sequence[str]
+    readonly: Sequence[str] = ()
+
+    def holds(self, path: str) -> bool:
+        return inside(path, self.roots) and not inside(path, self.readonly)
+
+
+def watched_path_dirs(path: str, writable: Writable, probe: Probe = HOST) -> list[str]:
+    """The writable directories a ``PATH`` lookup searches before the last
+    system command directory."""
     return [
-        d for d in path_ahead(path, SYSTEM_DIRS, probe, last=True) if inside(d, roots)
+        d for d in path_ahead(path, SYSTEM_DIRS, probe, last=True) if writable.holds(d)
     ]
 
 
+def uv_python_stores(env: Mapping[str, str], home: str) -> list[str]:
+    """Where uv keeps the Pythons it installs: ``$UV_PYTHON_INSTALL_DIR``
+    (which the jail is given too), else ``uv/python`` under
+    ``$XDG_DATA_HOME`` as uv outside the jail sees it and under
+    ``~/.local/share`` as uv inside it does (the jail has no
+    ``XDG_DATA_HOME``). uv ignores a relative ``XDG_DATA_HOME``."""
+    if install := env.get("UV_PYTHON_INSTALL_DIR"):
+        return [install]
+    data = env.get("XDG_DATA_HOME", "")
+    stores = [f"{data}/uv/python"] if data.startswith("/") else []
+    return [*stores, f"{home}/.local/share/uv/python"]
+
+
+def resolve_unredirected(path: str, roots: Sequence[str], probe: Probe) -> str | None:
+    """``path`` resolved, or None when it does not resolve or a session
+    could have chosen where it leads: a link (or ``.``, ``..``) met in a
+    directory under ``roots``. Resolved one component at a time."""
+    if not path.startswith("/"):
+        return None
+    resolved = "/"
+    for part in filter(None, path.split("/")):
+        step = os.path.join(resolved, part)
+        try:
+            real = probe.realpath(step)
+        except OSError:
+            return None
+        if real != step and inside(resolved, roots):
+            return None
+        resolved = real
+    return resolved
+
+
 class Built(NamedTuple):
-    """The bwrap argv, and the resolved roots of its read-write binds."""
+    """The bwrap argv, and what it lets the jail write."""
 
     argv: list[str]
-    writable: list[str]
+    writable: Writable
 
 
 def _lookup(env: Mapping[str, str], name: str) -> str:
@@ -425,6 +466,43 @@ def bwrap_build(
     if resolv and probe.readable(resolv):
         argv += ["--ro-bind", resolv, "/etc/resolv.conf"]
 
+    # uv's Python store, read-only (ADR 27): a venv the session makes then
+    # links to an interpreter it cannot write, which the PATH watcher leaves
+    # alone. Only a store that exists at launch, lies in a read-write bind
+    # and holds none: uv in the jail cannot install a Python there (EROFS),
+    # and an operator's allow-write of the store itself stands. Resolved
+    # here, outside the jail, from the launch environment; a link (or a
+    # store) a session could have planted on the way skips it, and the
+    # watcher judges its links as before. Bound wherever the jail sees it,
+    # through each read-write bind that holds it, after all of them.
+    mounts: list[tuple[str, str]] = []  # (where the jail sees it, resolved)
+    for root in writable:
+        try:
+            mounts.append((root, probe.realpath(root)))
+        except OSError:
+            continue
+    roots = [real for _, real in mounts]
+    readonly: list[str] = []
+    for path in uv_python_stores(env, home):
+        store = resolve_unredirected(path, roots, probe)
+        if (
+            store is None
+            or store in readonly
+            or not probe.is_dir(store)
+            or not inside(store, roots)
+            or any(inside(root, [store]) for root in roots)
+        ):
+            continue
+        readonly.append(store)
+        aliases = [
+            os.path.join(where, os.path.relpath(store, real))
+            for where, real in mounts
+            if inside(store, [real])
+        ]
+        for alias in dict.fromkeys(aliases):
+            argv += ["--ro-bind", store, alias]
+    jail_writes = Writable(roots, readonly)
+
     # Entry-point guard. Protect the sandbox's entry-point names (Invariant
     # 1): a session cannot create a command named claude, codex, pi or
     # claude-sandbox in a writable directory that precedes the shadow on
@@ -441,16 +519,10 @@ def bwrap_build(
     #
     # Last of the mounts: bwrap applies argv in order, so these must follow
     # every read-write bind they sit inside.
-    roots: list[str] = []
-    for root in writable:
-        try:
-            roots.append(probe.realpath(root))
-        except OSError:
-            continue
     guarded = [
         directory
         for directory in path_ahead_of_shadow(env.get("PATH", ""), probe)
-        if inside(directory, roots)
+        if jail_writes.holds(directory)
     ]
     for directory in guarded:
         for name in ENTRY_POINTS:
@@ -533,4 +605,4 @@ def bwrap_build(
     # Exec via the in-sandbox conventional path so the agent's argv[0]
     # matches what its official installer would have placed.
     command = agent_exec_argv(profile, home, verify=verify)
-    return Built([*argv, "--", *command, *user_args], roots)
+    return Built([*argv, "--", *command, *user_args], jail_writes)

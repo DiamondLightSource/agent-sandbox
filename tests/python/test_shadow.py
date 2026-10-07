@@ -143,7 +143,7 @@ def test_launch_wraps_the_bwrap_argv_in_script(
     i = expected.index(fx.host.state_dir)  # created, then masked
     assert expected[i - 1] == "--tmpfs"
     # The jail is off: a child watches while script(1) runs.
-    assert [s.roots[-1] for s in fx.forked] == [str(fx.root / "work")]
+    assert [s.writable.roots[-1] for s in fx.forked] == [str(fx.root / "work")]
     # bwrap by absolute path, so the inner shell looks nothing up.
     assert shlex.split(ex.argv[6]) == [str(fx.root / "tools/bwrap"), *expected[1:]]
     assert expected[-3:] == ["--no-chrome", "a b", ""]
