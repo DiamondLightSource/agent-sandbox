@@ -261,9 +261,9 @@ def test_summary_does_not_claim_a_skipped_step(tmp_path: Path) -> None:
     managed.parent.mkdir(parents=True)
     managed.write_text("[1]")
     out, err = io.StringIO(), io.StringIO()
-    install(layout, replace(options, smoke=True, impl="python"), err, out)
+    install(layout, replace(options, smoke=True), err, out)
     assert "the updater is NOT disabled" in out.getvalue()
-    assert "python:      the Python shadow" in out.getvalue()
+    assert "python:      interpreter in " in out.getvalue()
     assert layout.system("/usr/local/bin/claude").read_bytes() == SHIM.read_bytes()
 
 

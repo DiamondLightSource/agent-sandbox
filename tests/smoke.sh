@@ -22,29 +22,19 @@ USER_HOME_DIR="$(mktemp -d)"
 register_cleanup "$PREFIX" "$USER_HOME_DIR"
 
 export CLAUDE_SANDBOX_SMOKE=1
-# The suite runs against either installer: CLAUDE_SANDBOX_IMPL=python bash
-# tests/smoke.sh runs it against the Python one (issue #72 phase 4), which a
-# smoke run starts from the tree with this test-only interpreter.
+# A smoke run starts the Python installer from the tree with this test-only
+# interpreter (install.sh skips provisioning the root-owned one).
 export CLAUDE_SANDBOX_SMOKE_PYTHON="${CLAUDE_SANDBOX_SMOKE_PYTHON:-$(command -v python3)}"
-# With the Python opt-in the installed CLI is a shim into the root-owned venv,
-# which a smoke run does not provision, so the CLI's behaviour is checked by
-# running the package from the tree.
-case "${CLAUDE_SANDBOX_IMPL:-bash}" in
-    python)
-        SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim"
-        CLI_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-sandbox-shim"
-        cli() {
-            CLAUDE_SANDBOX_CONTEXT=container "$CLAUDE_SANDBOX_SMOKE_PYTHON" -I -c \
-                'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = "claude-sandbox"; runpy.run_module("claude_sandbox", run_name="__main__")' \
-                "$REPO_ROOT/src" "$@"
-        }
-        ;;
-    *)
-        SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"
-        CLI_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-sandbox"
-        cli() { bash "$CLI_DEST" "$@"; }
-        ;;
-esac
+SHADOW_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim"
+CLI_SRC="$REPO_ROOT/.devcontainer/claude-sandbox/claude-sandbox-shim"
+# The installed CLI is a shim into the root-owned venv, which a smoke run
+# does not provision, so the CLI's behaviour is checked by running the
+# package from the tree.
+cli() {
+    CLAUDE_SANDBOX_CONTEXT=container "$CLAUDE_SANDBOX_SMOKE_PYTHON" -I -c \
+        'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = "claude-sandbox"; runpy.run_module("claude_sandbox", run_name="__main__")' \
+        "$REPO_ROOT/src" "$@"
+}
 export INSTALL_PREFIX="$PREFIX"
 export INSTALL_USER_HOME="$USER_HOME_DIR"
 
@@ -83,7 +73,7 @@ else
     fail "shadow mode is $(stat -c '%a' "$SHADOW_DEST" 2>/dev/null), expected 755"
 fi
 
-# The shadow (or, with the Python opt-in, the shim) placed as is.
+# The shadow shim placed as is.
 if cmp -s "$SHADOW_SRC" "$SHADOW_DEST"; then
     pass
 else
@@ -401,69 +391,9 @@ else
     fail "codex managed_config.toml does not disable the startup update check"
 fi
 
-# install_codex_binary must NEVER relocate the claude-sandbox shadow as the
-# "real" codex binary. The shadow is on the search path by construction
-# (main() installs it at /usr/local/bin/codex first), so if the vendor
-# download leaves nothing behind, the candidate search falls through to it.
-# Relocating it makes the shadow exec itself forever — a HANG, with no error
-# to go on. Regression test for a marker-grep self-check that stopped
-# matching when the shadow's header was reworded.
-SELF_PREFIX="$(mktemp -d)"
-SELF_HOME="$(mktemp -d)"
-register_cleanup "$SELF_PREFIX" "$SELF_HOME"
-mkdir -p "$SELF_HOME/.local/bin"
-# The one candidate on the search path is a copy of our own shadow.
-cp "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" "$SELF_HOME/.local/bin/codex"
-chmod 0755 "$SELF_HOME/.local/bin/codex"
-SELF_OUT="$( (
-    # shellcheck source=../.devcontainer/claude-sandbox/install.sh
-    source "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh"
-    SMOKE=0; WITH_CODEX=1; PREFIX="$SELF_PREFIX"; HOME="$SELF_HOME"
-    # Vendor installer "succeeds" but produces no binary of its own.
-    curl() { return 0; }
-    install_codex_binary
-) 2>&1 || true )"
-# Assert the GUARD FIRED, not merely that some path is absent. An earlier
-# version of this test looked for a copy of the shadow at
-# /usr/libexec/claude-sandbox/codex — a path install_codex_binary never
-# writes (codex ships as a package, so the binary lands under
-# codex-dist/bin/) — so the assertion passed vacuously and would have kept
-# passing if the shadow HAD been relocated.
-case "$SELF_OUT" in
-    *"is the claude-sandbox"*"shadow itself"*) pass ;;
-    *) fail "install_codex_binary did not refuse to relocate the shadow as codex: $SELF_OUT" ;;
-esac
-# ...and that nothing shadow-shaped landed anywhere under the install prefix,
-# whatever the layout: the real destination, the historical one, or any other.
-SELF_LIBEXEC="$SELF_PREFIX/usr/libexec/claude-sandbox"
-SELF_PLANTED=0
-if [ -d "$SELF_LIBEXEC" ]; then
-    while IFS= read -r cand; do
-        if cmp -s "$cand" "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"; then
-            SELF_PLANTED=1
-        fi
-    done < <(find "$SELF_LIBEXEC" -type f 2>/dev/null)
-fi
-if [ "$SELF_PLANTED" = 0 ]; then
-    pass
-else
-    fail "install_codex_binary relocated the shadow under $SELF_LIBEXEC (infinite exec loop)"
-fi
-
-# Second line of defence: even if something did point the shadow at a copy of
-# itself, launching must ERROR rather than spin. A hang is the worst possible
-# failure here because it tells the user nothing.
-LOOP_DIR="$(mktemp -d)"
-register_cleanup "$LOOP_DIR"
-sed "s|AGENT_REAL=\"/usr/libexec/claude-sandbox/codex-dist/bin/codex\"|AGENT_REAL=\"$LOOP_DIR/real\"|" \
-    "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" > "$LOOP_DIR/codex"
-chmod 0755 "$LOOP_DIR/codex"
-cp "$LOOP_DIR/codex" "$LOOP_DIR/real"
-LOOP_OUT="$(env -u IS_SANDBOX CLAUDE_SANDBOX_AGENT=codex timeout 10 "$LOOP_DIR/codex" 2>&1 || true)"
-case "$LOOP_OUT" in
-    *"is a copy of this shadow"*) pass ;;
-    *) fail "shadow did not refuse to exec a copy of itself (hang risk): $LOOP_OUT" ;;
-esac
+# That the installer never relocates the shadow as the "real" codex, and that
+# the shadow refuses to exec a copy of itself, are unit tests in pytest
+# (test_installer_system.py, test_shadow.py).
 
 # A requirements.toml we did NOT write (a site's real Codex policy) must be
 # left untouched, with a warning — never bricked. Same call the non-JSON
@@ -482,35 +412,17 @@ else
     fail "install clobbered a foreign /etc/codex/requirements.toml"
 fi
 
-# The Python shadow is opt-in at install time (issue #72 phases 2 and 4):
-# CLAUDE_SANDBOX_IMPL=python places the shim under all three names, a default
-# re-install puts the bash shadow back and removes the interpreter an opt-in
-# left, and any other value refuses before anything is written. (The smoke
-# flag skips fetching the interpreter, as it skips the agent binaries.)
-IMPL_PREFIX="$(mktemp -d)"
-register_cleanup "$IMPL_PREFIX"
-impl_install() {
-    CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$IMPL_PREFIX" INSTALL_USER_HOME="$IMPL_PREFIX/home" \
-        bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
-}
-CLAUDE_SANDBOX_IMPL=python impl_install || fail "CLAUDE_SANDBOX_IMPL=python install exited non-zero"
-for agent in claude codex pi; do
-    cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim" "$IMPL_PREFIX/usr/local/bin/$agent" \
-        && pass || fail "CLAUDE_SANDBOX_IMPL=python did not place the shim as $agent"
+# 5.0 is Python-only: asking for the bash implementation, or any value but
+# python, refuses before anything is written.
+for impl in bash perl; do
+    BAD_PREFIX="$(mktemp -d)"
+    register_cleanup "$BAD_PREFIX"
+    CLAUDE_SANDBOX_IMPL=$impl CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$BAD_PREFIX" \
+        INSTALL_USER_HOME="$BAD_PREFIX/home" \
+        bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>"$BAD_PREFIX.err"
+    [ "$?" -eq 2 ] && [ -z "$(ls -A "$BAD_PREFIX")" ] && grep -q "Python-only" "$BAD_PREFIX.err" \
+        && pass || fail "CLAUDE_SANDBOX_IMPL=$impl did not refuse before writing"
+    rm -f "$BAD_PREFIX.err"
 done
-mkdir -p "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" "$IMPL_PREFIX/usr/libexec/claude-sandbox/python" \
-    "$IMPL_PREFIX/usr/libexec/claude-sandbox/uv"
-CLAUDE_SANDBOX_IMPL=bash impl_install || fail "default re-install after CLAUDE_SANDBOX_IMPL=python exited non-zero"
-cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" "$IMPL_PREFIX/usr/local/bin/claude" \
-    && pass || fail "default re-install did not restore the bash shadow"
-[ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/venv" ] && [ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/python" ] \
-    && [ ! -e "$IMPL_PREFIX/usr/libexec/claude-sandbox/uv" ] \
-    && pass || fail "default re-install left the Python installer's interpreter or uv behind"
-BAD_PREFIX="$(mktemp -d)"
-register_cleanup "$BAD_PREFIX"
-CLAUDE_SANDBOX_IMPL=perl CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$BAD_PREFIX" INSTALL_USER_HOME="$BAD_PREFIX/home" \
-    bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
-[ "$?" -eq 2 ] && [ -z "$(ls -A "$BAD_PREFIX")" ] && pass \
-    || fail "an unknown CLAUDE_SANDBOX_IMPL did not refuse before writing"
 
 finish smoke.sh
