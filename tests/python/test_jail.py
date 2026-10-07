@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from typing import NoReturn
 
@@ -223,8 +224,8 @@ class FakeOps(Ops):
 
     def kill(self, pid: int, sig: int, *, group: bool = False) -> None:
         self.log.append(("kill", pid, sig, group))
-        proc = self.procs[pid]
-        proc.done, proc.rc = True, -sig
+        if proc := self.procs.get(pid):  # else pasta, not our child
+            proc.done, proc.rc = True, -sig
 
     def sleep(self, seconds: float) -> None:
         self.sleeps += 1
@@ -290,8 +291,10 @@ PASTA = [
     "--dns-forward", "192.0.2.53",
     "--quiet",
     "--log-file", "/tmp/claude-pasta.log",
+    "--pid", f"{JAIL_DIR}/pasta.pid",
     "100",
 ]  # fmt: skip
+PASTA_PID = f"{JAIL_DIR}/pasta.pid"
 
 
 def test_launch_runs_the_holder_then_attaches_pasta() -> None:
@@ -522,6 +525,55 @@ def test_holder_killed_by_a_signal_reports_128_plus_n() -> None:
     ops = FakeOps()
     ops.next_rc, ops.next_polls = -signal.SIGKILL, 2
     assert launch(ops) == 137
+
+
+def terminated(ops: FakeOps, sleeps: int) -> None:
+    ops.fire(signal.SIGTERM)
+
+
+def a_running_pasta(ops: FakeOps) -> None:
+    ops.contents[PASTA_PID] = "4242\n"
+    ops.contents["/proc/4242/comm"] = "pasta.avx2\n"
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        given(lambda o: None),  # a normal exit
+        given(lambda o: setattr(o, "on_sleep", partial(terminated, o))),
+        given(lambda o: setattr(o, "next_rc", 1)),  # the holder failed closed
+    ],
+    ids=["exit", "signal", "holder-failed"],
+)
+def test_pasta_is_stopped_on_every_exit(setup: Setup) -> None:
+    ops = FakeOps()
+    a_running_pasta(ops)
+    setup(ops)
+    launch(ops)
+    # After the holder, and before the jail dir that holds its pid file goes.
+    assert ops.log[-2:] == [("kill", 4242, signal.SIGTERM, False), ("rmtree", JAIL_DIR)]
+
+
+@pytest.mark.parametrize(
+    ("pid", "comm"),
+    [
+        (None, "pasta\n"),  # pasta never wrote the file
+        ("", "pasta\n"),
+        ("garbage", "pasta\n"),
+        ("-1", "pasta\n"),
+        ("1", "pasta\n"),
+        ("4242", ""),  # pasta has exited
+        ("4242", "bash\n"),  # and its pid was reused
+    ],
+)
+def test_only_a_live_pasta_is_stopped(pid: str | None, comm: str) -> None:
+    ops = FakeOps()
+    if pid is not None:
+        ops.contents[PASTA_PID] = pid
+    ops.contents[f"/proc/{pid}/comm"] = comm
+    ops.contents["/proc/4242/comm"] = comm
+    jail.stop_pasta(PASTA_PID if pid is not None else None, ops)
+    assert ops.kinds("kill") == []
 
 
 def test_only_a_staged_resolver_is_removed() -> None:

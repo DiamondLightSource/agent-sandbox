@@ -49,6 +49,11 @@ Deliberate differences from the bash it replaced:
 - The staged resolv.conf is removed after every failure, including a
   missing tool, and is always staged under /tmp (see ``stage_dns``).
 - A holder that cannot bring up loopback or exec the command says so.
+- pasta writes its pid to the jail dir, and cleanup TERMs it on every exit
+  (issue #12; the bash never tried). Where the passt package's AppArmor
+  profile confines pasta (Ubuntu, Debian), every signal to it is refused,
+  so there pasta's own exit, about a second after the holder is gone, is
+  what ends it; cleanup stops the holder on every path but SIGKILL.
 - Tools come from the fixed tool path, never PATH, and a missing ``ss`` or
   ``ip`` is refused up front (the bash finds them on PATH).
 
@@ -388,6 +393,27 @@ def stop_child(proc: Proc | None, ops: Ops) -> None:
         proc.wait()
 
 
+def stop_pasta(pid_file: str | None, ops: Ops) -> None:
+    """TERM the pasta that wrote ``pid_file``, if it is still running.
+
+    pasta forks into the background, so it is not our child to reap. It
+    exits by itself about a second after the holder is gone; this is for a
+    pasta that does not. An AppArmor-confined pasta refuses the signal,
+    which changes nothing. Fail soft: a missing, empty or garbled file, or
+    a pid that no longer names a pasta (it exited and the pid was reused),
+    is left alone.
+    """
+    if pid_file is None:
+        return
+    pid = ops.read(pid_file).strip()
+    if not re.fullmatch(r"[0-9]{1,9}", pid) or int(pid) <= 1:
+        return
+    # comm, not exe: pasta may run as pasta.avx2, and exe of a process that
+    # is not dumpable cannot be read.
+    if ops.read(f"/proc/{pid}/comm").startswith(("pasta", "passt")):
+        ops.kill(int(pid), signal.SIGTERM)
+
+
 def start_relay(
     argv: Sequence[str], env: Mapping[str, str], ops: Ops, relays: list[Proc]
 ) -> bool:
@@ -496,6 +522,7 @@ class _Outer:
 
     relays: list[Proc] = field(default_factory=list[Proc])
     holder: Proc | None = None
+    pasta_pid_file: str | None = None
     jail_dir: str | None = None
 
 
@@ -528,6 +555,7 @@ def _launch(
         # Signals only set a flag now, so nothing interrupts this.
         stop_relays(state.relays, ops)
         stop_child(state.holder, ops)
+        stop_pasta(state.pasta_pid_file, ops)
         if state.jail_dir is not None:
             ops.rmtree(state.jail_dir)
         resolv = env.get(JAIL_RESOLV, "")
@@ -628,7 +656,13 @@ def _start(
     if not wait_for(in_own_netns, ops, signals):
         raise JailError("— holder netns never appeared")
 
-    rc, _ = ops.run([pasta, *PASTA_FLAGS, str(holder.pid)], env, stderr_to=PASTA_LOG)
+    # pasta daemonises; the pid it writes is how cleanup stops it.
+    state.pasta_pid_file = pid_file = f"{state.jail_dir}/pasta.pid"
+    rc, _ = ops.run(
+        [pasta, *PASTA_FLAGS, "--pid", pid_file, str(holder.pid)],
+        env,
+        stderr_to=PASTA_LOG,
+    )
     if rc != 0:
         raise JailError(
             f"— pasta failed to attach to the netns (see {PASTA_LOG})"

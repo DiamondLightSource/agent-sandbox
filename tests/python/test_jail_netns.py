@@ -511,6 +511,27 @@ def test_cleanup(
     assert_clean()
 
 
+def test_pasta_is_stopped_while_the_netns_outlives_the_holder(
+    python: str, tmp_path: Path
+) -> None:
+    """Issue #12: the agent leaves a process behind that holds the netns.
+    pasta must still go when the session ends: the launch TERMs it, and
+    where AppArmor refuses that signal, pasta exits once the holder has."""
+    pid_file = tmp_path / "straggler"
+    straggler = f"echo $$ > {pid_file}; exec sleep 3001"
+    command = f"setsid -f bash -c '{straggler}' </dev/null >/dev/null 2>&1"
+    try:
+        done = run(python, command)
+        assert done.returncode == 0, done.stderr
+        assert wait_until(pid_file.exists)
+        pid = int(pid_file.read_text())
+        assert Path(f"/proc/{pid}").exists()  # the netns is still held
+        assert_clean()
+    finally:
+        if pid_file.exists():
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
+
 # --- the terminal ------------------------------------------------------------------
 
 TTY_CHILD = (
