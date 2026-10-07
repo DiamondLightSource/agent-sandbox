@@ -318,7 +318,7 @@ def test_reuse_warns_and_recreate_removes(
     assert "older image than the one pulled (created 2026-09-13 10:20)" in err
     assert "mounts the parent directory" in err
     assert "ignored on an existing container: --gpu" in err
-    assert "rebuild     claude-container --recreate" in err
+    assert "rebuild     claude-sandbox --recreate" in err
     assert not engine.called("create") and not engine.called("start")
     assert run(Options(recreate=True)).session(["pi"], pause=False) == 0
     assert engine.called("rm") and engine.called("create")
@@ -357,12 +357,7 @@ def test_a_failed_engine_command_ends_the_run(engine: Engine) -> None:
 @pytest.mark.parametrize(
     ("image", "uvx", "text"),
     [
-        (
-            "9.0.0",
-            False,
-            "curl -fsSLO https://raw.githubusercontent.com/"
-            "DiamondLightSource/claude-sandbox/abc/container/claude-container",
-        ),
+        ("9.0.0", False, "pin         pipx install --force claude-sandbox==9.0.0"),
         ("9.0.0", True, "pin         uvx claude-sandbox==9.0.0"),
         ("1.0.0", True, "rebuild     uvx claude-sandbox --recreate"),
         ("4.7.2", False, ""),
@@ -379,7 +374,6 @@ def test_warn_if_outdated(
     if uvx:
         monkeypatch.setenv("CLAUDE_SANDBOX_LAUNCHER", "uvx")
     engine.labels[f'{{{{index .Config.Labels "{launcher.VERSION_LABEL}"}}}}'] = image
-    engine.labels[f'{{{{index .Config.Labels "{launcher.REVISION_LABEL}"}}}}'] = "abc"
     r = run()
     r.warn_if_outdated()
     assert text in capsys.readouterr().err and r.warned == bool(text)

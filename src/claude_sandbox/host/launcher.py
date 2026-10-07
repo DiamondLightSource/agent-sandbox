@@ -1,9 +1,10 @@
 """One named container per project; every session is an exec into it.
 
-A port of ``container/claude-container``: the same engine calls, the same
-create argv, the same messages. Read that script's header for the model
-(the keeper, container-scoped forge logins, create-time options, the
-filesystem view); the comments here say only where Python differs.
+Once the bash ``claude-container``, which 5.0 replaced (ADR 26): the same
+engine calls, the same create argv, the same messages. The model (the
+keeper, container-scoped forge logins, create-time options, the filesystem
+view) is in docs/how-to/use-the-container-image.md and the
+claude-sandbox-container skill.
 
 All engine calls go through :func:`run` and :func:`interactive`, the
 seams the tests replace.
@@ -22,8 +23,6 @@ from .options import Options
 
 IMAGE = "ghcr.io/diamondlightsource/claude-sandbox:latest"
 VERSION_LABEL = "io.diamondlightsource.claude-sandbox.launcher-version"
-REVISION_LABEL = "org.opencontainers.image.revision"
-RAW_URL = "https://raw.githubusercontent.com/DiamondLightSource/claude-sandbox"
 # Idle PID 1, also used to identify containers owned by this launcher.
 KEEPER_CMD = 'trap "exit 0" TERM INT; while :; do sleep 60 & wait $!; done'
 KEEPER_MARK = "sleep 60 & wait"
@@ -41,9 +40,9 @@ SHELL_SCRIPT = (
 )
 SHELLS = frozenset({"zsh", "bash", "fish", "ksh", "tcsh", "dash", "sh"})
 # CLAUDE_SANDBOX_* variables that are the launcher's own, not the sandbox's.
-# IMPL, CONTEXT and NESTED are not passed by the Python CLI (the bash passes
-# NESTED): the host's opt-in must not opt the container's own install in,
-# and nothing the host sets may tell the container that it is a host.
+# IMPL, CONTEXT and NESTED are never passed: IMPL is retired (5.0 refuses
+# any value but python), and nothing the host sets may tell the container
+# that it is a host.
 NOT_PASSED = frozenset(
     "CLAUDE_SANDBOX_" + v
     for v in (
@@ -213,7 +212,7 @@ class Launcher:
         self.skipped_parent = ""
         self.version = version(env)
         uvx = env.get("CLAUDE_SANDBOX_LAUNCHER") == "uvx"
-        self.self_name = "uvx claude-sandbox" if uvx else "claude-container"
+        self.self_name = "uvx claude-sandbox" if uvx else "claude-sandbox"
         self.image = env.get("CLAUDE_SANDBOX_IMAGE") or IMAGE
         self.engine = env.get("CLAUDE_SANDBOX_ENGINE") or "podman"
         home = env.get("HOME") or os.path.expanduser("~")
@@ -285,16 +284,14 @@ class Launcher:
             return
         c = vercmp(self.version, img_ver)
         if c < 0 or (c == 0 and self.version < img_ver):
-            rev = self.out(
-                "image", "inspect", "-f", fmt % f'"{REVISION_LABEL}"', self.image
-            )
             say(f"launcher v{self.version} is older than the image (v{img_ver})")
             if self.self_name.startswith("uvx"):
                 note("update", "uvx claude-sandbox@latest")
                 note("pin", f"uvx claude-sandbox=={img_ver}")
             else:
-                url = f"{RAW_URL}/{rev or 'main'}/container/claude-container"
-                note("update", f"curl -fsSLO {url}")
+                # pipx or pip (docs/how-to/install-without-uv.md).
+                note("update", "pipx upgrade claude-sandbox")
+                note("pin", f"pipx install --force claude-sandbox=={img_ver}")
         else:
             say(f"launcher v{self.version} is newer than the local image (v{img_ver})")
             note("pull", f"{self.engine} pull {self.image}")
