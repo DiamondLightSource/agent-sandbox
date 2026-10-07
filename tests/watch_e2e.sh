@@ -161,3 +161,30 @@ core.fsmonitor in the git config of $work changed from (unset) to \"/nonexistent
     || fail "git config: the probe did not set an upstream"
 pass "git config: a hooksPath change between sessions and core.fsmonitor alerted, nothing quarantined; routine keys did not"
 "${cli[@]}" alerts --clear
+
+# A FIFO at .git/config stalls neither the launch nor the watcher: a shadow
+# git is still quarantined within about a second, and the FIFO is an alert.
+mv .git/config config.saved
+mkfifo .git/config
+cat > "$real" <<EOF
+#!/bin/bash
+# Inside the jail.
+here="\$PWD"
+printf '#!/bin/sh\necho not git\n' > "$venv_bin/git"
+chmod 755 "$venv_bin/git"
+touch "\$here/wrote-git"
+for _ in \$(seq 400); do [ -e "\$here/go-exit" ] && exit 0; sleep 0.05; done
+EOF
+rm -f wrote-git go-exit
+claude < /dev/null > session.out 2>&1 &
+pid=$!
+wait_for 30 exists wrote-git > /dev/null || fail "fifo: the probe never wrote git: $(cat session.out)"
+took="$(wait_for 2 not_executable "$venv_bin/git")" || fail "fifo: $venv_bin/git is still executable"
+touch go-exit
+wait "$pid" || fail "fifo: the session failed: $(cat session.out)"
+grep -qF "the git config of $work was not read: $work/.git/config is not a regular file" "$alerts" \
+    || fail "fifo: no alert for the FIFO: $(cat "$alerts")"
+pass "fifo: with a FIFO at .git/config, $venv_bin/git was quarantined in $took; the FIFO alerted"
+rm .git/config
+mv config.saved .git/config
+"${cli[@]}" alerts --clear
