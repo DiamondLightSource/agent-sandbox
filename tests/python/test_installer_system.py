@@ -255,6 +255,27 @@ def test_pi_failures_keep_what_is_installed(
     system.install_pi_binary(layout, replace(options, with_pi=False), err)
 
 
+def test_pi_upgrade_replaces_only_a_good_release(tmp_path: Path) -> None:
+    """1.2.3 installed; a pinned 1.2.4 whose archive fails its checksum
+    leaves 1.2.3 in place and runnable; a good 1.2.4 replaces it."""
+    layout, options = setup(tmp_path)
+    err = io.StringIO()
+    system.install_pi_binary(
+        layout, options, err, FakeRun(**pi_release(tmp_path / "a")), "x86_64"
+    )
+    dest = layout.system(system.PI_DIST)
+    pinned = replace(options, pi_version="1.2.4")
+    bad = pi_release(tmp_path / "b", "0" * 64)
+    system.install_pi_binary(layout, pinned, err, FakeRun(**bad), "x86_64")
+    assert "validation failed" in err.getvalue()
+    assert (dest / ".sandbox-version").read_text() == "1.2.3\n"
+    assert os.access(dest / "pi", os.X_OK)
+    good = pi_release(tmp_path / "c")
+    system.install_pi_binary(layout, pinned, err, FakeRun(**good), "x86_64")
+    assert (dest / ".sandbox-version").read_text() == "1.2.4\n"
+    assert os.access(dest / "pi", os.X_OK)
+
+
 def test_summary_does_not_claim_a_skipped_step(tmp_path: Path) -> None:
     layout, options = setup(tmp_path)
     managed = layout.system("/etc/claude-code/managed-settings.json")
