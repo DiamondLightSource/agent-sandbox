@@ -575,11 +575,22 @@ def runs(ops: FakeOps) -> list[str]:
 
 def test_holder_locks_routes_then_execs() -> None:
     ops = FakeOps()
-    ops.env = {"CLAUDE_JAIL_READY": READY, "CLAUDE_SANDBOX_ALLOW_IP": "203.0.113.7/24"}
+    ops.env = {
+        "CLAUDE_JAIL_READY": READY,
+        "CLAUDE_SANDBOX_ALLOW_IP": "203.0.113.7/24\n198.51.100.9/32",
+    }
     with pytest.raises(Exec):
         jail.holder_main(["--", *COMMAND], ops=ops)
-    allow = "ip route replace 203.0.113.7/32 via 10.0.2.2 dev eth0 src 10.0.2.15"
-    assert runs(ops) == [*ROUTES, allow, *READ_BACK]
+    allow = [
+        f"ip route replace {host}/32 via 10.0.2.2 dev eth0 src 10.0.2.15"
+        for host in ("203.0.113.7", "198.51.100.9")
+    ]
+    assert runs(ops) == [*ROUTES, *allow, *READ_BACK]
+    # A prefix is narrowed to one address, and the launch says so.
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — allow-ip 203.0.113.7/24: only 203.0.113.7"
+        " is routed (allow-ip takes single addresses)"
+    ]
     assert ops.log[-1] == ("exec", *COMMAND)
     # Started by Python, it resets what Python changed before exec.
     for sig in (signal.SIGINT, signal.SIGPIPE, signal.SIGXFSZ):

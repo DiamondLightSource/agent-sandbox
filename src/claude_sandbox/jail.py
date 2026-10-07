@@ -958,8 +958,10 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     )
     allowed.add(("unicast", "0.0.0.0/0", gw, nic))
 
-    # DNS goes only to the pasta forwarder. Losing this loses DNS, not
-    # containment.
+    # The forwarder and allow-ip /32s matter only for destinations inside
+    # the blackholed ranges; anywhere else the default route already
+    # reaches them. Losing one loses reachability, not containment.
+    # DNS goes only to the pasta forwarder.
     fwd = (f"{JAIL_DNS_FWD}/32", "via", gw, "dev", nic, "src", src)
     if ip("route", "replace", *fwd, quiet=True)[0] != 0:
         ops.stderr(
@@ -969,8 +971,15 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     else:
         allowed.add(("unicast", f"{JAIL_DNS_FWD}/32", gw, nic))
     # allow-ip devices (EPICS IOC, PMAC). Fail soft: the blackhole holds.
+    # One address each: a prefix is narrowed to its first address, with a
+    # warning, rather than refused, since existing confs carry them.
     for aip in lines(env.get(ALLOW_IP, "")):
-        host = aip.rpartition("/")[0] if "/" in aip else aip
+        host, _, length = aip.partition("/")
+        if length and length != "32":
+            ops.stderr(
+                f"claude-sandbox: egress jail — allow-ip {aip}: only {host} is"
+                " routed (allow-ip takes single addresses)"
+            )
         dev = (f"{host}/32", "via", gw, "dev", nic, "src", src)
         if ip("route", "replace", *dev, quiet=True)[0] != 0:
             ops.stderr(f"claude-sandbox: egress jail — could not route allow-ip {aip}")

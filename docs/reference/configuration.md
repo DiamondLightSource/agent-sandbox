@@ -45,7 +45,7 @@ through [team setup](../how-to/sandbox-a-team-devcontainer.md).
 | `callback-port` | TCP port 1–65535; disabled by default (commented examples) | Reverse relay: exposes an agent's loopback listener on the outer container's loopback for browser OAuth. Repeatable; merged with `CLAUDE_SANDBOX_CALLBACK_PORTS`. Cannot overlap `local-port` or `local-model-port`. Occupied host ports are skipped with a warning. See [browser logins](../how-to/network-egress-jail.md#let-a-browser-login-reach-the-agent) |
 | `egress-jail` | bare flag / `1` reaffirms on | Network isolation is on by default and refuses launch if prerequisites are missing. Environment override takes precedence; see the [threat model](../explanations/threat-model.md#the-egress-jail-and-the-native-sandbox) for disabling it |
 | `gpu` | bare flag | Experimental and under development, like the host launcher's `--gpu` (see [devices](../how-to/use-the-container-image.md#devices)). Binds the NVIDIA and DRI device nodes the container already exposes (`/dev/nvidia*`, `/dev/dri/*`) into the sandbox. Equivalent to `CLAUDE_SANDBOX_GPU=1` |
-| `allow-ip` | bare IP (no CIDR) | Allows an IP through the network jail; repeatable. Grants access to the whole device, not one service. No effect with the jail disabled |
+| `allow-ip` | bare IP (no CIDR) | Allows an IP through the network jail; repeatable. Grants access to the whole device, not one service. A prefix is narrowed to the address written before the `/`, with a warning at launch. No effect with the jail disabled |
 
 ```ini
 # .devcontainer/claude-sandbox.conf  (installed to /etc/claude-sandbox.conf)
