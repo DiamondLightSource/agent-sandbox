@@ -17,7 +17,8 @@ claude-sandbox
 
 The first run pulls the image matching the package version and creates a
 project container. Later sessions reuse it; it stops when the last session
-exits. [Getting started](../tutorials/getting-started.md) covers login and verification.
+exits. Closing a session's terminal ends that session inside the container
+too, agent and all, rather than leaving it running unattended. [Getting started](../tutorials/getting-started.md) covers login and verification.
 
 ```bash
 claude-sandbox codex

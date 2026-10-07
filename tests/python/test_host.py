@@ -7,6 +7,7 @@ pieces that must match the bash exactly (names, the version order).
 
 import os
 import pty
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ class Engine:
         self.listing = {"ps": "", "images": "", "find": ""}
         self.starts = True
         self.status = 0
+        self.others = "0"  # live sessions `sessions.py end` reports
 
     def add(self, name: str, running: bool = False) -> dict[str, str]:
         ctr = {RUNNING: str(running).lower(), KEEPER: launcher.KEEPER_CMD}
@@ -66,6 +68,8 @@ class Engine:
                 out = self.listing[what]
             case ["run", "--rm", "--entrypoint", "find", *_]:
                 out = self.listing["find"]
+            case ["exec", _, launcher.PYTHON, "-I", "-c", _, "end", _]:
+                out = self.others
             case _:
                 pass
         rc = 1 if out is None and args[1:2] == ["inspect"] and "-f" in args else rc
@@ -300,9 +304,41 @@ def test_session_creates_starts_execs_and_stops(
     r = run(Options(recreate=True))
     r.warned = True
     assert r.session(["claude", "-p"], pause=True) == 3
-    assert engine.called("exec") == [["exec", "-it", r.name, "claude", "-p"]]
+    session, end = engine.called("exec")
+    # Wrapped by sessions.py (issue #69), which records it, then ended by it.
+    code = launcher.session_code()
+    assert session[:7] == ["exec", "-it", r.name, launcher.PYTHON, "-I", "-c", code]
+    assert session[7] == "start" and session[9:] == ["claude", "-p"]
+    assert end == ["exec", r.name, launcher.PYTHON, "-I", "-c", code, "end", session[8]]
     assert engine.called("stop") and paused == [True]
     assert capsys.readouterr().out == launcher.MOUSE_RESET
+
+
+def test_the_keeper_runs_on_while_another_session_lives(engine: Engine) -> None:
+    engine.others = "1"
+    assert run().session(["claude"], pause=False) == 0
+    assert not engine.called("stop")
+
+
+def test_a_hangup_still_ends_the_session_and_stops_the_keeper(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The terminal closed: the cleanup runs, detached, and the handlers
+    the launcher found are put back."""
+    detached: list[int] = []
+    monkeypatch.setattr(launcher, "detach", detached.append)
+
+    def hung_up(argv: list[str]) -> int:
+        engine.calls.append(argv[1:])
+        launcher.hangup(signal.SIGHUP, None)
+        raise AssertionError("not reached")
+
+    monkeypatch.setattr(launcher, "interactive", hung_up)
+    before = signal.getsignal(signal.SIGTERM)
+    assert run().session(["claude"], pause=False) == 129
+    assert detached == [129]
+    assert engine.called("exec")[1][6] == "end" and engine.called("stop")
+    assert signal.getsignal(signal.SIGTERM) == before
 
 
 @pytest.mark.parametrize("label", ["4.7.1", "4.8.0-beta.1", "<no value>", None])
@@ -323,7 +359,9 @@ def test_a_4x_container_is_reused_with_a_loud_warning(
     assert "cloud metadata services and VPN split routes" in err
     assert "no PATH guard against executables a session leaves" in err
     assert "rebuild     claude-sandbox --recreate" in err
-    assert r.warned and engine.called("exec")
+    # No interpreter to track it with: unwrapped, and the old idle test.
+    assert engine.called("exec") == [["exec", "-it", r.name, "claude"]]
+    assert r.warned and engine.called("stop")
 
 
 def test_a_5x_container_is_reused_quietly(
@@ -493,3 +531,57 @@ def test_interactive_waits_out_an_interrupt(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(subprocess, "Popen", Child)
     assert launcher.interactive(["claude"]) == 0
+
+
+def test_a_hangup_kills_the_engine_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    killed: list[bool] = []
+
+    class Child:
+        def __init__(self, argv: list[str]) -> None:
+            self.waits = 0
+
+        def wait(self) -> int:
+            self.waits += 1
+            if self.waits == 1:
+                raise launcher.Hangup(signal.SIGTERM)
+            return -9
+
+        def kill(self) -> None:
+            killed.append(True)
+
+    monkeypatch.setattr(subprocess, "Popen", Child)
+    with pytest.raises(launcher.Hangup):
+        launcher.interactive(["claude"])
+    assert killed == [True]
+
+
+def test_hangup_raises_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved = {s: signal.getsignal(s) for s in launcher.HANGUPS}
+    try:
+        with pytest.raises(launcher.Hangup) as exc:
+            launcher.hangup(signal.SIGHUP, None)
+        assert exc.value.signum == signal.SIGHUP
+        assert all(signal.getsignal(s) == signal.SIG_IGN for s in launcher.HANGUPS)
+    finally:
+        for s, handler in saved.items():
+            signal.signal(s, handler)
+
+
+def test_detach_leaves_the_parent_and_starts_a_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(os, "setsid", lambda: calls.append("setsid"))
+
+    def exit_(rc: int) -> None:
+        calls.append(rc)
+        raise SystemExit(rc)
+
+    monkeypatch.setattr(os, "_exit", exit_)
+    for child in (42, 0):
+        monkeypatch.setattr(os, "fork", lambda child=child: child)
+        try:
+            launcher.detach(129)
+        except SystemExit:
+            pass
+    assert calls == [129, "setsid"]

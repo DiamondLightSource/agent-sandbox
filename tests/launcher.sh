@@ -22,8 +22,12 @@ LOG="$TMP/engine.log"
 # existing container's (its image's) label FAKE_CTR_VER, 5.0.0 unless set.
 cat > "$TMP/bin/podman" <<'FAKE'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$LOG"
-case "$*" in
+# The session tracker's source (host/sessions.py, passed with -c) is logged as CODE.
+args=("$@")
+for i in "${!args[@]}"; do case "${args[$i]}" in '"""'*) args[i]=CODE ;; esac; done
+printf '%s\n' "${args[*]}" >> "$LOG"
+case "${args[*]}" in
+    "exec "*" -I -c CODE end "*) echo "${FAKE_OTHERS:-0}" ;;
     "container inspect -f {{.State.Running}} "*) case "$*" in *running*) echo true ;; *) [ -e "$MARK" ] && echo true ;; esac ;;
     "container inspect -f {{join .Config.Cmd \" \"}} "*) echo 'bash -c trap "exit 0" TERM INT; while :; do sleep 60 & wait $!; done' ;;
     "container inspect -f {{.Created}} "*) echo 2026-09-13T00:00:00 ;;
@@ -81,7 +85,13 @@ ver="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$LAUNCHER")"
 # so the command matches with or without /usr/local/bin/ in front ($AT).
 AT='[ /]'
 name="claude-sandbox-project-$(printf '%s' "$TMP/project" | cksum | awk '{print $1}')"
-run --; case "$(exec_line)" in "exec -it $name claude"|"exec -it $name /usr/local/bin/claude") pass ;; *) fail "default verb is claude: $(exec_line)" ;; esac
+PY=/usr/libexec/claude-sandbox/venv/bin/python
+run --; case "$(exec_line)" in "exec -it $name $PY -I -c CODE start "[0-9a-f]*" /usr/local/bin/claude") pass ;; *) fail "default verb is claude: $(exec_line)" ;; esac
+# The session is ended inside by the same id (issue #69); the keeper stops
+# when no other session lives, and only then.
+sid="$(exec_line | awk '{print $9}')"
+grep -qx "exec $name $PY -I -c CODE end $sid" "$LOG" && grep -qx "stop -t 2 $name" "$LOG" && pass || fail "session not ended, keeper not stopped: $(cat "$LOG")"
+run FAKE_OTHERS=1 --; grep -q '^stop ' "$LOG" && fail "keeper stopped under a live session" || pass
 run -- pi -p hi;   case "$(exec_line)" in *$AT"pi -p hi") pass ;; *) fail "pi verb: $(exec_line)" ;; esac
 run -- codex;      case "$(exec_line)" in *$AT"codex") pass ;; *) fail "codex verb: $(exec_line)" ;; esac
 run -- shell;      case "$(exec_line)" in *"bash \"\$@\" _ bash") pass ;; *) fail "shell verb default without host SHELL: $(exec_line)" ;; esac

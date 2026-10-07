@@ -39,8 +39,8 @@ already extended here:
   convenience swap.
 - **Keeper model (launcher 0.4, 2026-09-11)**: the container's PID 1 is an
   idle bash loop (`KEEPER_CMD`), and every session is `exec -it` into it;
-  the launcher `stop`s the keeper when `.ExecIDs` is empty after its
-  session. Why: launcher <= 0.3 baked the agent + args as the container
+  the launcher `stop`s the keeper when no other session lives after its
+  own (below). Why: launcher <= 0.3 baked the agent + args as the container
   command, so `start -ai` replayed them and `--agent`/args were silently
   ignored on reuse, and a `--shell` (unsandboxed bash for `gh-auth`) would
   have baked bash as every later launch. Now only the create-time options
@@ -49,6 +49,27 @@ already extended here:
   pre-0.4 containers (starting one would run its baked agent detached).
   Refuse: baking the agent back into the create command; making `--shell`
   a sandboxed session (it exists precisely to run the outside-the-jail CLI).
+- **Session tracking (issue #69, 2026-10-07)**: closing the host terminal
+  kills only the `exec -it` client; conmon (dockerd) holds the pty, so the
+  session never sees a hangup and ran on for days with its agent, and the
+  launcher, killed by the same SIGHUP, never stopped the keeper. Now every
+  session runs under `host/sessions.py start ID` (the image's root-owned
+  interpreter, `-I`; the launcher passes the file's source with `-c` so a
+  container from an older 5.x image is tracked too), which records its PID
+  and start time in `/run/claude-sandbox-sessions/ID` and execs the
+  command. On exit, SIGHUP or SIGTERM the launcher (detached into its own
+  session on a hangup: script(1) follows SIGHUP with SIGKILL after 2 s)
+  kills its engine client and runs `sessions.py end ID`, which SIGHUPs the
+  session's process tree (by ppid, so `setsid`/`nohup` children go too),
+  SIGKILLs what is left after 3 s, and prints how many other recorded
+  sessions are alive; the keeper is stopped at 0. `len .ExecIDs` was
+  dropped: exec records outlive clients that died, so idle containers
+  never read 0 (it remains only for 4.x containers, which have no
+  interpreter to track with). Limits: a launcher killed with SIGKILL runs
+  no cleanup; a hand-typed `podman exec` is not counted as a session.
+  Refuse: an in-container watchdog that guesses the client is gone (the
+  pty stays open, there is nothing to watch); counting processes instead
+  of sessions (a leaked daemon would keep the keeper up forever).
 - **Invariant 4 mapping**: durable user conf = host file ro-mounted at the
   canonical `/etc/claude-sandbox.conf`; the installer's `--container-start`
   detects the mount (`steps.is_mount`) and skips re-stamping

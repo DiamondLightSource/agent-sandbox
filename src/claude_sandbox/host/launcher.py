@@ -12,13 +12,16 @@ seams the tests replace.
 
 import os
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import termios
 from collections.abc import Mapping
 
 from .. import release_tag
+from . import sessions
 from .options import Options
 
 IMAGE = "ghcr.io/diamondlightsource/claude-sandbox:latest"
@@ -32,6 +35,10 @@ MOUSE_RESET = "\033[?1000l\033[?1002l\033[?1003l\033[?1005l\033[?1006l\033[?1015
 # executable found through PATH): the sandbox's own commands, and the shell.
 IN_CONTAINER = "/usr/local/bin"
 SH = "/bin/sh"
+# The image's root-owned interpreter, which runs host/sessions.py inside.
+PYTHON = "/usr/libexec/claude-sandbox/venv/bin/python"
+# What a closed terminal (or a polite kill) sends the launcher.
+HANGUPS = (signal.SIGHUP, signal.SIGTERM)
 # The `shell` verb: the user's shell, looked up on a fixed PATH, if the image
 # has it; else bash.
 SHELL_SCRIPT = (
@@ -60,20 +67,58 @@ def run(
     return subprocess.run(argv, stdout=stdout, stderr=stderr, text=True, check=False)
 
 
+class Hangup(Exception):
+    """The launcher got SIGHUP or SIGTERM: its terminal is gone."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
+
+
+def hangup(signum: int, frame: object) -> None:
+    """Once only: the cleanup that follows must not be cut short."""
+    for s in HANGUPS:
+        signal.signal(s, signal.SIG_IGN)
+    raise Hangup(signum)
+
+
 def interactive(argv: list[str]) -> int:
     """Run ``argv`` on this terminal; the child, not us, answers Ctrl-C.
 
     As bash waits out a foreground child, so does this: an interrupt that
-    reaches us while the session runs is the session's to handle.
+    reaches us while the session runs is the session's to handle. A
+    :class:`Hangup` ends the child (the engine's client) and goes on up.
     """
     proc = subprocess.Popen(argv)
-    while True:
-        try:
-            rc = proc.wait()
-        except KeyboardInterrupt:
-            continue
-        # Killed by a signal: report it as a shell does, 128 + its number.
-        return rc if rc >= 0 else 128 - rc
+    try:
+        while True:
+            try:
+                rc = proc.wait()
+            except KeyboardInterrupt:
+                continue
+            # Killed by a signal: report it as a shell does, 128 + its number.
+            return rc if rc >= 0 else 128 - rc
+    except Hangup:
+        proc.kill()
+        proc.wait()
+        raise
+
+
+def detach(rc: int) -> None:
+    """Go on in a new session, out of the hung-up terminal's process group,
+    as a child the caller's ``rc`` is reported for: whatever closed the
+    terminal may follow its SIGHUP with a SIGKILL (script(1) does, after
+    two seconds), and the cleanup must still run."""
+    if os.fork():
+        os._exit(rc)
+    os.setsid()
+
+
+def session_code() -> str:
+    """host/sessions.py, to run inside with ``-c``: a container made from an
+    older 5.x image has the interpreter but not the module."""
+    with open(sessions.__file__, encoding="utf-8") as f:
+        return f.read()
 
 
 def version(env: Mapping[str, str]) -> str:
@@ -498,14 +543,19 @@ class Launcher:
         if rebuild:
             note("rebuild", f"{self.self_name} --recreate")
 
-    def warn_if_bash_era(self) -> bool:
-        """Warn, loudly but without refusing, when the container was made
-        from an image older than 5.0: it still runs the 4.x bash sandbox.
-        Its image's launcher-version label says which; no label is older."""
+    def bash_era(self) -> tuple[bool, str]:
+        """Whether the container was made from an image older than 5.0, and
+        that image's launcher-version label; no label is older."""
         fmt = f'{{{{index .Config.Labels "{VERSION_LABEL}"}}}}'
         label = self.inspect(fmt, self.name) or ""
         major = re.match(r"\d+", label)
-        if major and int(major.group()) >= 5:
+        return not (major and int(major.group()) >= 5), label
+
+    def warn_if_bash_era(self) -> bool:
+        """Warn, loudly but without refusing, when the container still runs
+        the 4.x bash sandbox."""
+        old, label = self.bash_era()
+        if not old:
             return False
         self.warn(
             f"this container runs the 4.x bash sandbox (image {label or 'unlabelled'}),"
@@ -542,14 +592,36 @@ class Launcher:
         # An agent redraws the terminal at once: hold a warning for a key.
         if pause and self.warned and os.isatty(0) and os.isatty(2):
             wait_for_key()
-        rc = interactive([self.engine, "exec", "-it", self.name, *command])
-        if os.isatty(1):
-            sys.stdout.write(MOUSE_RESET)
-            sys.stdout.flush()
-        # Stop the keeper when ours was the last session.
-        if self.inspect("{{len .ExecIDs}}", self.name) == "0":
+        # A 4.x image has no interpreter to track sessions with.
+        tracked = not self.bash_era()[0]
+        sid = secrets.token_hex(8)
+        if tracked:
+            command = [PYTHON, "-I", "-c", session_code(), "start", sid, *command]
+        saved = {s: signal.signal(s, hangup) for s in HANGUPS}
+        try:
+            rc = interactive([self.engine, "exec", "-it", self.name, *command])
+            if os.isatty(1):
+                sys.stdout.write(MOUSE_RESET)
+                sys.stdout.flush()
+        except Hangup as h:
+            rc = 128 + h.signum
+            detach(rc)
+        # The terminal may be gone: from here on, nothing reads or writes it.
+        for s in HANGUPS:
+            signal.signal(s, signal.SIG_IGN)
+        if self.idle_after(sid, tracked):
             self.call("stop", "-t", "2", self.name, quiet=True)
+        for s, handler in saved.items():
+            signal.signal(s, handler)
         return rc
+
+    def idle_after(self, sid: str, tracked: bool) -> bool:
+        """End session ``sid`` inside (its client may be gone while it runs
+        on, issue #69); whether it was the last one."""
+        if not tracked:
+            return self.inspect("{{len .ExecIDs}}", self.name) == "0"
+        end = (PYTHON, "-I", "-c", session_code(), "end", sid)
+        return self.out("exec", self.name, *end) == "0"
 
 
 def launcher(opts: Options) -> Launcher:
