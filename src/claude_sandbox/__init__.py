@@ -7,7 +7,8 @@ what runs, and execs bash. Read the bash: it is what actually runs.
 
 ``CLAUDE_SANDBOX_IMPL=python`` opts in to the Python CLI (issue #72 phase
 3) in place of the bash launcher, with the same environment. ``install``
-stays bash either way until phase 4.
+runs the bundled ``install`` shim either way; with the opt-in, its
+``install.sh`` is only the bootstrap of the Python installer (phase 4).
 """
 
 import os

@@ -250,6 +250,49 @@ does.
 well as the bash: `tests/python/test_bash_suites.py` points them at a
 wrapper through `CLAUDE_SANDBOX_TEST_LAUNCHER` and `CLAUDE_SANDBOX_TEST_CLI`.
 
+### The Python installer
+
+`src/claude_sandbox/installer/` is the Python port of `install.sh`. The bash
+installer stays the default; `CLAUDE_SANDBOX_IMPL=python` selects the Python
+one, for `./install`, `uvx claude-sandbox install`, the in-container
+`claude-sandbox update` of a Python install, and the image
+(`--build-arg CLAUDE_SANDBOX_IMPL=python`). With the opt-in, `install.sh` is
+only a bootstrap:
+
+1. It fetches uv at the version pinned in `provision.py` (`UV_VERSION`) into
+   `/usr/libexec/claude-sandbox/uv`, checked against the pinned SHA-256, unless a
+   root-owned copy of that version is already there.
+2. It has uv install the pinned CPython (`PYTHON_VERSION`) under
+   `/usr/libexec/claude-sandbox/python`, never in uv's cache, and runs
+   `provision.py` with it. Provisioning builds the venv, pinned to the patch
+   directory, copies the `claude_sandbox` package into it, prunes the
+   interpreter to about 56 MB, byte-compiles it, makes it root-owned and
+   checks the imports with `-I`.
+3. It execs `venv/bin/python -I -m claude_sandbox.installer`, which runs
+   `install.sh`'s steps in the same order and places the shims as
+   `/usr/local/bin/claude`, `codex`, `pi` and `claude-sandbox`.
+
+A default install removes what an opt-in left. The published image's
+entrypoint follows whichever installer built the image.
+
+Each file step in `steps.py` is a `plan_*` function that reads the filesystem
+and returns actions, and `actions.apply` performs them, so a second install
+writes nothing. `system.py` holds the steps that run tools (apt, the probes,
+the agent downloads), by absolute path through `tools.find_tool`.
+`tests/python/test_installer_parity.py` runs each bash step, and the whole
+`main()` with its summary, against its port on the same temporary tree and
+requires identical files, modes, warnings and output; the system steps are
+unit-tested against stand-ins. `tests/smoke.sh` and `tests/install_modes.sh`
+run against either installer:
+
+```bash
+CLAUDE_SANDBOX_IMPL=python CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
+```
+
+A smoke run downloads nothing, so it starts the Python installer from the
+tree with the interpreter named in `CLAUDE_SANDBOX_SMOKE_PYTHON` (the tests
+default it to `python3`).
+
 ## Build the docs locally
 
 The isolated docs dependencies are listed in `docs/requirements.txt`.

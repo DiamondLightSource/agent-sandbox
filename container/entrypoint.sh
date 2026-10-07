@@ -19,12 +19,26 @@ source /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh
 source /opt/claude-sandbox/container/git-config.sh
 configure_container_git "${HOME:-/root}/.gitconfig-host" "${HOME:-/root}/.gitconfig"
 
+# An image built with CLAUDE_SANDBOX_IMPL=python (the Python installer, issue
+# #72) redoes its share of the install with the same Python installer, from
+# its root-owned venv: the image's /usr/local/bin/claude is then the shim.
+PY_INSTALLER=()
+if cmp -s /usr/local/bin/claude /opt/claude-sandbox/.devcontainer/claude-sandbox/claude-shim; then
+    PY_INSTALLER=(/usr/libexec/claude-sandbox/venv/bin/python -I -m claude_sandbox.installer
+        --source /opt/claude-sandbox)
+fi
+
 # Persist Claude login/memory/settings across containers when the
 # launcher mounts a shared host dir at /user-terminal-config. No-op when
 # absent — but then ~/.claude dies with the container, and the shadow's
-# persistence check warns loudly about exactly that.
-link_terminal_config
-ensure_cred_dirs
+# persistence check warns loudly about exactly that. The Python installer
+# also re-stamps the conf here, unless a conf is mounted over it.
+if [ "${#PY_INSTALLER[@]}" -gt 0 ]; then
+    "${PY_INSTALLER[@]}" --container-start
+else
+    link_terminal_config
+    ensure_cred_dirs
+fi
 
 # First use of an empty share leaves ~/.claude.json as a zero-length
 # file (via link_terminal_config's seed + ensure_cred_dirs' touch), and
@@ -40,7 +54,7 @@ fi
 # operator mounted their own conf over it (a read-only bind, which must
 # win and would EROFS the copy anyway). A mounted conf still satisfies
 # Invariant 4: it sits at /etc, read-only, outside the sandbox rw set.
-if ! _is_mount /etc/claude-sandbox.conf; then
+if [ "${#PY_INSTALLER[@]}" -eq 0 ] && ! _is_mount /etc/claude-sandbox.conf; then
     install_conf
 fi
 
@@ -74,6 +88,10 @@ fi
 # Refuse HERE, at container start, if the runtime host cannot run
 # unprivileged user namespaces: refusal-on-failure, never a sandbox that
 # isn't one.
-probe_userns_or_refuse
+if [ "${#PY_INSTALLER[@]}" -gt 0 ]; then
+    "${PY_INSTALLER[@]}" --probe-userns
+else
+    probe_userns_or_refuse
+fi
 
 exec "$@"

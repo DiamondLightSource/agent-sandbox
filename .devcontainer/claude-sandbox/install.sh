@@ -22,9 +22,12 @@
 #   STATUS=1                         force-overwrite the user-scope
 #                                    statusline script from the clone's
 #                                    copy, instead of seed-only-if-absent.
-#   CLAUDE_SANDBOX_IMPL=python       install the Python shadow (issue #72
-#                                    phase 2, opt-in) instead of the bash
-#                                    one; see provision_python_shadow.
+#   CLAUDE_SANDBOX_IMPL=python       install with the Python installer and
+#                                    the Python shadow (issue #72, opt-in)
+#                                    instead of the bash; see python_install.
+#   CLAUDE_SANDBOX_SMOKE_PYTHON      with both of the above under
+#                                    CLAUDE_SANDBOX_SMOKE=1: the interpreter
+#                                    that runs the installer from the tree.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -600,29 +603,24 @@ CODEX_MANAGED_CONFIG="/etc/codex/managed_config.toml"
 CODEX_MARKER="# Managed by claude-sandbox — do not edit by hand."
 USER_SL_CMD='bash $HOME/.claude/statusline-command.sh'
 
-# --- The Python shadow: OPT-IN, PHASE 2 SCAFFOLDING (issue #72, ADR 26) ---
-# CLAUDE_SANDBOX_IMPL=python installs the three-line shim (claude-shim) as the
-# shadow at /usr/local/bin/{claude,codex,pi}, and a minimal root-owned
-# interpreter and venv for it under /usr/libexec/claude-sandbox. Unset (or
-# `bash`), the installer installs exactly what it always has, and removes any
-# venv an earlier opt-in left. The choice is made here, by whoever runs the
-# installer outside the jail: nothing reads it at launch, and /usr is
-# read-only inside the jail, so a session can never flip it.
-#
-# Kept minimal on purpose; phase 4 replaces it with the Python installer
-# (pinned patch release, pruning). What the phase 0 spike found is kept:
-# uv's cache is never used (~/.cache is writable from the jail), the venv
-# points at the resolved patch directory (readlink -f), uv's _virtualenv.pth
-# goes, and everything is root-owned and byte-compiled. The package is copied
-# from the clone's src/ (it is standard library only, so nothing is built).
+# --- The Python installer: OPT-IN (issue #72 phases 2 and 4, ADR 26) ---
+# CLAUDE_SANDBOX_IMPL=python hands the whole install to the Python installer
+# (src/claude_sandbox/installer), which places the three-line shim
+# (claude-shim) as the shadow at /usr/local/bin/{claude,codex,pi}. This bash
+# is then only a bootstrap: it fetches a pinned uv, has the Python installer
+# provision a pinned, pruned, root-owned interpreter and venv under
+# /usr/libexec/claude-sandbox (provision.py), and hands over to that venv.
+# Unset (or `bash`), the installer installs exactly what it always has, and
+# removes what an earlier opt-in left. The choice is made here, by whoever
+# runs the installer outside the jail: nothing reads it at launch, and /usr
+# is read-only inside the jail, so a session can never flip it.
 PY_DIR="$LIBEXEC/python"
 PY_VENV="$LIBEXEC/venv"
-PY_VERSION="3.13"
+UV_DIR="$LIBEXEC/uv"
 
-shadow_source() {
+check_impl() {
     case "$IMPL" in
-        bash) printf '%s\n' "$SCRIPT_DIR/claude-shadow" ;;
-        python) printf '%s\n' "$SCRIPT_DIR/claude-shim" ;;
+        bash|python) ;;
         *)
             echo "claude-sandbox: CLAUDE_SANDBOX_IMPL must be bash or python, got '$IMPL'." >&2
             exit 2
@@ -658,68 +656,116 @@ alerts_hook() {
     fi
 }
 
-provision_python_shadow() {
-    local py_dir venv interp site
-    py_dir="$(prefixed "$PY_DIR")"
-    venv="$(prefixed "$PY_VENV")"
+# The bash install keeps nothing of the Python one, the prompt hook included.
+remove_python_install() {
     alerts_hook
-    if [ "$IMPL" != python ]; then
-        rm -rf "$py_dir" "$venv"
-        return 0
-    fi
-    # A download, like the agent binaries.
-    if [ "$SMOKE" = "1" ]; then
-        return 0
-    fi
-    if [ ! -f "$REPO_ROOT/src/claude_sandbox/shadow.py" ]; then
-        echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python installs from a clone (./install --here); $REPO_ROOT has no src/claude_sandbox." >&2
+    rm -rf "$(prefixed "$PY_DIR")" "$(prefixed "$PY_VENV")" "$(prefixed "$UV_DIR")"
+}
+
+# python_package: the claude_sandbox package being installed — a clone's
+# src/, or the installed wheel this tree is bundled in (claude_sandbox/tree).
+python_package() {
+    if [ -f "$REPO_ROOT/src/claude_sandbox/installer/__main__.py" ]; then
+        printf '%s\n' "$REPO_ROOT/src/claude_sandbox"
+    elif [ "${REPO_ROOT##*/}" = tree ] && [ -f "$REPO_ROOT/../installer/__main__.py" ]; then
+        (cd "$REPO_ROOT/.." && pwd)
+    else
+        echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python cannot find the claude_sandbox package beside $REPO_ROOT." >&2
         exit 1
     fi
-    # ADR 26: no executable found through PATH. uv comes only from a fixed
-    # system location, and only a root-owned copy nobody else can write.
-    local uv="" candidate
-    for candidate in /usr/bin/uv /usr/local/bin/uv; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ] \
-                && [ "$(stat -c %u "$candidate")" = 0 ] \
-                && [ -z "$(find "$candidate" -perm /022)" ]; then
-            uv="$candidate"
-            break
+}
+
+# python_pin PACKAGE NAME: a pin from provision.py, the one place they live.
+python_pin() {
+    sed -n "s/^$2 = \"\([^\"]*\)\"\$/\1/p" "$1/installer/provision.py"
+}
+
+# fetch_uv PACKAGE: print the path of a root-owned uv at the pinned version,
+# at a fixed place under /usr/libexec, downloading the release (checked
+# against the pinned SHA-256) when it is absent, stale or not root's.
+fetch_uv() {
+    local pkg="$1" dir uv want arch sum tmp
+    dir="$(prefixed "$UV_DIR")"
+    uv="$dir/uv"
+    want="$(python_pin "$pkg" UV_VERSION)"
+    if [ -f "$uv" ] && [ -x "$uv" ] && [ -z "$(find "$uv" -perm /022)" ] \
+            && { [ "$(id -u)" != 0 ] || [ "$(stat -c %u "$uv")" = 0 ]; } \
+            && [ "$("$uv" --version 2>/dev/null | awk '{print $2}')" = "$want" ]; then
+        printf '%s\n' "$uv"
+        return 0
+    fi
+    case "$(uname -m)" in
+        x86_64) arch=x86_64; sum="$(python_pin "$pkg" UV_SHA256_X86_64)" ;;
+        aarch64|arm64) arch=aarch64; sum="$(python_pin "$pkg" UV_SHA256_AARCH64)" ;;
+        *) echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python supports x86_64 and aarch64 only." >&2; exit 1 ;;
+    esac
+    if ! command -v curl >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            curl ca-certificates >&2
+    fi
+    tmp="$(mktemp -d)"
+    if ! curl -fsSL --retry 6 -o "$tmp/uv.tar.gz" \
+            "https://github.com/astral-sh/uv/releases/download/$want/uv-$arch-unknown-linux-gnu.tar.gz" \
+            || ! printf '%s  %s\n' "$sum" "$tmp/uv.tar.gz" | sha256sum -c --quiet - >&2 \
+            || ! tar -xzf "$tmp/uv.tar.gz" --no-same-owner -C "$tmp"; then
+        rm -rf "$tmp"
+        echo "claude-sandbox: could not fetch and verify uv $want." >&2
+        exit 1
+    fi
+    install -d -m 0755 "$dir"
+    install -m 0755 "$tmp/uv-$arch-unknown-linux-gnu/uv" "$uv"
+    rm -rf "$tmp"
+    printf '%s\n' "$uv"
+}
+
+# python_install [--image-build]: the bootstrap. Provision the interpreter
+# and venv, then exec the Python installer from it with -I. A smoke run
+# (CLAUDE_SANDBOX_SMOKE=1, which also skips the agent downloads) skips the
+# download too, and runs the installer from the source tree with the
+# interpreter the test names in CLAUDE_SANDBOX_SMOKE_PYTHON.
+python_install() {
+    local pkg uv interp py_dir want var
+    local -a scrub=()
+    # ADR 26: nothing found through the caller's PATH. Set here, not at the
+    # top of the file, which the image entrypoint sources; the Python
+    # installer exec'd below inherits it. The same directories as
+    # tools.TOOL_PATH.
+    export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+    pkg="$(python_package)"
+    if [ "$SMOKE" = 1 ]; then
+        if [ -z "${CLAUDE_SANDBOX_SMOKE_PYTHON:-}" ]; then
+            echo "claude-sandbox: a smoke run with CLAUDE_SANDBOX_IMPL=python needs CLAUDE_SANDBOX_SMOKE_PYTHON." >&2
+            exit 1
         fi
-    done
-    if [ -z "$uv" ]; then
-        echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=python needs a root-owned uv at /usr/bin/uv or /usr/local/bin/uv." >&2
-        exit 1
+        exec "$CLAUDE_SANDBOX_SMOKE_PYTHON" -I -c \
+            'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); sys.argv[0] = "installer"; runpy.run_module("claude_sandbox.installer", run_name="__main__")' \
+            "${pkg%/*}" --source "$REPO_ROOT" "$@"
     fi
-    # An active venv or a UV_PYTHON request must not choose the interpreter.
-    # --no-bin: write nothing outside $py_dir (uv would otherwise add a
-    # python3.x launcher to the installing user's ~/.local/bin).
-    env -u VIRTUAL_ENV -u UV_PYTHON UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
-        "$uv" python install --no-config --no-bin --quiet "$PY_VERSION"
-    interp="$(env -u VIRTUAL_ENV -u UV_PYTHON UV_PYTHON_INSTALL_DIR="$py_dir" \
-        "$uv" python find --no-config --no-project --managed-python "$PY_VERSION")"
+    uv="$(fetch_uv "$pkg")"
+    py_dir="$(prefixed "$PY_DIR")"
+    want="$(python_pin "$pkg" PYTHON_VERSION)"
+    # Nothing in the environment may steer uv or the interpreter.
+    for var in $(compgen -e); do
+        case "$var" in UV_*|PYTHON*|VIRTUAL_ENV|CONDA_*) scrub+=(-u "$var") ;; esac
+    done
+    # The interpreter that runs provisioning is the pinned one, installed
+    # straight under /usr/libexec (never uv's cache); provisioning then
+    # prunes it, builds the venv and checks both.
+    env "${scrub[@]}" UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
+        "$uv" python install --no-config --no-bin --quiet "$want"
+    interp="$(env "${scrub[@]}" UV_PYTHON_INSTALL_DIR="$py_dir" UV_NO_CACHE=1 \
+        "$uv" python find --no-config --no-project --managed-python "$want")"
     interp="$(readlink -f "$interp")"
     case "$interp" in
         "$py_dir"/*) ;;
-        *)
-            echo "claude-sandbox: uv found $interp, not an interpreter under $py_dir; refusing." >&2
-            exit 1
-            ;;
+        *) echo "claude-sandbox: uv found $interp, not an interpreter under $py_dir; refusing." >&2; exit 1 ;;
     esac
-    if [ "$(readlink -f "$venv/bin/python" 2>/dev/null)" != "$interp" ]; then
-        rm -rf "$venv"
-        env -u VIRTUAL_ENV UV_NO_CACHE=1 \
-            "$uv" venv --no-config --no-project --quiet --python "$interp" "$venv"
-    fi
-    site="$("$venv/bin/python" -I -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
-    rm -f "$site/_virtualenv.pth" "$site/_virtualenv.py"
-    rm -rf "$site/claude_sandbox"
-    cp -R "$REPO_ROOT/src/claude_sandbox" "$site/claude_sandbox"
-    find "$site/claude_sandbox" -name __pycache__ -prune -exec rm -rf {} +
-    "$venv/bin/python" -I -m compileall -q --invalidation-mode checked-hash "$site/claude_sandbox"
-    if [ "$(id -u)" = 0 ]; then
-        chown -R 0:0 "$py_dir" "$venv"
-    fi
-    chmod -R u+rwX,go+rX,go-w "$py_dir" "$venv"
+    (cd / && env "${scrub[@]}" "$interp" -I -c \
+        'import sys; sys.path.insert(0, sys.argv.pop(1)); from claude_sandbox.installer.provision import main; main(sys.argv[1:])' \
+        "${pkg%/*}" "$pkg" --uv "$uv" --root "$(prefixed "$LIBEXEC")")
+    exec env "${scrub[@]}" "$(prefixed "$PY_VENV")/bin/python" -I -m claude_sandbox.installer \
+        --source "$REPO_ROOT" "$@"
 }
 
 install_runtime_scripts() {
@@ -871,12 +917,13 @@ main() {
         --image-build) image_build=1 ;;
         *) echo 'Usage: install.sh [--image-build]' >&2; return 2 ;;
     esac
+    check_impl
     probe_or_refuse
-    local shadow
-    shadow="$(shadow_source)"
-    # The Python shadow's interpreter lands before its shim, so a failed
-    # download leaves the previous shadow in place.
-    provision_python_shadow
+    if [ "$IMPL" = python ]; then
+        python_install "$@"
+    fi
+    remove_python_install
+    local shadow="$SCRIPT_DIR/claude-shadow"
     # Shadow first: with /usr/local/bin/claude in place before the
     # official installer runs, any `claude` lookup during the rest of
     # install resolves (and bash-hashes) to the shadow path, even if
@@ -917,9 +964,6 @@ main() {
 
     echo "claude-sandbox: install complete."
     echo "  shadow:      $(prefixed /usr/local/bin/claude), $(prefixed /usr/local/bin/codex), $(prefixed /usr/local/bin/pi)"
-    if [ "$IMPL" = python ]; then
-        echo "  python:      the Python shadow (opt-in), interpreter in $(prefixed "$PY_VENV")"
-    fi
     echo "  real pi:     $(prefixed /usr/libexec/claude-sandbox/pi-dist/pi) $([ -x "$(prefixed /usr/libexec/claude-sandbox/pi-dist/pi)" ] && echo 'installed (standalone, ro in sandbox)' || echo 'NOT installed — pi will refuse to launch')"
     echo "  cli:         $(prefixed /usr/local/bin/claude-sandbox) ($(cat "$(prefixed "$VERSION_FILE_PATH")"))"
     echo "  real claude: $(prefixed /usr/libexec/claude-sandbox/claude)"

@@ -166,12 +166,14 @@ jobs:
             -v "$RUNNER_TEMP/terminal-config:/user-terminal-config" \
             claude-sandbox:test bash /opt/claude-sandbox/tests/pi_e2e.sh
 
-      # The opt-in Python shadow (issue #72 phase 2), installed over the
-      # baked bash one, with the egress jail on (the default): the same
-      # launches as the bash step above, the entry-point guard and the PATH
-      # watcher end to end (tests/entry_guard.sh, tests/watch_e2e.sh), then
-      # the Python jail's own tests in real namespaces (tests/jail_python.sh,
-      # which fetches pytest).
+      # The opt-in Python installer and shadow (issue #72 phases 2 and 4),
+      # installed over the baked bash ones: install.sh bootstraps uv and the
+      # pinned interpreter and hands over to the Python installer. With the
+      # egress jail on (the default): the same launches as the bash step
+      # above, the entry-point guard and the PATH watcher end to end
+      # (tests/entry_guard.sh, tests/watch_e2e.sh), then the Python jail's
+      # own tests in real namespaces (tests/jail_python.sh, which fetches
+      # pytest).
       # Runs after the bash steps above and changes nothing they use.
       - name: "Test: opt-in Python shadow (egress jail on)"
         run: |
@@ -186,12 +188,16 @@ jobs:
               git config --global user.name "Sandbox integration test" || exit "$?"
               git config --global user.email "sandbox-test@example.invalid" || exit "$?"
               before="$(ls -A "$HOME/.local/bin" 2>/dev/null)"
+              cached="$(ls -d "$HOME/.cache/uv" 2>/dev/null)"
               CLAUDE_SANDBOX_IMPL=python \
                 bash /opt/claude-sandbox/.devcontainer/claude-sandbox/install.sh --image-build \
                 || exit "$?"
               # The opt-in writes only under /usr/libexec/claude-sandbox.
               [ "$(ls -A "$HOME/.local/bin" 2>/dev/null)" = "$before" ] || {
                 echo "the Python shadow install changed ~/.local/bin"; exit 1; }
+              # Nor the uv cache: the interpreter is never fetched through it.
+              [ "$(ls -d "$HOME/.cache/uv" 2>/dev/null)" = "$cached" ] || {
+                echo "the Python install created ~/.cache/uv"; exit 1; }
               grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
               claude --version || {
                 rc=$?
@@ -205,6 +211,54 @@ jobs:
               bash /opt/claude-sandbox/tests/entry_guard.sh || exit "$?"
               bash /opt/claude-sandbox/tests/watch_e2e.sh || exit "$?"
               bash /opt/claude-sandbox/tests/jail_python.sh'
+
+      # The image built with the Python installer (issue #72 phase 4,
+      # --build-arg CLAUDE_SANDBOX_IMPL=python), so the entrypoint's Python
+      # branch runs at container start. Built for testing only; the
+      # published image is the bash build above until the switch-over.
+      - name: Build image for testing (Python installer)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: claude-sandbox
+          load: true
+          tags: claude-sandbox:test-python
+          build-args: |
+            LAUNCHER_VERSION=${{ env.LAUNCHER_VERSION }}
+            CLAUDE_SANDBOX_VERSION=${{ github.ref_name }}
+            CLAUDE_SANDBOX_IMPL=python
+
+      - name: "Test: Python-installed image (launch, verify, jail, Pi)"
+        run: |
+          docker save claude-sandbox:test-python | podman load
+          mkdir -p "$RUNNER_TEMP/terminal-config-python" "$RUNNER_TEMP/project-python"
+          run() {
+            podman run --rm -t \
+              --security-opt seccomp=unconfined \
+              --security-opt apparmor=unconfined \
+              --security-opt label=disable \
+              --device /dev/net/tun \
+              -v "$RUNNER_TEMP/terminal-config-python:/user-terminal-config" \
+              -v "$RUNNER_TEMP/project-python:/work" -w /work \
+              claude-sandbox:test-python "$@"
+          }
+          run bash -c '
+            git config --global user.name "Sandbox integration test" || exit "$?"
+            git config --global user.email "sandbox-test@example.invalid" || exit "$?"
+            grep -q " -I -m claude_sandbox _shadow " /usr/local/bin/claude || exit 1
+            grep -q " -I -m claude_sandbox " /usr/local/bin/claude-sandbox || exit 1
+            [ ! -e "$HOME/.cache/uv" ] || { echo "the install left ~/.cache/uv"; exit 1; }
+            claude --version || {
+              rc=$?
+              echo "--- /tmp/claude-pasta.log ---"
+              cat /tmp/claude-pasta.log 2>/dev/null || true
+              exit "$rc"
+            }
+            for agent in claude codex pi; do
+              claude-sandbox verify --agent "$agent" || exit "$?"
+            done'
+          run bash /opt/claude-sandbox/tests/jail_python.sh
+          run bash /opt/claude-sandbox/tests/pi_e2e.sh
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'

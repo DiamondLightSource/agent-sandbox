@@ -48,6 +48,12 @@ ARG CLAUDE_SANDBOX_VERSION=""
 ARG WITH_CODEX=1
 ARG WITH_PI=1
 ARG PI_VERSION=latest
+# Which installer and shadow the image gets: empty (the default) for the
+# bash ones, `python` for the Python installer and shadow (issue #72, opt-in;
+# install.sh then fetches a pinned uv and provisions the root-owned
+# interpreter under /usr/libexec/claude-sandbox). The entrypoint follows
+# whichever was installed.
+ARG CLAUDE_SANDBOX_IMPL=""
 
 COPY . /opt/claude-sandbox
 WORKDIR /opt/claude-sandbox

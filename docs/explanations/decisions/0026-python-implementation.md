@@ -152,7 +152,9 @@ default. The plan is tracked in a GitHub issue.
   dependencies (the package is the standard library only), no interpreter
   found through `PATH`, no running without `-I`, and no bind or environment
   added outside `bwrap.py`.
-- Each guest gains a pinned CPython and venv, about 40 to 60 MB.
+- Each guest gains a pinned CPython and venv: 56 MB once pruned, against
+  124 MB as uv installs it (measured 2026-10-06, issue #72 phase 4), plus the
+  pinned uv the installer keeps to provision it (46 MB).
 - The trusted set grows from bash and coreutils to CPython.
 - The argv tests become pytest on a pure function. `tests/bwrap_argv.sh` is
   removed once the Python builder is the only one.

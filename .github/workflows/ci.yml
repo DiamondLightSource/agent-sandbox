@@ -76,11 +76,22 @@ jobs:
           mkdir -p "$HOME/.claude" "$HOME/.cache"
           CLAUDE_SANDBOX_SMOKE=1 sudo -E bash tests/smoke.sh
 
+      # The same suite against the opt-in Python installer (issue #72 phase
+      # 4). A smoke run starts it from the tree with the runner's python3.
+      - name: Run install smoke test (Python installer)
+        run: |
+          export HOME=/tmp/sandbox-home
+          mkdir -p "$HOME/.claude" "$HOME/.cache"
+          CLAUDE_SANDBOX_IMPL=python CLAUDE_SANDBOX_SMOKE=1 \
+            CLAUDE_SANDBOX_SMOKE_PYTHON="$(command -v python3)" sudo -E bash tests/smoke.sh
+
       - name: Run Pi profile and configuration tests
         run: bash tests/pi.sh
 
       - name: Compare container and image installation modes
-        run: bash tests/install_modes.sh
+        run: |
+          bash tests/install_modes.sh
+          CLAUDE_SANDBOX_IMPL=python bash tests/install_modes.sh
 
       # Launcher verbs and host-network default against a fake engine.
       - name: Run container launcher tests
