@@ -20,7 +20,11 @@ import signal
 import sys
 import time
 
-# Root-owned; read-only inside the jail, which binds / read-only.
+# Written as container root, the same uid as a jailed agent: what keeps the
+# agent from forging or deleting a record is the jail itself (bwrap binds /
+# read-only, so /run is read-only inside, and with --unshare-pid it cannot
+# signal the container's processes). Root outside the jail can forge one,
+# but it can already kill anything.
 STATE = "/run/claude-sandbox-sessions"
 PROC = "/proc"
 # How long a hung-up process has to exit before it is killed.
@@ -69,16 +73,18 @@ def hang_up(root: int, proc: str = PROC, grace: float = GRACE) -> None:
     """SIGHUP the tree under ``root``, as a closed terminal would; SIGKILL
     whatever of it is still there after ``grace`` seconds."""
     members = tree(root, proc)
-    for pid in members:
+    for pid in still(members, proc):
         signal_quietly(pid, signal.SIGHUP)
     deadline = time.monotonic() + grace
-    while True:
-        left = [p for p, s in members.items() if (st := stat(p, proc)) and st[1] == s]
-        if not left or time.monotonic() >= deadline:
-            break
+    while (left := still(members, proc)) and time.monotonic() < deadline:
         time.sleep(0.1)
     for pid in left:
         signal_quietly(pid, signal.SIGKILL)
+
+
+def still(members: dict[int, str], proc: str = PROC) -> list[int]:
+    """Those of ``members`` that live on: the same PID, the same start time."""
+    return [p for p, s in members.items() if (st := stat(p, proc)) and st[1] == s]
 
 
 def signal_quietly(pid: int, signum: int) -> None:

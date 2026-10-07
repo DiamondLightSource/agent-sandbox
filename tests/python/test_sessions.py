@@ -50,9 +50,12 @@ def test_end_hangs_up_the_whole_tree_and_counts_the_rest(tmp_path: Path) -> None
     other = subprocess.Popen(["sleep", "300"])
     try:
         assert ours.stdout and ours.stdout.readline() == "ready\n"
-        time.sleep(0.2)
-        members = sessions.tree(ours.pid)
-        assert len(members) == 4  # sh, the setsid sleep, sh, its sleep
+        # sh, the setsid sleep, sh, its sleep: wait for them all to start.
+        deadline = time.monotonic() + 10
+        while len(members := sessions.tree(ours.pid)) < 4:
+            assert time.monotonic() < deadline, members
+            time.sleep(0.05)
+        assert len(members) == 4
         (tmp_path / "ours").write_text(entry(ours.pid))
         (tmp_path / "other").write_text(entry(other.pid))
         (tmp_path / "stale").write_text("1 0\n")

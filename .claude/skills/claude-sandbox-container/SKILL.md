@@ -66,7 +66,16 @@ already extended here:
   dropped: exec records outlive clients that died, so idle containers
   never read 0 (it remains only for 4.x containers, which have no
   interpreter to track with). Limits: a launcher killed with SIGKILL runs
-  no cleanup; a hand-typed `podman exec` is not counted as a session.
+  no cleanup; a hand-typed `podman exec` is not counted as a session;
+  orphans reparented to the keeper (daemons started from the unsandboxed
+  `shell` verb, or background jobs left behind after a session's root
+  exits) sit outside the ppid tree and survive until the keeper stops.
+  In-jail processes cannot escape that way: under bwrap `--unshare-pid`
+  they reparent to the jail's own init, which is in the tree. The
+  launcher installs its SIGHUP/SIGTERM handler only where the signal is
+  not already ignored (nohup), arms it only once the engine client is
+  bound (blocking the signals over the spawn would leak the mask into the
+  client), and ignores SIGINT too while it cleans up.
   Refuse: an in-container watchdog that guesses the client is gone (the
   pty stays open, there is nothing to watch); counting processes instead
   of sessions (a leaked daemon would keep the keeper up forever).

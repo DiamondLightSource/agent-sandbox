@@ -330,15 +330,30 @@ def test_a_hangup_still_ends_the_session_and_stops_the_keeper(
 
     def hung_up(argv: list[str]) -> int:
         engine.calls.append(argv[1:])
-        launcher.hangup(signal.SIGHUP, None)
+        # Under nohup: SIGHUP stays ignored, SIGTERM is caught.
+        assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+        os.kill(os.getpid(), signal.SIGTERM)  # caught, not yet armed
+        launcher.GUARD.arm()
         raise AssertionError("not reached")
 
     monkeypatch.setattr(launcher, "interactive", hung_up)
-    before = signal.getsignal(signal.SIGTERM)
-    assert run().session(["claude"], pause=False) == 129
-    assert detached == [129]
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        assert run().session(["claude"], pause=False) == 143
+        assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert detached == [143]
     assert engine.called("exec")[1][6] == "end" and engine.called("stop")
-    assert signal.getsignal(signal.SIGTERM) == before
+    assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+    assert signal.getsignal(signal.SIGINT) == signal.default_int_handler
+
+
+def test_a_failed_end_leaves_the_keeper_running(engine: Engine) -> None:
+    """`end` could not run (others unknown): leave the keeper up."""
+    engine.fail["exec"] = 125
+    assert run().session(["claude"], pause=False) == 0
+    assert engine.called("exec")[1][6] == "end" and not engine.called("stop")
 
 
 @pytest.mark.parametrize("label", ["4.7.1", "4.8.0-beta.1", "<no value>", None])
@@ -533,8 +548,14 @@ def test_interactive_waits_out_an_interrupt(monkeypatch: pytest.MonkeyPatch) -> 
     assert launcher.interactive(["claude"]) == 0
 
 
-def test_a_hangup_kills_the_engine_client(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("early", [False, True])
+def test_a_hangup_kills_the_engine_client(
+    monkeypatch: pytest.MonkeyPatch, early: bool
+) -> None:
+    """Raised while waiting, or caught while the client was being spawned
+    and raised once it is bound: either way the client is killed."""
     killed: list[bool] = []
+    launcher.GUARD.caught = signal.SIGTERM if early else 0
 
     class Child:
         def __init__(self, argv: list[str]) -> None:
@@ -552,16 +573,21 @@ def test_a_hangup_kills_the_engine_client(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(subprocess, "Popen", Child)
     with pytest.raises(launcher.Hangup):
         launcher.interactive(["claude"])
-    assert killed == [True]
+    assert killed == [True] and not launcher.GUARD.armed
+    launcher.GUARD.caught = 0
 
 
-def test_hangup_raises_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_guard_raises_once_and_only_when_armed() -> None:
+    guard = launcher.Guard()
     saved = {s: signal.getsignal(s) for s in launcher.HANGUPS}
     try:
-        with pytest.raises(launcher.Hangup) as exc:
-            launcher.hangup(signal.SIGHUP, None)
-        assert exc.value.signum == signal.SIGHUP
+        guard.handler(signal.SIGHUP, None)
+        assert guard.caught == signal.SIGHUP
         assert all(signal.getsignal(s) == signal.SIG_IGN for s in launcher.HANGUPS)
+        guard.armed = True
+        with pytest.raises(launcher.Hangup) as exc:
+            guard.handler(signal.SIGTERM, None)
+        assert exc.value.signum == signal.SIGTERM
     finally:
         for s, handler in saved.items():
             signal.signal(s, handler)

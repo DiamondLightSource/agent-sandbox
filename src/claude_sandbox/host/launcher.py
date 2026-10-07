@@ -75,11 +75,31 @@ class Hangup(Exception):
         self.signum = signum
 
 
-def hangup(signum: int, frame: object) -> None:
-    """Once only: the cleanup that follows must not be cut short."""
-    for s in HANGUPS:
-        signal.signal(s, signal.SIG_IGN)
-    raise Hangup(signum)
+class Guard:
+    """SIGHUP and SIGTERM, caught once (the cleanup that follows must not be
+    cut short) and raised as :class:`Hangup` only while armed. Armed once
+    the engine's client is bound, so a signal that lands while it is being
+    spawned waits until there is a client to kill. (Blocking the signals
+    over the spawn would not do: the client would inherit the mask.)"""
+
+    def __init__(self) -> None:
+        self.armed = False
+        self.caught = 0
+
+    def handler(self, signum: int, frame: object) -> None:
+        for s in HANGUPS:
+            signal.signal(s, signal.SIG_IGN)
+        self.caught = signum
+        if self.armed:
+            raise Hangup(signum)
+
+    def arm(self) -> None:
+        self.armed = True
+        if self.caught:
+            raise Hangup(self.caught)
+
+
+GUARD = Guard()
 
 
 def interactive(argv: list[str]) -> int:
@@ -91,6 +111,7 @@ def interactive(argv: list[str]) -> int:
     """
     proc = subprocess.Popen(argv)
     try:
+        GUARD.arm()
         while True:
             try:
                 rc = proc.wait()
@@ -102,6 +123,8 @@ def interactive(argv: list[str]) -> int:
         proc.kill()
         proc.wait()
         raise
+    finally:
+        GUARD.armed = False
 
 
 def detach(rc: int) -> None:
@@ -597,7 +620,12 @@ class Launcher:
         sid = secrets.token_hex(8)
         if tracked:
             command = [PYTHON, "-I", "-c", session_code(), "start", sid, *command]
-        saved = {s: signal.signal(s, hangup) for s in HANGUPS}
+        saved = {s: signal.getsignal(s) for s in (*HANGUPS, signal.SIGINT)}
+        GUARD.caught = 0
+        for s in HANGUPS:
+            # Run under nohup, an ignored SIGHUP stays ignored.
+            if saved[s] != signal.SIG_IGN:
+                signal.signal(s, GUARD.handler)
         try:
             rc = interactive([self.engine, "exec", "-it", self.name, *command])
             if os.isatty(1):
@@ -606,13 +634,15 @@ class Launcher:
         except Hangup as h:
             rc = 128 + h.signum
             detach(rc)
-        # The terminal may be gone: from here on, nothing reads or writes it.
-        for s in HANGUPS:
+        # The terminal may be gone: from here on, nothing reads or writes it,
+        # and no signal from it (not even Ctrl-C) skips stopping the keeper.
+        for s in saved:
             signal.signal(s, signal.SIG_IGN)
         if self.idle_after(sid, tracked):
             self.call("stop", "-t", "2", self.name, quiet=True)
         for s, handler in saved.items():
-            signal.signal(s, handler)
+            if handler is not None:
+                signal.signal(s, handler)
         return rc
 
     def idle_after(self, sid: str, tracked: bool) -> bool:
