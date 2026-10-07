@@ -66,6 +66,12 @@ as `update` does. Run them from the host or a container terminal. A conf
 `allow-write` line must be an absolute path: a relative one now refuses
 the launch instead of being skipped or resolved against the workspace.
 
+4.x jails did not remove more-specific routes copied from the outer
+network (for example cloud metadata /32s and VPN split routes), so those
+destinations stayed reachable from an agent session. 5.0 rebuilds and
+verifies the jail's route table, and also blocks Azure's WireServer
+(`168.63.129.16`).
+
 `CLAUDE_SANDBOX_IMPL`, which opted in to the Python implementation before
 5.0, is no longer used: unset or `python` installs as usual, and
 `bash` (or any other value) refuses. Remove it from your `postCreate`.

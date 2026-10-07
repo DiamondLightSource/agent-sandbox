@@ -1,7 +1,10 @@
 # Configure the network egress jail
 
-The jail is on by default. It blocks private, link-local and connected networks
-while allowing internet access, DNS and explicitly allowed IPs. Agents get a
+The jail is on by default. It blocks private, link-local and connected networks,
+and the cloud metadata addresses, while allowing internet access, DNS and
+explicitly allowed IPs. Routes your host or VPN adds for internal networks
+are not carried into the jail: it rebuilds its route table from that
+allowlist alone and checks it before the agent starts. Agents get a
 private IPv4-only network namespace; ordinary container shells do not.
 
 With the PyPI launcher, edit `~/.config/claude-sandbox.conf` on the host.

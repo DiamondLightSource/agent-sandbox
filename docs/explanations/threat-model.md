@@ -85,9 +85,16 @@ permissions and the no-push setup.
 ## The egress jail and the native sandbox
 
 The default jail uses an IPv4-only network namespace. It blocks RFC1918,
-CGNAT (`100.64/10`), connected subnets and link-local addresses, including the
-usual cloud metadata address. The gateway, DNS resolvers and configured
-`allow-ip` destinations remain reachable. Explicit loopback relays expose the
+CGNAT (`100.64/10`), connected subnets and link-local addresses, including
+the usual cloud metadata addresses: `169.254.0.0/16` and Azure's
+`168.63.129.16`. The gateway, DNS resolvers and configured `allow-ip`
+destinations remain reachable. The jail does not add these rules on top of
+the routes it inherits: pasta copies the outer network's routes into the
+namespace, including more specific ones (a DHCP route to a metadata
+service, a VPN's internal subnets) that would otherwise win over a
+blackhole. The jail empties its route table, builds exactly the allowlist,
+and reads every table back before the agent starts; anything else refuses
+the launch. Explicit loopback relays expose the
 whole service on their selected port.
 
 This limits lateral movement to internal hosts and lab devices. It does not

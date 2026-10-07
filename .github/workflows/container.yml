@@ -135,7 +135,8 @@ jobs:
       # With the egress jail on (the default): a launch, the battery for each
       # agent, the entry-point guard and the PATH watcher end to end
       # (tests/entry_guard.sh, tests/watch_e2e.sh), then the jail in real
-      # namespaces (tests/jail_python.sh, which fetches pytest).
+      # namespaces (tests/jail_python.sh, which fetches pytest), in a
+      # container of its own.
       - name: "Test: end-to-end sandboxed launch (entrypoint -> shadow -> jail -> bwrap)"
         run: |
           # Rootless podman is the sandbox's supported runtime, and the one
@@ -169,8 +170,16 @@ jobs:
                 claude-sandbox verify --agent "$agent" || exit "$?"
               done
               bash /opt/claude-sandbox/tests/entry_guard.sh || exit "$?"
-              bash /opt/claude-sandbox/tests/watch_e2e.sh || exit "$?"
-              bash /opt/claude-sandbox/tests/jail_python.sh'
+              bash /opt/claude-sandbox/tests/watch_e2e.sh'
+          # The jail in real namespaces. NET_ADMIN on the outer container
+          # only, so the test can add host routes (a metadata /32, a VPN
+          # subnet) for pasta to mirror and prove the jail drops them.
+          podman run --rm -t --cap-add NET_ADMIN \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            --security-opt label=disable \
+            --device /dev/net/tun \
+            claude-sandbox:test bash /opt/claude-sandbox/tests/jail_python.sh
 
       - name: "Test: Pi streams a local tool call through the sandbox"
         run: |
