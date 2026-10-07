@@ -15,11 +15,12 @@ an agent session), as root:
 ./install --here
 ```
 
-`install` is a short Bash bootstrap: it chooses the revision, fetches a
-pinned uv if needed, and hands over to the Python installer in
-`src/claude_sandbox/installer/`. Without `--here`, it selects a release and
-refuses a pinned, non-default or modified checkout.
-<!-- TODO(phase5): confirm the bootstrap's behaviour once it is written (issue #72 phase 4, second part) -->
+`install` chooses the revision and runs `.devcontainer/claude-sandbox/install.sh`,
+a short Bash bootstrap that fetches a pinned uv, provisions the root-owned
+interpreter and hands over to the Python installer in
+`src/claude_sandbox/installer/` (see [The installer](#the-installer)).
+Without `--here`, `install` selects the newest release tag and refuses a
+pinned, non-default or modified checkout.
 
 The sandbox is a Python package, `src/claude_sandbox/`, with a root
 `pyproject.toml` ({ref}`ADR 26 <adr-python-implementation>`). See
@@ -47,20 +48,22 @@ coverage of `src/claude_sandbox/`, and pyright runs in strict mode: fix the
 code rather than relaxing the check.
 
 The end-to-end suites are shell scripts that test the installed sandbox
-from outside, as a user would. The CI workflow is the complete list; the
-core installation and launcher checks include:
-
-<!-- TODO(phase5): confirm this list against ci.yml after the bash is deleted -->
+from outside, as a user would. The CI workflows are the complete list. The
+installation suites run anywhere, as root inside the development container:
 
 ```bash
 CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
 bash tests/install_ref.sh
-bash tests/launcher.sh
-bash tests/shadow_launch.sh
-bash tests/shadow_git.sh
-bash tests/verify.sh
 bash tests/install_modes.sh
+bash tests/codex_launch.sh
 ```
+
+`tests/launcher.sh` and `tests/doctor.sh` drive the `claude-sandbox`
+command as a black box; `pytest` runs them (`tests/python/test_bash_suites.py`).
+`tests/entry_guard.sh`, `tests/watch_e2e.sh`, `tests/jail_python.sh` and
+`tests/pi_e2e.sh` run inside this repository's image, as
+`.github/workflows/container.yml` starts it; each file's header gives the
+command.
 
 Run installation tests as root inside the development container.
 The smoke flag confines fixture installations to temporary directories.
@@ -82,7 +85,7 @@ run as root share the package with the launch path.
 
 ### The audit core
 
-Three modules hold the security-critical code. Each is meant to be read top
+Four modules hold the security-critical code. Each is meant to be read top
 to bottom; don't spread them across more modules.
 
 | Module | What it holds |
@@ -90,6 +93,7 @@ to bottom; don't spread them across more modules.
 | `bwrap.py` | A pure function from agent profile, configuration and environment to the bwrap argv. The only place that adds a mount or an environment variable to it |
 | `jail.py` | The egress jail: the namespace holder, `pasta`, DNS forwarding and the loopback relays |
 | `shadow.py` | One launch, top to bottom: the recursion guard, the refusals, the configuration and Git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
+| `watch.py` | The PATH watcher ({ref}`ADR 27 <adr-outer-path-guard>`) |
 
 Around them:
 
@@ -99,7 +103,6 @@ Around them:
 | `profiles.py` | One frozen dataclass per agent: the real binary, home paths, injected flags, `--chrome` stripping |
 | `config.py` | The `/etc/claude-sandbox.conf` parser and the local-port and callback-port checks |
 | `gitconfig.py` | The jail's Git config, returned as text |
-| `watch.py` | The PATH watcher (ADR 27) |
 | `tools.py` | The fixed system directories the launch path runs its tools from |
 | `context.py`, `cli.py` | Where the CLI runs, and the command table |
 | `host/` | The host launcher: options, engine calls, `clean` |
@@ -205,31 +208,64 @@ does.
 
 ### The installer
 
-`install` (the clone route) and `uvx claude-sandbox install` both end in
-`src/claude_sandbox/installer/`, run as root.
-<!-- TODO(phase5): confirm against the wired-in installer (issue #72 phase 4, second part) -->
+`install` (the clone route) and `uvx claude-sandbox install` both run
+`.devcontainer/claude-sandbox/install.sh`, from the clone or from the copy
+the wheel bundles under `claude_sandbox/tree/`, as root. It is only a
+bootstrap:
 
-- Each step in `steps.py` is a `plan_*` function that reads the filesystem
-  and returns actions, and `actions.apply` performs them, so a second
-  install writes nothing. The steps take an install prefix and a user home
-  (`INSTALL_PREFIX`, `INSTALL_USER_HOME`), so tests run them on a temporary
-  tree. Files are created and moved without following symlinks, under
-  umask 022.
+1. It refuses `CLAUDE_SANDBOX_IMPL=bash` (and any value but `python`): 5.0
+   is Python-only.
+2. It fetches uv at the version pinned in `provision.py` (`UV_VERSION`) into
+   `/usr/libexec/claude-sandbox/uv`, checked against the pinned SHA-256,
+   unless a root-owned copy of that version is already there. It installs
+   `curl` with apt first if the container has none.
+3. It has uv install the pinned CPython (`PYTHON_VERSION`) under
+   `/usr/libexec/claude-sandbox/python`, never in uv's cache, and runs
+   `provision.py` with it. Provisioning builds the venv, pinned to the patch
+   directory rather than uv's minor-version symlink, copies the
+   `claude_sandbox` package into it, removes uv's `_virtualenv.pth` and the
+   venv's console scripts, prunes the interpreter (Tcl/Tk, idlelib, pip,
+   ensurepip, headers, tests, and the duplicate `libpython` when nothing
+   links it) to about 55 MB, byte-compiles it, makes it root-owned and not
+   group- or world-writable, and checks that every module of the package
+   imports under `-I`.
+4. It execs `venv/bin/python -I -m claude_sandbox.installer --source TREE`,
+   with a fixed `PATH` and the `UV_*`, `PYTHON*`, `VIRTUAL_ENV` and
+   `CONDA_*` variables removed.
+
+The installer (`src/claude_sandbox/installer/`) then places the shims as
+`/usr/local/bin/claude`, `codex`, `pi` and `claude-sandbox` first, before
+any vendor installer runs, and everything else:
+
+- Each file step in `steps.py` is a `plan_*` function that reads the
+  filesystem and returns actions, and `actions.apply` performs them, so a
+  second install writes nothing. The steps take an install prefix and a
+  user home (`INSTALL_PREFIX`, `INSTALL_USER_HOME`), so tests run them on a
+  temporary tree. Files are created and moved without following symlinks,
+  under umask 022.
+- `system.py` holds the steps that run tools: apt, the namespace probe and
+  the three agent downloads, each by absolute path through
+  `tools.find_tool`.
 - `jsonfile.py` reads and writes the JSON settings files in place of `jq`.
   The managed-settings step merges into
   `/etc/claude-code/managed-settings.json`, keeping existing administrator
   policy, and warns and skips a file it cannot parse or write back.
-- `provision.py` installs the pinned CPython and the venv under
-  `/usr/libexec/claude-sandbox/` with uv. uv's cache is not used, the venv
-  is pinned to the resolved patch directory rather than uv's minor-version
-  symlink, and the package is installed with `--no-deps`. It removes uv's
-  `_virtualenv.pth` and the venv's console scripts, prunes the interpreter
-  (Tcl/Tk, idlelib, pip, ensurepip, headers, tests, and the duplicate
-  `libpython` when nothing links it) to about 55 MB, byte-compiles it,
-  makes it root-owned and not group- or world-writable, and then checks that
-  every module of the package imports under `-I`.
-- The installer runs nothing found through `PATH`: `git` and uv are named by
-  absolute path.
+- The published image's entrypoint runs the same installer's
+  `--container-start` and `--probe-userns` from the root-owned venv.
+
+`tests/python/test_installer_steps.py` runs each step on a fixture tree;
+`test_installer_system.py` runs the system steps against stand-ins for
+apt, curl and the vendors' scripts; `test_provision.py` covers
+provisioning. `tests/smoke.sh` and `tests/install_modes.sh` run the whole
+install into temporary directories:
+
+```bash
+CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
+```
+
+A smoke run downloads nothing, so it starts the Python installer from the
+tree with the interpreter named in `CLAUDE_SANDBOX_SMOKE_PYTHON` (the tests
+default it to `python3`).
 
 ### The entry-point guard and the PATH watcher
 
@@ -261,49 +297,6 @@ the system bash and zsh rc files.
 In this repository's image, `tests/entry_guard.sh` and `tests/watch_e2e.sh`
 test the mount guard and the watcher end to end, and battery check 22
 asserts the binds from inside the jail.
-
-### The Python installer
-
-`src/claude_sandbox/installer/` is the Python port of `install.sh`. The bash
-installer stays the default; `CLAUDE_SANDBOX_IMPL=python` selects the Python
-one, for `./install`, `uvx claude-sandbox install`, the in-container
-`claude-sandbox update` of a Python install, and the image
-(`--build-arg CLAUDE_SANDBOX_IMPL=python`). With the opt-in, `install.sh` is
-only a bootstrap:
-
-1. It fetches uv at the version pinned in `provision.py` (`UV_VERSION`) into
-   `/usr/libexec/claude-sandbox/uv`, checked against the pinned SHA-256, unless a
-   root-owned copy of that version is already there.
-2. It has uv install the pinned CPython (`PYTHON_VERSION`) under
-   `/usr/libexec/claude-sandbox/python`, never in uv's cache, and runs
-   `provision.py` with it. Provisioning builds the venv, pinned to the patch
-   directory, copies the `claude_sandbox` package into it, prunes the
-   interpreter to about 56 MB, byte-compiles it, makes it root-owned and
-   checks the imports with `-I`.
-3. It execs `venv/bin/python -I -m claude_sandbox.installer`, which runs
-   `install.sh`'s steps in the same order and places the shims as
-   `/usr/local/bin/claude`, `codex`, `pi` and `claude-sandbox`.
-
-A default install removes what an opt-in left. The published image's
-entrypoint follows whichever installer built the image.
-
-Each file step in `steps.py` is a `plan_*` function that reads the filesystem
-and returns actions, and `actions.apply` performs them, so a second install
-writes nothing. `system.py` holds the steps that run tools (apt, the probes,
-the agent downloads), by absolute path through `tools.find_tool`.
-`tests/python/test_installer_parity.py` runs each bash step, and the whole
-`main()` with its summary, against its port on the same temporary tree and
-requires identical files, modes, warnings and output; the system steps are
-unit-tested against stand-ins. `tests/smoke.sh` and `tests/install_modes.sh`
-run against either installer:
-
-```bash
-CLAUDE_SANDBOX_IMPL=python CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
-```
-
-A smoke run downloads nothing, so it starts the Python installer from the
-tree with the interpreter named in `CLAUDE_SANDBOX_SMOKE_PYTHON` (the tests
-default it to `python3`).
 
 ## Build the docs locally
 
