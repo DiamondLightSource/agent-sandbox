@@ -216,8 +216,10 @@ protection. Even with a full *effective* cap set gained via a child `unshare
 `holder_main`/`lock_routes` inside the holder, `stage_dns`, the relays), one of
 the four audit-core modules of ADR 26 (with `bwrap.py`, `shadow.py`,
 `watch.py`), readable top to bottom; the `egress_jail_enabled` predicate and
-the `egress-jail`/`allow-ip` keys are in `config.py`. Every side effect goes
-through an `Ops` object so the unit tests replace it. Don't spread the jail
+the `egress-jail`/`allow-ip` keys are in `config.py`. The processes it
+starts and the `/proc` it reads go through an `Ops` object so the unit tests
+replace them; its files are real, under a test's temporary directory. Don't
+spread the jail
 across more modules (the `bf65407` failure ADR 26 guards against).
 
 **STATUS — IMPLEMENTED + END-TO-END VALIDATED (2026-06-18).** Probe + real
@@ -281,9 +283,9 @@ pasta's port forwarding and gateway mapping are OFF for every agent (`-t none
 -u none -T none -U none --no-map-gw`, ADR 19): auto-forwarding exposed
 unrelated host-loopback listeners. What crosses instead is one socat pair per
 port over a private Unix socket in the jail's `/tmp` relay dir (bwrap masks
-it), started by `jail.launch` (outer ends, `_outbound_relays` /
-`_callback_relays`) and the holder (inner ends, `_hold_with_relays`, in the
-netns before bwrap). Two directions, two conf keys:
+it), started by `jail.launch` (outer ends, in `_start`) and the holder (inner
+ends, `_hold_with_relays`, in the netns before bwrap), each through a
+`jail.Relays`. Two directions, two conf keys:
 
 - **Outbound** `local-model-port` (shipped 1920, Pi's lllm2 discovery) +
   `local-port` lines / `CLAUDE_SANDBOX_LOCAL_PORTS` (ADR 20): inner socat
