@@ -157,7 +157,14 @@ default. The plan is tracked in a GitHub issue.
   added outside `bwrap.py`.
 - Each guest gains a pinned CPython and venv: 56 MB once pruned, against
   124 MB as uv installs it (measured 2026-10-06, issue #72 phase 4), plus the
-  pinned uv the installer keeps to provision it (46 MB).
+  pinned uv the installer keeps to provision it (46 MB). Since issue #85 the
+  pruning keeps the C headers and `ensurepip` (60 MB), because the published
+  image's projects share the interpreter: their venvs link to it, root-owned
+  and outside every `allow-write`, instead of to a second uv-managed copy
+  under `/opt/uv/python` (104 MB), and the image drops the installer's uv
+  once it has provisioned, keeping its base image's for projects. The image
+  shrank by 146 MB, from 1,964 MB (5.0.0-beta.1) to 1,818 MB, measured
+  2026-10-07 with the same agent releases.
 - The trusted set grows from bash and coreutils to CPython.
 - The argv tests become pytest on a pure function. `tests/bwrap_argv.sh` is
   removed once the Python builder is the only one.

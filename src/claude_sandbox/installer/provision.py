@@ -47,11 +47,12 @@ MARGIN = (
 # What the venv never uses, relative to the interpreter's directory. Kept:
 # all of lib-dynload but _tkinter (the rest of the extensions, _ctypes
 # included, are built into the static binary), pydoc_data, and the
-# config-3.x directory sysconfig reads.
+# config-3.x directory sysconfig reads. Also kept, for the published image,
+# whose project venvs share this interpreter: the C headers (building an
+# extension from an sdist) and ensurepip (``python -m venv``), 4 MB.
 PRUNE = (
     "bin/idle*",
     "bin/pip*",
-    "include",  # C headers
     "share",  # man pages and terminfo, for the interactive REPL only
     "lib/pkgconfig",
     "lib/itcl*",  # Tcl/Tk
@@ -60,7 +61,6 @@ PRUNE = (
     "lib/tcl*",
     "lib/thread*",
     "lib/tk*",
-    "lib/python3.*/ensurepip",
     "lib/python3.*/idlelib",
     "lib/python3.*/lib-dynload/_tkinter.*",
     "lib/python3.*/site-packages/pip",

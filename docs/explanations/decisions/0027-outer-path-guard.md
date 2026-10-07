@@ -119,7 +119,8 @@ Options rejected:
   run `claude-sandbox alerts --clear`, or install outside the jail.
 - The interpreter allowance holds only where the interpreter is out of the
   session's reach. In the published image uv's Pythons are under
-  `/opt/uv/python` (root-owned, not bound read-write), and in a DLS
+  `/usr/libexec/claude-sandbox/python` (the sandbox's own, root-owned and
+  not bound read-write), and in a DLS
   python-copier devcontainer `uv venv` links to the system `/usr/bin/python3`.
   But a copier project whose `requires-python` the system Python does not
   meet gets a uv-managed Python in uv's default `~/.local/share/uv/python`,

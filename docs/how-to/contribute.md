@@ -225,8 +225,8 @@ bootstrap:
    directory rather than uv's minor-version symlink, copies the
    `claude_sandbox` package into it, removes uv's `_virtualenv.pth` and the
    venv's console scripts, prunes the interpreter (Tcl/Tk, idlelib, pip,
-   ensurepip, headers, tests, and the duplicate `libpython` when nothing
-   links it) to about 55 MB, byte-compiles it, makes it root-owned and not
+   tests, and the duplicate `libpython` when nothing links it) to about
+   60 MB, byte-compiles it, makes it root-owned and not
    group- or world-writable, and checks that every module of the package
    imports under `-I`.
 4. It execs `venv/bin/python -I -m claude_sandbox.installer --source TREE`,
