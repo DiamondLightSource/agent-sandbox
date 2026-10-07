@@ -16,6 +16,7 @@ into your own devcontainer.
 | `/usr/libexec/claude-sandbox/codex-dist/` | Codex release, including its bundled helpers; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-dist/` | Standalone Pi executable and assets; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-run` | Pi launch-marker check; see [its limits](../how-to/use-pi.md#verify-the-sandbox) |
+| `/usr/libexec/claude-sandbox/pi-system.md` | System-prompt note that tells Pi about the sandbox it runs in |
 | `/usr/libexec/claude-sandbox/codex-launch` | Codex's in-jail launch wrapper |
 | `/usr/local/bin/claude-sandbox` | The `claude-sandbox` command, run by the same interpreter: `gh-auth`, `glab-auth`, `update`, `verify`, `pi-local`, `doctor`, `alerts`, `version` |
 | `/usr/libexec/claude-sandbox/verify-sandbox-battery.sh` | Installed isolation checks |
