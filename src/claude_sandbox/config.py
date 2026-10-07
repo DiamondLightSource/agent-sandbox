@@ -20,6 +20,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 CONFIG_PATH = "/etc/claude-sandbox.conf"
+# The device the egress jail (ADR 15) needs; the container must be given it.
+TUN = "/dev/net/tun"
 
 WORKSPACE_ROOT = "CLAUDE_SANDBOX_WORKSPACE_ROOT"
 NO_FORGE = "CLAUDE_SANDBOX_NO_FORGE"
@@ -185,6 +187,24 @@ def resolve_workspace_root(config: Config, pwd: str) -> str:
 def egress_jail_enabled(config: Config) -> bool:
     """ADR 0015: ON unless explicitly ``0``; any other value means on."""
     return (config.egress_jail or "1") != "0"
+
+
+def egress_jail_configured(conf: str, env: Mapping[str, str]) -> bool:
+    """Whether a launch with ``env`` would jail egress, read as the shadow
+    reads it (the conf at ``conf``, then the environment). An unreadable
+    conf counts as the default, on: the launch fails on it anyway."""
+    try:
+        merged = parse_config(conf, env)
+    except OSError:
+        merged = dict(env)
+    return egress_jail_enabled(Config.from_env(merged))
+
+
+def tun_missing(conf: str, env: Mapping[str, str], tun: str) -> bool:
+    """The egress jail is on and the device it needs is absent: the launch
+    would refuse (``jail.py``). Issue #71: the installer and ``doctor`` say
+    so first."""
+    return not os.path.exists(tun) and egress_jail_configured(conf, env)
 
 
 def valid_tcp_port(port: str) -> bool:

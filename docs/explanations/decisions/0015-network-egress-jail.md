@@ -218,7 +218,9 @@ Two structural choices fix scope:
   the tun device. A plain `git clone + ./install` guest that wants the default
   jail must add the one runArg — the error says so — and otherwise opts out with
   `=0`. The deliberate trade: a loud stop over a silent downgrade of the default
-  control.
+  control. Since issue #71 the install, the published image's start and
+  `claude-sandbox doctor` also warn about a missing tun device, before the
+  first launch; the launch itself stays fail-closed.
 - **Verification will follow the same three-surface model** as
   {ref}`adr-integrity-surfaces`: a FUTURE, optional jail-aware check (not yet
   implemented) would assert, when the jail is enabled, that the netns exists and

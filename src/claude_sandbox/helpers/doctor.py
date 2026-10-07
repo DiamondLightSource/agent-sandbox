@@ -6,10 +6,10 @@ from the environment so the tests stay hermetic, as in the bash.
 
 Where the Python shadow is installed it also checks, from outside the jail,
 that the agents' names reach it on PATH (Invariant 1) and whether the PATH
-watcher has quarantined anything (ADR 27), and that the container has the
-``/dev/net/tun`` the egress jail needs (issue #71). None is for ``--fix``:
-what put a file there needs a person to look at it, and the device is the
-container's to give.
+watcher has quarantined anything (ADR 27). Neither is for ``--fix``: what
+put a file there needs a person to look at it. Nor is the last check, that
+the container has the ``/dev/net/tun`` the egress jail needs (issue #71):
+the device is the container's to give.
 """
 
 import json
@@ -19,10 +19,8 @@ import tempfile
 import time
 from typing import cast
 
-from .. import context, watch
+from .. import config, context, watch
 from ..bwrap import SHADOW_DIR
-from ..installer.steps import CONF
-from ..installer.system import TUN, TUN_DOCS, tun_missing
 from ..shadow import SHIM, entry_point_problems
 
 # The installed shadow; the Python one is the shim.
@@ -285,21 +283,23 @@ class Doctor:
             )
         else:
             self.report("ok", "quarantined", "nothing")
-        self.tun()
 
     def tun(self) -> None:
         """The egress jail's device, judged from the container: an agent
         session has its own /dev."""
+        tun = config.TUN
         if context.current() is context.JAIL:
             self.report("skip", "tun device", "run doctor outside the agent")
-        elif tun_missing(CONF, os.environ, TUN):
+        elif not config.egress_jail_configured(config.CONFIG_PATH, os.environ):
+            self.report("skip", "tun device", "the egress jail is off")
+        elif config.tun_missing(config.CONFIG_PATH, os.environ, tun):
             self.warn(
                 "tun device",
-                f"{TUN} is missing; add --device={TUN} to the container"
-                f" (see {TUN_DOCS})",
+                f"{tun} is missing; add --device={tun} to the container,"
+                " then rebuild or re-create it",
             )
         else:
-            self.report("ok", "tun device", "present, or the egress jail is off")
+            self.report("ok", "tun device", f"{tun} present")
 
     def run(self) -> int:
         self.tag()
@@ -318,6 +318,7 @@ class Doctor:
         self.prompt("zsh")
         self.prompt("bash")
         self.guards()
+        self.tun()
         if self.warned and not self.pending:
             return 1
         if self.pending:

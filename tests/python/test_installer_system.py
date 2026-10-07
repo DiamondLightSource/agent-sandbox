@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from claude_sandbox import config
 from claude_sandbox.installer import __main__ as cli
 from claude_sandbox.installer import install, system
 from claude_sandbox.installer.steps import InstallError, Layout, Options
@@ -321,19 +322,19 @@ def test_a_missing_tun_is_reported_when_the_jail_is_on(
 ) -> None:
     conf = tmp_path / "conf"
     tun = str(tmp_path / "tun")
-    assert system.tun_missing(str(conf), {}, tun)
-    assert not system.tun_missing(str(conf), {"CLAUDE_SANDBOX_EGRESS_JAIL": "0"}, tun)
+    assert config.tun_missing(str(conf), {}, tun)
+    assert not config.tun_missing(str(conf), {"CLAUDE_SANDBOX_EGRESS_JAIL": "0"}, tun)
     conf.write_text("egress-jail = 0\n")
-    assert not system.tun_missing(str(conf), {}, tun)
+    assert not config.tun_missing(str(conf), {}, tun)
     # The environment wins over the conf, as at launch.
-    assert system.tun_missing(str(conf), {"CLAUDE_SANDBOX_EGRESS_JAIL": "1"}, tun)
-    assert not system.tun_missing(str(conf), {}, str(conf))  # the device is there
+    assert config.tun_missing(str(conf), {"CLAUDE_SANDBOX_EGRESS_JAIL": "1"}, tun)
+    assert not config.tun_missing(str(conf), {}, str(conf))  # the device is there
 
     def unreadable(path: str, env: object) -> dict[str, str]:
         raise PermissionError(path)
 
-    monkeypatch.setattr(system, "parse_config", unreadable)
-    assert system.tun_missing(str(conf), {}, tun)  # the default: on
+    monkeypatch.setattr(config, "parse_config", unreadable)
+    assert config.tun_missing(str(conf), {}, tun)  # the default: on
 
 
 def test_the_install_and_container_start_warn_but_not_the_image_build(
@@ -342,18 +343,23 @@ def test_the_install_and_container_start_warn_but_not_the_image_build(
     from claude_sandbox.installer import container_start
 
     layout, options = setup(tmp_path)
-    monkeypatch.setattr(system, "TUN", str(tmp_path / "tun"))
+    monkeypatch.setattr(config, "TUN", str(tmp_path / "tun"))
     monkeypatch.delenv("CLAUDE_SANDBOX_EGRESS_JAIL", raising=False)
+    assert '"runArgs": ["--device=/dev/net/tun"]' in system.TUN_WARNING
 
     def warned(options: Options) -> str:
         err = io.StringIO()
         system.warn_if_no_tun(layout, options, err)
         return err.getvalue()
 
-    assert warned(options) == system.TUN_WARNING + "\n"
-    assert '"runArgs": ["--device=/dev/net/tun"]' in system.TUN_WARNING
     assert warned(replace(options, image_build=True)) == ""
     assert warned(replace(options, smoke=True)) == ""
+    # A whole install, outside smoke mode, warns last.
+    executable(layout.system(system.CLAUDE_REAL))
+    err = io.StringIO()
+    plain = replace(options, with_codex=False, with_pi=False)
+    install(layout, plain, err, io.StringIO(), FakeRun())
+    assert err.getvalue().endswith(system.TUN_WARNING + "\n")
     err = io.StringIO()
     container_start(layout, options, err)
     assert err.getvalue().endswith(system.TUN_WARNING + "\n")

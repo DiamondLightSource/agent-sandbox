@@ -15,11 +15,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
-from ..config import Config, egress_jail_enabled, parse_config
+from .. import config
 from ..tools import find_tool
 from .steps import CONF, LIBEXEC, InstallError, Layout, Options
 
@@ -97,28 +97,15 @@ def probe_userns_or_refuse(options: Options, run: Run = subprocess.run) -> None:
         raise InstallError(USERNS_REFUSAL)
 
 
-TUN = "/dev/net/tun"
 TUN_DOCS = "https://diamondlightsource.github.io/claude-sandbox/how-to/network-egress-jail.html"
 TUN_WARNING = f"""\
-claude-sandbox: WARNING — this container has no {TUN}.
-The network egress jail is on, and claude, codex and pi will refuse to
-launch without it. Give the container the device and rebuild it:
-    devcontainer.json:   "runArgs": ["--device={TUN}"]
-    podman/docker run:   --device {TUN}
+claude-sandbox: WARNING — this container has no {config.TUN}.
+The network egress jail is on by default, and claude, codex and pi refuse
+to launch with it on and no {config.TUN}. Give the container the device,
+then rebuild or re-create the container:
+    devcontainer.json:   "runArgs": ["--device={config.TUN}"]
+    podman/docker run:   --device {config.TUN}
 See {TUN_DOCS}"""
-
-
-def tun_missing(conf: str, env: Mapping[str, str], tun: str) -> bool:
-    """The egress jail is on, as a launch would read it (the conf, then the
-    environment, ADR 15), and the device it needs is absent. The launch
-    refuses then (``jail.py``); this lets the install and doctor say so first."""
-    if os.path.exists(tun):
-        return False
-    try:
-        merged = parse_config(conf, env)
-    except OSError:
-        merged = dict(env)  # the launch fails on it too; assume the default
-    return egress_jail_enabled(Config.from_env(merged))
 
 
 def warn_if_no_tun(layout: Layout, options: Options, err: TextIO) -> None:
@@ -128,7 +115,7 @@ def warn_if_no_tun(layout: Layout, options: Options, err: TextIO) -> None:
     entrypoint's ``--container-start`` that warns there."""
     if options.smoke or options.image_build:
         return
-    if tun_missing(str(layout.system(CONF)), os.environ, TUN):
+    if config.tun_missing(str(layout.system(CONF)), os.environ, config.TUN):
         print(TUN_WARNING, file=err)
 
 

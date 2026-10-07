@@ -29,7 +29,7 @@ doctor() {
     while [ "$1" != "--" ]; do envs+=( "$1" ); shift; done; shift
     OUT="$(env -i PATH="$PATH" HOME="$TMP/home" CLAUDE_SANDBOX_LIBEXEC="$TMP/libexec" \
         CLAUDE_SANDBOX_TAG_FILE="$TMP/tag" USER_TERMINAL_CONFIG="$TMP/terminal-config" \
-        "${envs[@]}" bash "$CLI" doctor "$@" 2>&1)"; RC=$?
+        CLAUDE_SANDBOX_EGRESS_JAIL=0 "${envs[@]}" bash "$CLI" doctor "$@" 2>&1)"; RC=$?
 }
 has() { printf '%s\n' "$OUT" | grep -qE -- "$2" && pass || fail "$1: no /$2/ in: $OUT"; }
 
@@ -42,6 +42,8 @@ has "settings pending" '^  todo +claude settings '
 has "pi pending" '^  todo +pi footer '
 has "zsh pending" '^  todo +zsh prompt '
 has "bash pending" '^  todo +bash prompt '
+# The host's own /dev/net/tun and conf stay out of it: the jail is off here.
+has "tun not judged" '^  skip +tun device +the egress jail is off$'
 assert_eq "report leaves the script alone" "echo mine" "$(tail -1 "$TMP/home/.claude/statusline-command.sh")"
 ls "$TMP/home/.claude/"*.bak-* >/dev/null 2>&1 && fail "report made a backup" || pass
 
