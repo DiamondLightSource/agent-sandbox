@@ -471,7 +471,7 @@ class Launcher:
             )
             raise SystemExit(1)
         say(f"reusing {self.name}")
-        rebuild = False
+        rebuild = self.warn_if_bash_era()
         local_img = self.out("image", "inspect", "-f", "{{.Id}}", self.image)
         ctr_img = self.inspect("{{.Image}}", self.name)
         if local_img and ctr_img and local_img != ctr_img:
@@ -497,6 +497,29 @@ class Launcher:
             rebuild = True
         if rebuild:
             note("rebuild", f"{self.self_name} --recreate")
+
+    def warn_if_bash_era(self) -> bool:
+        """Warn, loudly but without refusing, when the container was made
+        from an image older than 5.0: it still runs the 4.x bash sandbox.
+        Its image's launcher-version label says which; no label is older."""
+        fmt = f'{{{{index .Config.Labels "{VERSION_LABEL}"}}}}'
+        label = self.inspect(fmt, self.name) or ""
+        major = re.match(r"\d+", label)
+        if major and int(major.group()) >= 5:
+            return False
+        self.warn(
+            f"this container runs the 4.x bash sandbox (image {label or 'unlabelled'}),"
+            " without 5.0's security fixes:"
+        )
+        for line in (
+            "agents can reach more-specific routes copied from the outer",
+            "network, such as cloud metadata services and VPN split routes,",
+            "and there is no PATH guard against executables a session leaves",
+            "behind. Recreate it to run the 5.0 sandbox (forge logins must",
+            "be re-done afterwards).",
+        ):
+            note("", line)
+        return True
 
     # --- the session ----------------------------------------------------------
 

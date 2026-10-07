@@ -21,6 +21,9 @@ RUNNING = "{{.State.Running}}"
 KEEPER = '{{join .Config.Cmd " "}}'
 
 
+LABEL = f'{{{{index .Config.Labels "{launcher.VERSION_LABEL}"}}}}'
+
+
 class Engine:
     """A fake podman: containers by name, each a map of inspect format to answer."""
 
@@ -35,7 +38,7 @@ class Engine:
 
     def add(self, name: str, running: bool = False) -> dict[str, str]:
         ctr = {RUNNING: str(running).lower(), KEEPER: launcher.KEEPER_CMD}
-        self.containers[name] = ctr | {"{{len .ExecIDs}}": "0"}
+        self.containers[name] = ctr | {"{{len .ExecIDs}}": "0", LABEL: "5.0.0"}
         return self.containers[name]
 
     def run(
@@ -300,6 +303,36 @@ def test_session_creates_starts_execs_and_stops(
     assert engine.called("exec") == [["exec", "-it", r.name, "claude", "-p"]]
     assert engine.called("stop") and paused == [True]
     assert capsys.readouterr().out == launcher.MOUSE_RESET
+
+
+@pytest.mark.parametrize("label", ["4.7.1", "4.8.0-beta.1", "<no value>", None])
+def test_a_4x_container_is_reused_with_a_loud_warning(
+    engine: Engine, capsys: pytest.CaptureFixture[str], label: str | None
+) -> None:
+    """Made from an image older than 5.0 (or with no label): reused, never
+    refused, but the user is told it is the bash sandbox and how to leave."""
+    r = run(Options())
+    ctr = engine.add(r.name, running=True)
+    if label is None:
+        del ctr[LABEL]
+    else:
+        ctr[LABEL] = label
+    assert r.session(["claude"], pause=False) == 0
+    err = capsys.readouterr().err
+    assert "this container runs the 4.x bash sandbox" in err
+    assert "cloud metadata services and VPN split routes" in err
+    assert "no PATH guard against executables a session leaves" in err
+    assert "rebuild     claude-sandbox --recreate" in err
+    assert r.warned and engine.called("exec")
+
+
+def test_a_5x_container_is_reused_quietly(
+    engine: Engine, capsys: pytest.CaptureFixture[str]
+) -> None:
+    r = run(Options())
+    engine.add(r.name, running=True)
+    assert r.session(["claude"], pause=False) == 0
+    assert "bash sandbox" not in capsys.readouterr().err and not r.warned
 
 
 def test_reuse_warns_and_recreate_removes(

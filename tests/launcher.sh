@@ -18,7 +18,8 @@ mkdir -p "$TMP/bin" "$TMP/project"
 LOG="$TMP/engine.log"
 
 # The fake engine. Existence of the container is a marker file created by
-# `create`; the image label is FAKE_IMG_VER (empty = unlabelled).
+# `create`; the image label is FAKE_IMG_VER (empty = unlabelled), and an
+# existing container's (its image's) label FAKE_CTR_VER, 5.0.0 unless set.
 cat > "$TMP/bin/podman" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$LOG"
@@ -27,6 +28,8 @@ case "$*" in
     "container inspect -f {{join .Config.Cmd \" \"}} "*) echo 'bash -c trap "exit 0" TERM INT; while :; do sleep 60 & wait $!; done' ;;
     "container inspect -f {{.Created}} "*) echo 2026-09-13T00:00:00 ;;
     "container inspect -f {{.Image}} "*) echo img1 ;;
+    "container inspect -f {{index .Config.Labels \"io.diamondlightsource.claude-sandbox.launcher-version\"}} "*)
+        echo "${FAKE_CTR_VER-5.0.0}" ;;
     "container inspect -f {{range .Mounts}}{{println .Destination}}{{end}} "*) printf '%s' "${FAKE_MOUNTS:-}" ;;
     "container inspect -f {{len .ExecIDs}} "*) echo 0 ;;
     "container inspect claude-sandbox-"*) case "$*" in *"$(cat "$PS" 2>/dev/null | head -1)"*) [ -s "$PS" ] ;; *) [ -e "$MARK" ] ;; esac ;;
@@ -182,6 +185,15 @@ case "$ERR" in *"mounts the parent directory"*) fail "peers container warned abo
 # A plain reuse prints the headline alone.
 PROJECT="$TMP/ws/project" run --
 assert_eq 'plain reuse prints one line' "claude-sandbox: reusing claude-sandbox-project-$(printf '%s' "$TMP/ws/project" | cksum | awk '{print $1}')" "$ERR"
+# A container from a 4.x image (or an unlabelled one) is reused, with a loud
+# warning that it still runs the bash sandbox, and the way out.
+for old in 4.7.1 ""; do
+    PROJECT="$TMP/ws/project" run FAKE_CTR_VER="$old" --
+    assert_eq "4.x container ($old) is still reused" 0 "$RC"
+    assert_parse "4.x container ($old) warns" grep -Fq -- 'runs the 4.x bash sandbox' <<< "$ERR"
+    assert_parse "4.x container ($old) names the routes" grep -Fq -- 'cloud metadata services and VPN split routes' <<< "$ERR"
+    assert_parse "4.x container ($old) explains recreation" grep -Eq -- '^  rebuild     .* --recreate$' <<< "$ERR"
+done
 rm -f "$TMP/ps"
 run -- --peers   # project directly under $HOME: parent holds ~, must not be mounted
 assert_not_contains "parent containing HOME is not mounted" "$(create_line)" "src=$TMP,dst=$TMP,"

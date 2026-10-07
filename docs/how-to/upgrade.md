@@ -81,6 +81,11 @@ destinations stayed reachable from an agent session. 5.0 rebuilds and
 verifies the jail's route table, and also blocks Azure's WireServer
 (`168.63.129.16`).
 
+A 5.0 launcher keeps reusing a project container made from a 4.x image, but
+warns each time that it still runs the 4.x bash sandbox without these
+fixes. Run `claude-sandbox --recreate` in each such project, then sign in
+to your forges again.
+
 `CLAUDE_SANDBOX_IMPL`, which opted in to the Python implementation before
 5.0, is no longer used: unset or `python` installs as usual, and
 `bash` (or any other value) refuses. Remove it from your `postCreate`.
