@@ -98,6 +98,25 @@ def read_git_config(key: str, env: Mapping[str, str]) -> str:
     return os.fsdecode(out).rstrip("\n")
 
 
+def spawn_and_wait(path: str, argv: list[str], env: Mapping[str, str]) -> int:
+    """Run ``argv`` on this terminal and return its status, 128 plus the
+    signal's number when a signal killed it. Ctrl-C is the child's to
+    handle; a TERM or HUP for this process stops the child too."""
+    proc = subprocess.Popen(argv, executable=path, env=dict(env))
+    try:
+        while True:
+            try:
+                rc = proc.wait()
+                break
+            except KeyboardInterrupt:
+                continue
+    finally:
+        if proc.returncode is None:
+            proc.terminate()
+            proc.wait()
+    return rc if rc >= 0 else 128 - rc
+
+
 @dataclass(frozen=True)
 class Host:
     """The paths the shadow reads and writes, and how it execs.
@@ -120,6 +139,8 @@ class Host:
         [watch.Session, Callable[[str], None]], AbstractContextManager[None]
     ] = watch.watching
     fork_watcher: Callable[[watch.Session], None] = watch.fork_watcher
+    getpid: Callable[[], int] = os.getpid
+    spawn: Callable[[str, list[str], Mapping[str, str]], int] = spawn_and_wait
 
 
 INSTALLED = Host()
@@ -223,8 +244,15 @@ def run(
         if resolv is not None:
             _remove(resolv)
     # The jail is off, so this process is about to become script(1): a child
-    # watches for as long as it runs.
+    # watches for as long as it runs. Not as PID 1 (the image's default
+    # command): the watcher would be orphaned to script itself, and each
+    # would wait for the other. There script runs as a child instead, and the
+    # watcher is a thread, as with the jail on.
     if session is not None:
+        if host.getpid() == 1:
+            with host.watching(session, term.warn_raw):
+                status = host.spawn(terminal[0], terminal, launch_env)
+            sys.exit(status)
         host.fork_watcher(session)
     _exec(host, terminal[0], terminal, launch_env)
 

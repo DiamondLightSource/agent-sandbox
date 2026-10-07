@@ -282,7 +282,8 @@ executables a session leaves behind. Two parts, both in the package:
   empty file the guard leaves.
 - `watch.py` is the watcher. `shadow.py` runs it in a thread around the
   jailed launch, and forks it as a child when the jail is off (the shadow
-  then execs `script(1)`). It uses inotify through `ctypes` with a pass
+  then execs `script(1)`), except as PID 1, where `script` runs as a child
+  and the watcher stays a thread. It uses inotify through `ctypes` with a pass
   every second as a fallback, quarantines by clearing execute bits through
   a descriptor opened without following links, and records each action
   under the state directory. Interpreter pruning must keep `_ctypes`.

@@ -732,3 +732,36 @@ def test_dunder_main_dispatches(
         runpy.run_module("claude_sandbox", run_name="__main__")
     assert exc.value.code == 2
     assert "usage:" in capsys.readouterr().err
+
+
+def test_as_pid_1_script_is_a_child_and_the_watcher_a_thread(fx: Fixture) -> None:
+    """PID 1 (the image's default command): a forked watcher would be
+    orphaned to script(1) itself and each would wait for the other."""
+    spawned: list[list[str]] = []
+    watched: list[watch.Session] = []
+
+    @contextmanager
+    def watching(
+        session: watch.Session, report: Callable[[str], None]
+    ) -> Generator[None]:
+        watched.append(session)
+        yield
+
+    def spawn(path: str, argv: list[str], env: Mapping[str, str]) -> int:
+        assert watched, "the watcher starts before script"
+        spawned.append(argv)
+        return 3
+
+    host = replace(fx.host, getpid=lambda: 1, spawn=spawn, watching=watching)
+    with pytest.raises(SystemExit) as exc:
+        shadow.run("claude", [], fx.env, host)
+    assert exc.value.code == 3
+    assert spawned[0][0] == str(fx.root / "tools/script")
+    assert len(watched) == 1 and fx.forked == []
+
+
+@pytest.mark.parametrize(
+    ("command", "status"), [("exit 3", 3), ("kill -TERM $$", 128 + signal.SIGTERM)]
+)
+def test_spawn_and_wait_reports_the_status(command: str, status: int) -> None:
+    assert shadow.spawn_and_wait("/bin/sh", ["sh", "-c", command], {}) == status
