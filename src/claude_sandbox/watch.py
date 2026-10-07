@@ -42,17 +42,16 @@ import re
 import select
 import signal
 import stat
-import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import NoReturn, cast
 
 from .bwrap import STATE_DIR, inside, path_ahead, watched_path_dirs
-from .tools import find_tool
+from .tools import find_tool, output, write_atomic
 
 # Where the alerts go when /run cannot be written (bwrap masks /tmp).
 FALLBACK_STATE_DIR = "/tmp/claude-sandbox"
@@ -115,20 +114,8 @@ def git_hooks_path(workspace: str) -> str | None:
         return None
     argv = [git, "-C", workspace, "-c", "core.fsmonitor=false"]
     env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/root")}
-    try:
-        done = subprocess.run(
-            [*argv, "config", "--get", "core.hooksPath"],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    value = os.fsdecode(done.stdout).rstrip("\n")
-    return value if done.returncode == 0 and value else None
+    rc, value = output([*argv, "config", "--get", "core.hooksPath"], env, timeout=5)
+    return value if rc == 0 and value else None
 
 
 def _hooks_path_dir(workspace: str, value: str) -> str | None:
@@ -366,17 +353,10 @@ def load_baseline(state: str, directory: str) -> dict[str, Sig] | None:
 
 def save_baseline(state: str, directory: str, sigs: Mapping[str, Sig]) -> None:
     path = _baseline_path(state, directory)
-    tmp = f"{path}.{os.getpid()}"
-    try:
+    data = json.dumps({"dir": directory, "entries": sigs}).encode()
+    with suppress(OSError):
         os.makedirs(os.path.dirname(path), 0o755, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"dir": directory, "entries": sigs}, f)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        write_atomic(path, data, 0o644)
 
 
 def _states(states: Sequence[str] | None) -> Sequence[str]:

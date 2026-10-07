@@ -579,32 +579,6 @@ def test_original_environ(tmp_path: Path) -> None:
     assert shadow.original_environ()["PATH"] == os.environ["PATH"]
 
 
-def test_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "real").mkdir()
-    (tmp_path / "link").symlink_to(tmp_path / "real")
-    monkeypatch.chdir(tmp_path / "link")
-    real = os.getcwd()
-    assert shadow.working_directory({"PWD": str(tmp_path / "link")}) == str(
-        tmp_path / "link"
-    )
-    assert shadow.working_directory({"PWD": str(tmp_path)}) == real
-    assert shadow.working_directory({"PWD": "relative"}) == real
-    assert shadow.working_directory({"PWD": "/no/such/dir"}) == real
-    assert shadow.working_directory({}) == real
-
-
-def test_read_git_config(tmp_path: Path) -> None:
-    cfg = tmp_path / "gitconfig"
-    cfg.write_text("[user]\n\tname = Real Name\n")
-    env = {"PATH": str(tmp_path), "GIT_CONFIG_GLOBAL": str(cfg)}
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    git = find_tool("git")
-    assert shadow.read_git_config(git, "user.name", env) == "Real Name"
-    assert shadow.read_git_config(git, "user.email", env) == ""
-    assert shadow.read_git_config(None, "user.name", env) == ""  # no git at all
-    assert shadow.read_git_config("/nonexistent/git", "user.name", env) == ""
-
-
 def test_pause_needs_a_person_at_the_terminal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -760,10 +734,3 @@ def test_as_pid_1_script_is_a_child_and_the_watcher_a_thread(
         shadow.run("claude", [], fx.env, replace(fx.host, watching=watching))
     assert exc.value.code == 3
     assert len(watched) == 1 and fx.forked == []
-
-
-@pytest.mark.parametrize(
-    ("command", "status"), [("exit 3", 3), ("kill -TERM $$", 128 + signal.SIGTERM)]
-)
-def test_spawn_and_wait_reports_the_status(command: str, status: int) -> None:
-    assert shadow.spawn_and_wait("/bin/sh", ["sh", "-c", command], {}) == status

@@ -23,6 +23,7 @@ from claude_sandbox import jail
 from claude_sandbox.config import Config
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.jail import Ops, stage_dns
+from claude_sandbox.tools import shell_status
 
 PY = sys.executable
 COMMAND = [
@@ -1089,8 +1090,8 @@ def test_route_field_and_status() -> None:
     assert jail.route_field("via", route) == "10.0.2.2"
     assert jail.route_field("dev", route) == "eth0"
     assert jail.route_field("dhcp", route) == ""
-    assert jail.status(3) == 3
-    assert jail.status(-signal.SIGTERM) == 143
+    assert shell_status(3) == 3
+    assert shell_status(-signal.SIGTERM) == 143
 
 
 def test_real_ops(tmp_path: Path) -> None:

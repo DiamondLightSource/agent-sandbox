@@ -15,13 +15,14 @@ the device is the container's to give.
 import json
 import os
 import shutil
-import tempfile
 import time
 from typing import cast
 
 from .. import config, context, watch
 from ..bwrap import SHADOW_DIR
+from ..profiles import LIBEXEC
 from ..shadow import SHIM, entry_point_problems
+from ..tools import write_atomic
 
 # The installed shadow; the Python one is the shim.
 SHADOW = f"{SHADOW_DIR}/claude"
@@ -99,9 +100,7 @@ class Doctor:
         self.warned = False
         self.path = env.get("PATH", "")
         self.home = env.get("HOME") or os.path.expanduser("~")
-        self.libexec = (
-            env.get("CLAUDE_SANDBOX_LIBEXEC") or "/usr/libexec/claude-sandbox"
-        )
+        self.libexec = env.get("CLAUDE_SANDBOX_LIBEXEC") or LIBEXEC
         self.tag_file = env.get("CLAUDE_SANDBOX_TAG_FILE") or "/etc/claude-sandbox-tag"
         self.terminal_config = (
             env.get("USER_TERMINAL_CONFIG") or "/user-terminal-config"
@@ -156,12 +155,8 @@ class Doctor:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             if present:
                 self.backup(dest)
-            # install(1): replace DEST (not write through a link) with MODE.
-            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest))
-            os.close(fd)
-            shutil.copyfile(shipped, tmp)
-            os.chmod(tmp, mode)
-            os.replace(tmp, dest)
+            with open(shipped, "rb") as f:
+                write_atomic(dest, f.read(), mode)
             self.report("fixed", subject, f"installed {dest}")
 
     def claude_settings(self) -> None:
@@ -200,11 +195,8 @@ class Doctor:
                 self.backup(settings)
             os.makedirs(os.path.dirname(settings), exist_ok=True)
             data["statusLine"] = {"type": "command", "command": SL_CMD}
-            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(settings))
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, settings)
+            text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+            write_atomic(settings, text.encode(), 0o644)
             self.report("fixed", "claude settings", "statusLine now runs the script")
 
     def prompt(self, shell: str) -> None:

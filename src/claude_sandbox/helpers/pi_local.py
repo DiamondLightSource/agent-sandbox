@@ -10,9 +10,10 @@ import json
 import os
 import re
 import sys
-import tempfile
 import urllib.request
 from typing import cast
+
+from ..tools import write_atomic
 
 DEFAULT_PORT = "1920"
 USAGE = "Usage: claude-sandbox pi-local [--port PORT] or pi-local MODEL CONTEXT [PORT]"
@@ -159,12 +160,10 @@ def pi_local(args: list[str]) -> int:
     umask = os.umask(0o077)
     try:
         os.makedirs(directory, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".models.")
     finally:
         os.umask(umask)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    os.replace(tmp, path)
+    text = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
+    write_atomic(path, text.encode(), 0o600)
     print(f"Configured Pi's lllm2 provider at http://127.0.0.1:{port}/v1.")
     print("Select lllm2 in Pi's /model picker, or launch pi --model lllm2.")
     print(

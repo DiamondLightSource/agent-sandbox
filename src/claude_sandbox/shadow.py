@@ -1,12 +1,9 @@
 """The shadow: what runs when a user types ``claude``, ``codex`` or ``pi``.
 
-Once the launch body of the bash shadow that 5.0 replaced (ADR 26), with
-its ``configure_launch``, ``sandbox_launch`` and their helpers; comments
-that say "the bash" record where this keeps or departs from it. The
-three-line bash shim at
-``/usr/local/bin/<agent>`` execs the root-owned interpreter with ``-I`` and
-lands in ``main`` below (ADR 26). Read top to bottom: ``run`` is the order a
-launch happens in, and each step is a function just below it.
+The three-line bash shim at ``/usr/local/bin/<agent>`` execs the root-owned
+interpreter with ``-I`` and lands in ``main`` below (ADR 26). Read top to
+bottom: ``run`` is the order a launch happens in, and each step is a
+function just below it.
 
 This module adds no bind and no environment to the bwrap argv; ``bwrap.py``
 builds all of it. The egress jail is ``jail.py``.
@@ -19,12 +16,9 @@ import os
 import shlex
 import signal
 import stat
-import subprocess
 import sys
-import tempfile
-import termios
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, field
 from errno import ENOENT
 from types import FrameType
@@ -59,7 +53,15 @@ from .profiles import (
     detect_agent,
     filter_chrome_args,
 )
-from .tools import TOOL_PATH, find_tool
+from .tools import (
+    TOOL_PATH,
+    find_tool,
+    output,
+    read_key,
+    spawn_and_wait,
+    working_directory,
+    write_atomic,
+)
 
 # The shim, byte for byte as the installer places it (ADR 26). The self-exec
 # check compares the real binary against it; a test pins it to the file.
@@ -71,47 +73,6 @@ SHIM = (
 )
 
 ExecVE = Callable[[str, list[str], Mapping[str, str]], NoReturn]
-
-
-def read_git_config(git: str | None, key: str, env: Mapping[str, str]) -> str:
-    """``$(git config --get KEY 2>/dev/null || true)``: empty when unset.
-
-    ``git`` comes from the fixed tool path (tools.py); without it the
-    identity is empty.
-    """
-    if git is None:
-        return ""
-    try:
-        out = subprocess.run(
-            [git, "config", "--get", key],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).stdout
-    except OSError:
-        return ""
-    return os.fsdecode(out).rstrip("\n")
-
-
-def spawn_and_wait(path: str, argv: list[str], env: Mapping[str, str]) -> int:
-    """Run ``argv`` on this terminal and return its status, 128 plus the
-    signal's number when a signal killed it. Ctrl-C is the child's to
-    handle; a TERM or HUP for this process stops the child too."""
-    proc = subprocess.Popen(argv, executable=path, env=dict(env))
-    try:
-        while True:
-            try:
-                rc = proc.wait()
-                break
-            except KeyboardInterrupt:
-                continue
-    finally:
-        if proc.returncode is None:
-            proc.terminate()
-            proc.wait()
-    return rc if rc >= 0 else 128 - rc
 
 
 @dataclass(frozen=True)
@@ -235,7 +196,8 @@ def run(
             jail.launch(config, launch_env, terminal)
     finally:
         if resolv is not None:
-            _remove(resolv)
+            with suppress(OSError):
+                os.remove(resolv)
     # The jail is off, so this process is about to become script(1): a child
     # watches for as long as it runs. Not as PID 1 (the image's default
     # command): the watcher would be orphaned to script itself, and each
@@ -248,13 +210,6 @@ def run(
             sys.exit(status)
         host.fork_watcher(session)
     _exec(host, terminal[0], terminal, launch_env)
-
-
-def _remove(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
 
 
 # --- the steps, in order ----------------------------------------------------
@@ -384,31 +339,22 @@ def write_gitconfig(host: Host, env: Mapping[str, str], *, no_forge: bool) -> No
 
     Called on every launch because VS Code's dev.containers.copyGitConfig
     fires AFTER postCreate, so an install-time render can have an empty
-    user.name. Written to a temporary file and renamed, so a reader never
-    sees half a file; the temporary file goes on any exit.
+    user.name. The identity is ``git config --get``'s, with git from the
+    fixed tool path: empty when unset, or with no git.
     """
     git = host.find_tool("git")
+
+    def identity(key: str) -> str:
+        return "" if git is None else output([git, "config", "--get", key], env)[1]
+
     text = render_gitconfig(
-        read_git_config(git, "user.name", env),
-        read_git_config(git, "user.email", env),
-        no_forge=no_forge,
+        identity("user.name"), identity("user.email"), no_forge=no_forge
     )
-    path = host.gitconfig_path
-    directory, _, name = path.rpartition("/")
     try:
-        fd, tmp = tempfile.mkstemp(prefix=f"{name}.", dir=directory or "/")
+        data = text.encode("utf-8", errors="surrogateescape")
+        write_atomic(host.gitconfig_path, data, 0o644)
     except OSError as e:
-        _refuse(f"claude-sandbox: cannot write {path}: {e.strerror}")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
-            f.write(text)
-            os.fchmod(f.fileno(), 0o644)
-        os.replace(tmp, path)
-    except OSError as e:
-        _refuse(f"claude-sandbox: cannot write {path}: {e.strerror}")
-    finally:
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
+        _refuse(f"claude-sandbox: cannot write {host.gitconfig_path}: {e.strerror}")
 
 
 def is_mountpoint(path: str, mountinfo: str = "/proc/self/mountinfo") -> bool:
@@ -575,21 +521,6 @@ def build_argv(
     return built, workspace
 
 
-def working_directory(env: Mapping[str, str]) -> str:
-    """bash's ``$PWD``: the inherited PWD when it names the cwd, else getcwd.
-
-    The shim's bash has already canonicalised an inherited PWD, so a
-    workspace reached through a symlink keeps the path the user typed.
-    """
-    pwd = env.get("PWD", "")
-    try:
-        if pwd.startswith("/") and os.path.samefile(pwd, "."):
-            return pwd
-    except OSError:
-        pass
-    return os.getcwd()
-
-
 def terminal_command(
     argv: Sequence[str], env: Mapping[str, str], host: Host = INSTALLED
 ) -> tuple[list[str], dict[str, str]]:
@@ -672,17 +603,7 @@ class Terminal:
             return
         sys.stderr.write("Press any key to continue, Ctrl-C to cancel.")
         sys.stderr.flush()
-        saved = termios.tcgetattr(0)
-        quiet = termios.tcgetattr(0)
-        quiet[3] &= ~(termios.ECHO | termios.ICANON)  # bash: read -s -n 1
-        quiet[6][termios.VMIN] = 1
-        quiet[6][termios.VTIME] = 0
-        try:
-            termios.tcsetattr(0, termios.TCSANOW, quiet)
-            key = os.read(0, 1)
-        finally:
-            termios.tcsetattr(0, termios.TCSANOW, saved)
-        if not key:  # end of input: bash's `read` fails and set -e exits
+        if not read_key(0):  # end of input
             sys.exit(1)
         sys.stderr.write("\n")
 

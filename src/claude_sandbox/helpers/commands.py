@@ -15,13 +15,14 @@ import tempfile
 
 from .. import context, watch
 from ..context import CONTAINER, HOST, JAIL, requires
+from ..profiles import LIBEXEC
 from ..tools import TOOL_PATH, find_tool
 from . import auth
 from .doctor import Doctor
 from .pi_local import pi_local as configure_pi
 
 REPO_URL = "https://github.com/DiamondLightSource/claude-sandbox"
-LIBEXEC = "/usr/libexec/claude-sandbox"
+
 AGENTS = ("claude", "codex", "pi")
 # Only the published image has this; it is updated by pulling a new image.
 IMAGE_INSTALL = "/opt/claude-sandbox"

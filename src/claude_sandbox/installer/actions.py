@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from ..tools import write_atomic
+
 # A file's owner as (uid, gid), or None to keep the process's own.
 Owner = tuple[int, int] | None
 
@@ -124,7 +126,7 @@ def apply(actions: Iterable[Action], err: TextIO | None = None) -> None:
                 path.mkdir(parents=True, exist_ok=True)
             case Write(path, data, mode, owner, in_place):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                (_create if in_place else _write)(path, data, mode, owner)
+                (_create if in_place else write_atomic)(path, data, mode, owner)
             case Touch(path):
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                 os.close(os.open(path, flags, 0o666))
@@ -138,20 +140,6 @@ def apply(actions: Iterable[Action], err: TextIO | None = None) -> None:
                 _replace_tree(path, mode, entries, owner)
             case Warn(message):
                 print(message, file=err or sys.stderr)
-
-
-def _write(path: Path, data: bytes, mode: int, owner: Owner) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            os.fchmod(f.fileno(), mode)
-            if owner is not None:
-                os.fchown(f.fileno(), *owner)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
 
 
 def _move(src: Path, dst: Path) -> None:

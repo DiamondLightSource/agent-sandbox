@@ -70,7 +70,7 @@ from .config import (
     validate_local_model_port,
 )
 from .errors import SandboxError
-from .tools import find_tool
+from .tools import find_tool, shell_status
 
 # In-netns DNS forwarder (issues #60, #11). ALL of the agent's DNS goes here.
 # pasta's --dns-forward listens on it INSIDE the netns and relays to the
@@ -246,11 +246,6 @@ class Ops:
 OS = Ops()
 
 
-def status(returncode: int) -> int:
-    """A child's exit status as a shell reports it: 128+N after signal N."""
-    return 128 - returncode if returncode < 0 else returncode
-
-
 def _say(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
@@ -298,7 +293,7 @@ def wait_child(proc: Proc, ops: Ops, signals: Signals) -> int:
     while (rc := proc.poll()) is None:
         signals.check()
         ops.sleep(WAIT_STEP)
-    return status(rc)
+    return shell_status(rc)
 
 
 def stop_relays(relays: list[Proc], ops: Ops) -> None:
@@ -571,7 +566,8 @@ def _start(
     def in_own_netns() -> bool:
         if (rc := holder.poll()) is not None:
             raise JailError(
-                f"— holder exited with status {status(rc)} before pasta could attach"
+                f"— holder exited with status {shell_status(rc)}"
+                " before pasta could attach"
             )
         proc = f"/proc/{holder.pid}"
         netns = ops.read(f"{proc}/ns/net")

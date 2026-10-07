@@ -11,12 +11,13 @@ in ``__init__`` runs both in main()'s order.
 
 import os
 import stat
-import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from ..profiles import LIBEXEC
+from ..tools import output
 from . import jsonfile
 from .actions import (
     Action,
@@ -33,7 +34,6 @@ from .actions import (
     scan,
 )
 
-LIBEXEC = "/usr/libexec/claude-sandbox"
 VERSION_FILE = f"{LIBEXEC}/version"
 INSTALLER_FILE = f"{LIBEXEC}/installer"
 SKILLS_DIR = f"{LIBEXEC}/skills"
@@ -133,17 +133,9 @@ class Options:
 
 def describe(source: Path) -> str:
     """What ``stamp_version`` records when no version is given."""
-    try:
-        out = subprocess.run(
-            [GIT, "-c", "core.fsmonitor=false", "-C", str(source)]
-            + ["describe", "--tags", "--always", "--dirty"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return "unknown"
-    return out.rstrip("\n")
+    argv = [GIT, "-c", "core.fsmonitor=false", "-C", str(source)]
+    rc, out = output([*argv, "describe", "--tags", "--always", "--dirty"])
+    return out if rc == 0 else "unknown"
 
 
 def from_env(source: Path, env: Mapping[str, str]) -> tuple[Layout, Options]:
@@ -311,18 +303,12 @@ def plan_conf(layout: Layout, options: Options) -> list[Action]:
     return _place(layout.system(CONF), src.read_bytes(), 0o644, layout.owner)
 
 
-def _stamp(dst: Path, value: str, owner: Owner) -> list[Action]:
-    data = f"{value}\n".encode()
-    if _read(dst) == data:
-        return []
-    return [Write(dst, data, 0o644, owner)]
-
-
 def plan_version(layout: Layout, options: Options) -> list[Action]:
     """``stamp_version``: ``git describe`` of the tree when no version is
     given, run only here, so the entrypoint's steps never run git."""
     version = options.version or describe(layout.source)
-    return _stamp(layout.system(VERSION_FILE), version, layout.owner)
+    data = f"{version}\n".encode()
+    return _place(layout.system(VERSION_FILE), data, 0o644, layout.owner)
 
 
 def plan_installer(layout: Layout, options: Options) -> list[Action]:
@@ -331,7 +317,7 @@ def plan_installer(layout: Layout, options: Options) -> list[Action]:
     dst = layout.system(INSTALLER_FILE)
     if not options.installer:
         return [Remove(dst)] if os.path.lexists(dst) else []
-    return _stamp(dst, options.installer, layout.owner)
+    return _place(dst, f"{options.installer}\n".encode(), 0o644, layout.owner)
 
 
 def plan_skills(layout: Layout, options: Options) -> list[Action]:
