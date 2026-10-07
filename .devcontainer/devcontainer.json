@@ -17,14 +17,6 @@
         // you don't want forge credentials accessible inside the sandbox.
         // "CLAUDE_SANDBOX_NO_FORGE": "1"
     },
-    "containerEnv": {
-        // The Python shadow (issue #72 phase 2) is opt-in: set
-        // CLAUDE_SANDBOX_IMPL=python in the HOST environment VS Code starts
-        // from, then rebuild, and postCreate's ./install installs it. Unset,
-        // this is empty and the bash shadow is installed as usual. Read at
-        // install time only; see docs/how-to/contribute.md.
-        "CLAUDE_SANDBOX_IMPL": "${localEnv:CLAUDE_SANDBOX_IMPL}"
-    },
     "customizations": {
         "vscode": {
             "extensions": [

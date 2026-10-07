@@ -1,4 +1,4 @@
-"""The one CLI: what each command does on the host, and the opt-in."""
+"""The one CLI: what each command does on the host, and python -m."""
 
 import argparse
 import os

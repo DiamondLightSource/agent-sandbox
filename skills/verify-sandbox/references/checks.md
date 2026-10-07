@@ -141,7 +141,7 @@ We dropped `--new-session` so SIGWINCH and job control reach the
 sandbox. The TIOCSTI defence is now delivered by two coupled
 mechanisms: the shadow wraps bwrap in `script(1)` (the in-sandbox
 process inherits script's allocated pty as its controlling terminal,
-not the host's), and `bwrap_argv.sh` uses `--dev /dev` (a fresh
+not the host's), and the bwrap argv uses `--dev /dev` (a fresh
 devtmpfs with a fresh devpts mount — the host's `/dev/pts/*` is
 not visible). An ioctl(TIOCSTI) inside the sandbox can therefore
 only inject into script's pty, whose contents script reads and

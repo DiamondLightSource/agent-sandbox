@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# The entry-point guard of the opt-in Python shadow, end to end: protect the
+# The shadow's entry-point guard, end to end: protect the
 # sandbox's entry-point names (Invariant 1). A session cannot create a command
 # named claude, codex, pi or claude-sandbox in a writable directory that
 # precedes the shadow on PATH, and the shadow refuses to launch when one is
-# there. Run it INSIDE this repository's image with the Python shadow
-# installed (CLAUDE_SANDBOX_IMPL=python) and the egress jail on, started as
-# .github/workflows/container.yml starts it. The image's PATH starts with the
+# there. Run it INSIDE this repository's image with the egress jail on,
+# started as .github/workflows/container.yml starts it. The image's PATH starts with the
 # project venv's bin, and its conf allows writes under it.
 #
 # It swaps the real claude binary for a probe for the duration (restored on
