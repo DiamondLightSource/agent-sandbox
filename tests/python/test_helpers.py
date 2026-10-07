@@ -178,6 +178,7 @@ def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("CLAUDE_SANDBOX_LIBEXEC", str(lib))
     monkeypatch.setenv("CLAUDE_SANDBOX_TAG_FILE", str(tmp_path / "no-tag"))
     monkeypatch.setenv("USER_TERMINAL_CONFIG", str(rc))
+    monkeypatch.setenv("CLAUDE_SANDBOX_EGRESS_JAIL", "0")  # no tun row to judge
     return tmp_path
 
 
@@ -226,6 +227,42 @@ def test_doctor_leaves_symlinks_alone(
     assert (setup / "mine.sh").read_text() == "echo mine\n"
     assert not (setup / "mine.json").exists()
     assert not list((setup / ".claude").glob("*.bak-*"))
+
+
+def test_doctor_reports_the_tun_device(
+    main: Main,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from claude_sandbox import config
+
+    def nothing(*args: object) -> None:
+        return None
+
+    for check in ("tag", "file", "claude_settings", "prompt", "guards"):
+        monkeypatch.setattr(doctor.Doctor, check, nothing)
+    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "conf"))
+    monkeypatch.setattr(config, "TUN", str(tmp_path / "tun"))
+    monkeypatch.delenv("CLAUDE_SANDBOX_EGRESS_JAIL", raising=False)
+    # The warning alone fails the report, and is nothing for --fix.
+    assert main("doctor") == 1
+    out = capsys.readouterr().out
+    assert f"warn     tun device             {tmp_path}/tun is missing" in out
+    assert "doctor --fix" not in out
+    assert main("doctor", where=JAIL) == 0
+    assert (
+        "skip     tun device             run doctor outside" in capsys.readouterr().out
+    )
+    (tmp_path / "conf").write_text("egress-jail = 0\n")
+    assert main("doctor") == 0
+    assert "skip     tun device             the egress jail is off" in (
+        capsys.readouterr().out
+    )
+    (tmp_path / "conf").unlink()
+    (tmp_path / "tun").touch()
+    assert main("doctor") == 0
+    assert "ok       tun device" in capsys.readouterr().out
 
 
 def test_doctor_replaces_every_old_block(

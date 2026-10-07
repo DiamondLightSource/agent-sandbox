@@ -19,8 +19,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TextIO
 
+from .. import config
 from ..tools import find_tool
-from .steps import LIBEXEC, InstallError, Layout, Options
+from .steps import CONF, LIBEXEC, InstallError, Layout, Options
 
 Run = Callable[..., "subprocess.CompletedProcess[bytes]"]
 
@@ -94,6 +95,28 @@ def probe_userns_or_refuse(options: Options, run: Run = subprocess.run) -> None:
     quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     if run([*argv, "--", "/bin/true"], check=False, **quiet).returncode:
         raise InstallError(USERNS_REFUSAL)
+
+
+TUN_DOCS = "https://diamondlightsource.github.io/claude-sandbox/how-to/network-egress-jail.html"
+TUN_WARNING = f"""\
+claude-sandbox: WARNING — this container has no {config.TUN}.
+The network egress jail is on by default, and claude, codex and pi refuse
+to launch with it on and no {config.TUN}. Give the container the device,
+then rebuild or re-create the container:
+    devcontainer.json:   "runArgs": ["--device={config.TUN}"]
+    podman/docker run:   --device {config.TUN}
+See {TUN_DOCS}"""
+
+
+def warn_if_no_tun(layout: Layout, options: Options, err: TextIO) -> None:
+    """Issue #71: say at install, not at the first launch, that the device is
+    missing. A warning, not a refusal: the launch stays fail-closed. An image
+    build has no device to see (``docker build`` gives none), so it is the
+    entrypoint's ``--container-start`` that warns there."""
+    if options.smoke or options.image_build:
+        return
+    if config.tun_missing(str(layout.system(CONF)), os.environ, config.TUN):
+        print(TUN_WARNING, file=err)
 
 
 def _fetch(url: str, run: Run, *extra: str) -> bytes | None:

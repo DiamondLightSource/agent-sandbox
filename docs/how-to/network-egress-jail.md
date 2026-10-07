@@ -23,6 +23,8 @@ devcontainer, add this run argument and rebuild:
 ```
 
 Missing tun, pasta or namespace support makes agent launch fail closed.
+The install, the published image's start and `claude-sandbox doctor` warn
+about a missing `/dev/net/tun` earlier, while the jail is on.
 Use rootless Podman: rootful Docker cannot host the default jail. The
 devcontainer's base image must also have a recent enough `passt`:
 Debian 12's (2023-03, in `node:22-slim` and other bookworm images) cannot

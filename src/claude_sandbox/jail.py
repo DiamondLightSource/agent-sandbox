@@ -73,6 +73,7 @@ from typing import NoReturn, Protocol
 
 from .config import (
     ALLOW_IP,
+    TUN,
     Config,
     callback_ports,
     lines,
@@ -548,10 +549,8 @@ def _start(
     # name the CLAUDE_SANDBOX_EGRESS_JAIL=0 escape hatch.
     unshare = need(ops, "unshare", "(util-linux)")
     pasta = need(ops, "pasta", "(apt-get install passt)")
-    if not ops.exists("/dev/net/tun"):
-        raise JailError(
-            "needs /dev/net/tun — add --device=/dev/net/tun to the container"
-        )
+    if not ops.exists(TUN):
+        raise JailError(f"needs {TUN} — add --device={TUN} to the container")
     # The holder must be this interpreter, by absolute path, never PATH's,
     # and the holder runs the command as given, never searching PATH.
     if not os.path.isabs(ops.executable):
