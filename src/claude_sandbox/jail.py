@@ -792,11 +792,19 @@ def parse_route(line: str) -> tuple[Route, str] | None:
 
 
 def own_addresses(addrs: str) -> set[str]:
-    """The addresses and broadcast addresses in ``ip -4 -o addr show``."""
+    """The addresses, broadcast addresses and network addresses in
+    ``ip -4 -o addr show``. Kernels up to 5.13 (RHEL 8, Ubuntu 20.04,
+    Debian 11) also put a ``broadcast`` route for the network address of
+    each /30 or shorter in the local table."""
     found: set[str] = set()
     for line in addrs.split("\n"):
         if inet := route_field("inet", line):
             found.add(inet.partition("/")[0])
+            try:
+                net = ipaddress.IPv4Interface(inet).network
+            except ValueError:
+                continue
+            found.add(str(net.network_address))
         if brd := route_field("brd", line):
             found.add(brd)
     return found

@@ -1121,3 +1121,25 @@ def test_ops_write(tmp_path: Path) -> None:
     target.write_text("0\n")
     assert jail.OS.write(str(target), "1\n") and target.read_text() == "1\n"
     assert not jail.OS.write(str(tmp_path / "no/such/dir"), "1\n")
+
+
+def test_an_old_kernels_network_broadcast_route_is_its_own() -> None:
+    """Kernels up to 5.13 add a broadcast route for each subnet's network
+    address to the local table; refusing it would refuse every launch."""
+    addrs = "2: eth0    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0\n"
+    local = (
+        "broadcast 192.168.1.0 dev eth0 table local proto kernel scope link"
+        " src 192.168.1.10\n"
+        "local 192.168.1.10 dev eth0 table local proto kernel scope host"
+        " src 192.168.1.10\n"
+        "broadcast 192.168.1.255 dev eth0 table local proto kernel scope link"
+        " src 192.168.1.10\n"
+    )
+    jail.check_routes(local, RULES, addrs, set())
+    with pytest.raises(jail.JailError, match="unexpected route"):
+        jail.check_routes(
+            "broadcast 192.168.2.0 dev eth0 table local\n", RULES, addrs, set()
+        )
+    assert jail.own_addresses("2: eth0 inet not-an-address scope global\n") == {
+        "not-an-address"
+    }
