@@ -64,7 +64,11 @@ def launch(
     agent: str = "pi",
     bwrap: str = FAKE_BWRAP,
 ) -> Launch:
-    for path, text in (("bin/bwrap", bwrap), ("agent", AGENT)):
+    for path, text in (
+        ("bin/bwrap", bwrap),
+        ("bin/git", "#!/bin/sh\nexit 1\n"),
+        ("agent", AGENT),
+    ):
         (root / path).parent.mkdir(parents=True, exist_ok=True)
         (root / path).write_text(text)
         (root / path).chmod(0o755)

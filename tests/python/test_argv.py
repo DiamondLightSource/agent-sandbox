@@ -19,11 +19,11 @@ from claude_sandbox.bwrap import (
     ENTRY_GUARD_ENV,
     ENTRY_POINTS,
     GITCONFIG_PATH,
-    bwrap_argv,
+    bwrap_build,
 )
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
-from claude_sandbox.profiles import LIBEXEC, PROFILES, VERIFY_BATTERY, agent_profile
+from claude_sandbox.profiles import LIBEXEC, PROFILES, VERIFY_BATTERY
 
 REAL = "/test/.local/bin/claude"
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -42,8 +42,8 @@ def build(
     verify: bool = False,
     gitconfig: str = GITCONFIG_PATH,
 ) -> list[str]:
-    return bwrap_argv(
-        agent_profile(agent),
+    return bwrap_build(
+        PROFILES[agent],
         Config.from_env(env),
         env,
         workspace,
@@ -53,7 +53,7 @@ def build(
         shipped_skills_dir=skills,
         gitconfig_path=gitconfig,
         state_dir="/nonexistent/state",
-    )
+    ).argv
 
 
 def pair(argv: list[str], first: str, then: str) -> bool:

@@ -7,14 +7,14 @@ helpers still work and the rest refuse. Commands declare where they run
 with ``@requires``, and :func:`action` decides, once per call, whether a
 command runs here, is forwarded into the project container, or refuses.
 
-The signals are the ones the bash used: ``IS_SANDBOX=1`` (set by the
-shadow inside the jail), and the files podman and docker write into every
-container. ``CLAUDE_SANDBOX_NESTED=1`` treats a container as a host, as
-the bash launcher did (an engine inside a container, and the launcher
-tests). ``CLAUDE_SANDBOX_CONTEXT=host|container`` is a test seam only, which lets
-the helper suites run on a host; what changes the system (``update``)
-checks the container files themselves. Neither can leave the jail: the jail
-is decided first, and none of this is a security boundary — bwrap is.
+The signals are ``IS_SANDBOX=1`` (set by the shadow inside the jail), and
+the files podman and docker write into every container.
+``CLAUDE_SANDBOX_NESTED=1`` treats a container as a host (an engine inside
+a container, and the launcher tests). ``CLAUDE_SANDBOX_CONTEXT=host|container``
+is a test seam only, which lets the helper suites run on a host; what
+changes the system (``update``) checks the container files themselves.
+Neither can leave the jail: the jail is decided first, and none of this is
+a security boundary — bwrap is.
 """
 
 import functools
@@ -139,7 +139,6 @@ def refusal(name: str, where: Where) -> str:
             "run it from a shell outside the agent"
         )
     if where is CONTAINER:
-        # The bash launcher's in-container messages, word for word.
         if sandbox_installed():
             return (
                 "you are already inside an claude-sandbox container"

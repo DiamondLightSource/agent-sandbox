@@ -17,10 +17,10 @@ import shutil
 import signal
 import subprocess
 import sys
-import termios
 from collections.abc import Mapping
 
 from .. import release_tag
+from ..tools import read_key, shell_status, working_directory
 from . import sessions
 from .options import Options
 
@@ -118,7 +118,7 @@ def interactive(argv: list[str]) -> int:
             except KeyboardInterrupt:
                 continue
             # Killed by a signal: report it as a shell does, 128 + its number.
-            return rc if rc >= 0 else 128 - rc
+            return shell_status(rc)
     except Hangup:
         proc.kill()
         proc.wait()
@@ -186,17 +186,6 @@ def names(project: str) -> tuple[str, str]:
     return f"claude-sandbox-{s}-{h}", f"{s[:20]}-{h % 65536:04x}"
 
 
-def project_dir(env: Mapping[str, str]) -> str:
-    """bash's ``$PWD``: the inherited logical path when it is this directory."""
-    pwd = env.get("PWD", "")
-    try:
-        if pwd.startswith("/") and os.path.samefile(pwd, "."):
-            return pwd
-    except OSError:
-        pass
-    return os.getcwd()
-
-
 def _order(c: str) -> int:
     """verrevcmp's order: digits and the end sort lowest, ``~`` below them,
     letters by code, anything else after every letter."""
@@ -256,18 +245,10 @@ def wait_for_key() -> None:
     """Wait for one key, unechoed; Ctrl-C cancels the launch."""
     print("Press any key to continue, Ctrl-C to cancel.", end="", file=sys.stderr)
     sys.stderr.flush()
-    fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
-    mode = termios.tcgetattr(fd)
-    mode[3] &= ~(termios.ICANON | termios.ECHO)
-    mode[6][termios.VMIN], mode[6][termios.VTIME] = 1, 0
     try:
-        termios.tcsetattr(fd, termios.TCSANOW, mode)
-        os.read(fd, 1)
+        read_key(sys.stdin.fileno())
     except KeyboardInterrupt:
         raise SystemExit(130) from None
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
     print(file=sys.stderr)
 
 
@@ -293,7 +274,7 @@ class Launcher:
         )
         # Unset means the default volume; set but empty means none.
         self.cache = env.get("CLAUDE_SANDBOX_CACHE", "claude-sandbox-cache")
-        self.project = project_dir(env)
+        self.project = working_directory(env)
         self.name, self.tag = names(self.project)
 
     # --- engine calls -------------------------------------------------------

@@ -1,9 +1,9 @@
 """The launcher's own options, which come before the command.
 
-Parsed by hand, as the bash loop does, rather than by argparse: the first
-word that is not one of these ends them, and everything after it belongs
-to the command or the agent (``claude-sandbox --resume`` is ``claude
---resume``). The errors exit 1, as the bash's do.
+Parsed by hand rather than by argparse: the first word that is not one of
+these ends them, and everything after it belongs to the command or the
+agent (``claude-sandbox --resume`` is ``claude --resume``). The errors
+exit 1.
 """
 
 import os

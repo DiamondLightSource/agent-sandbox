@@ -161,9 +161,11 @@ it, and `__main__.py` dispatches `_jail_holder` before importing anything
 else. The holder inherits stdin and the process group, so it, `script` and
 `bwrap` stay in the terminal's foreground group.
 
-Every side effect in `jail.py` goes through an `Ops` object, so the unit
-tests in `tests/python/test_jail.py` replace it and check the argv, the
-fail-closed paths, the cleanup and the exit status after each signal. Real
+The processes `jail.py` starts and the `/proc` it reads go through an
+`Ops` object, so the unit tests in `tests/python/test_jail.py` replace it;
+the jail's own files go under a temporary directory through module
+constants. The tests check the argv, the fail-closed paths, the cleanup and
+the exit status after each signal. Real
 namespaces need `/dev/net/tun` and unprivileged user namespaces, so
 `tests/python/test_jail_netns.py` skips elsewhere. Run it in this
 repository's image with `tests/jail_python.sh`; the comment at its top gives
@@ -246,8 +248,7 @@ any vendor installer runs, and everything else:
 - `system.py` holds the steps that run tools: apt, the namespace probe and
   the three agent downloads, each by absolute path through
   `tools.find_tool`.
-- `jsonfile.py` reads and writes the JSON settings files in place of `jq`.
-  The managed-settings step merges into
+- The managed-settings step merges into
   `/etc/claude-code/managed-settings.json`, keeping existing administrator
   policy, and warns and skips a file it cannot parse or write back.
 - The published image's entrypoint runs the same installer's

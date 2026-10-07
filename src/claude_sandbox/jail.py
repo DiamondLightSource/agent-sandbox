@@ -1,9 +1,8 @@
 """The egress jail (ADR 0015, Design D) and its loopback relays (ADRs 20, 21).
 
-Once ``netns_launch``, ``netns_holder``, ``jail_stage_dns`` and the relay
-helpers in the bash shadow that 5.0 replaced (ADR 26). The launch
-runs inside a user+net namespace that a *holder* process owns, bridged to the
-internet by pasta, with a routing allowlist the agent cannot change:
+The launch runs inside a user+net namespace that a *holder* process owns,
+bridged to the internet by pasta, with a routing allowlist the agent cannot
+change:
 
 1. ``stage_dns`` (called by the shadow BEFORE it builds the bwrap argv)
    writes a resolv.conf naming only the pasta forwarder. ``bwrap.py`` binds
@@ -31,29 +30,16 @@ No executable is found through PATH (ADR 26). ``unshare``, ``pasta``,
 and a missing one is a fail-closed refusal; the command to run must already
 be absolute; the holder re-enters ``sys.executable``.
 
-Deliberate differences from the bash it replaced:
+Readiness is the holder in a netns of its own with its uid and gid maps
+written: ``/proc/<holder>/ns/net`` exists before ``unshare`` has made the
+namespace. The holder and the agent keep the default signal dispositions,
+as on the unjailed path, so ^C reaches the child's own terminal. Signal
+handlers only record the signal (see ``Signals``), so cleanup always runs
+whole; only SIGKILL cuts it short. The staged resolv.conf is removed after
+every failure.
 
-- Readiness: the bash attaches pasta once ``/proc/<holder>/ns/net`` exists,
-  which is already true before ``unshare`` has made the namespace. Here
-  launch waits until the holder's netns differs from its own and its uid
-  and gid maps are written.
-- Signal dispositions: the bash starts the holder as a background job of a
-  non-interactive shell, so the holder and the agent inherit SIGINT and
-  SIGQUIT ignored. Here they keep the defaults, as on the unjailed path, so
-  ^C reaches the child's own terminal as it does there.
-- Signal handlers only record the signal (see ``Signals``), so cleanup
-  always runs whole; a second signal does not cut it short. So a second ^C
-  during a cleanup that hangs is recorded, not acted on: only SIGKILL
-  stops it (the bash exits on it).
-- Relays get their own session from ``start_new_session``, not ``setsid``.
-- The staged resolv.conf is removed after every failure, including a
-  missing tool, and is always staged under /tmp (see ``stage_dns``).
-- A holder that cannot bring up loopback or exec the command says so.
-- Tools come from the fixed tool path, never PATH, and a missing ``ss`` or
-  ``ip`` is refused up front (the bash finds them on PATH).
-
-Every side effect goes through ``Ops`` so tests can replace it. Standard
-library only: this module is on the launch path (ADR 26).
+Processes and ``/proc`` go through ``Ops`` so tests can replace them.
+Standard library only: this module is on the launch path (ADR 26).
 """
 
 import ipaddress
@@ -61,12 +47,14 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from contextlib import suppress
+from dataclasses import dataclass
 from functools import partial
 from types import FrameType
 from typing import NoReturn, Protocol
@@ -82,7 +70,7 @@ from .config import (
     validate_local_model_port,
 )
 from .errors import SandboxError
-from .tools import find_tool
+from .tools import find_tool, shell_status
 
 # In-netns DNS forwarder (issues #60, #11). ALL of the agent's DNS goes here.
 # pasta's --dns-forward listens on it INSIDE the netns and relays to the
@@ -100,14 +88,18 @@ RESOLV_CONF = "/etc/resolv.conf"
 JAIL_RESOLV = "CLAUDE_SANDBOX_JAIL_RESOLV"
 _RESOLV_PREFIX = "claude-jail-resolv."
 
-# What launch hands the holder through its environment, as the bash does.
+# What launch hands the holder through its environment.
 JAIL_READY = "CLAUDE_JAIL_READY"
 JAIL_RELAY_DIR = "CLAUDE_JAIL_RELAY_DIR"
 JAIL_LOCAL_PORTS = "CLAUDE_JAIL_LOCAL_PORTS"
 JAIL_CALLBACK_PORTS = "CLAUDE_JAIL_CALLBACK_PORTS"
 
-# pasta's log. A fixed path, as in the bash and the container workflow's
-# diagnostics.
+# Where the jail's directory (the relay sockets and the readiness handshake)
+# and the staged resolver go. Always /tmp, which bwrap masks. Never TMPDIR:
+# it may sit in the writable workspace, and the agent must not reach them.
+JAIL_TMP = "/tmp"
+
+# pasta's log. A fixed path, as in the container workflow's diagnostics.
 PASTA_LOG = "/tmp/claude-pasta.log"
 
 # What an old pasta logs when it cannot attach from inside a container.
@@ -152,7 +144,7 @@ LINK_LOCAL = "169.254.0.0/16"
 WAIT_TRIES = 200
 WAIT_STEP = 0.05
 
-# The exit status after a signal, as the bash traps set it.
+# The exit status after a signal, as a shell reports it.
 SIGNAL_STATUS = {signal.SIGINT: 130, signal.SIGTERM: 143, signal.SIGHUP: 143}
 
 
@@ -177,29 +169,9 @@ class Proc(Protocol):
     def wait(self) -> int: ...
 
 
-Handler = Callable[[int, FrameType | None], None]
-
-
 class Ops:
-    """Every side effect the jail has, so tests can replace each one."""
-
-    executable = sys.executable
-
-    def find_tool(self, name: str) -> str | None:
-        """The tool's absolute path on the fixed tool path, never PATH."""
-        return find_tool(name)
-
-    def exists(self, path: str) -> bool:
-        return os.path.exists(path)
-
-    def is_file(self, path: str) -> bool:
-        return os.path.isfile(path)
-
-    def is_socket(self, path: str) -> bool:
-        try:
-            return (os.stat(path).st_mode & 0o170000) == 0o140000
-        except OSError:
-            return False
+    """The processes the jail starts and the ``/proc`` it reads, so tests
+    can replace them."""
 
     def read(self, path: str) -> str:
         """A /proc file or link, or "" when it is gone."""
@@ -264,86 +236,35 @@ class Ops:
         os.execve(argv[0], list(argv), dict(env))
 
     def kill(self, pid: int, sig: int, *, group: bool = False) -> None:
-        try:
-            if group:
-                os.killpg(pid, sig)
-            else:
-                os.kill(pid, sig)
-        except OSError:
-            pass
+        with suppress(OSError):
+            (os.killpg if group else os.kill)(pid, sig)
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
-
-    def mkdtemp(self) -> str:
-        # Always under /tmp, which bwrap masks. Never TMPDIR: it may sit in
-        # the writable workspace, and the agent must not reach the relay
-        # sockets or the readiness handshake.
-        return tempfile.mkdtemp(prefix="claude-jail.", dir="/tmp")
-
-    def mkdir(self, path: str) -> None:
-        os.mkdir(path, 0o700)
-        os.chmod(path, 0o700)
-
-    def touch(self, path: str) -> None:
-        with open(path, "a"):
-            pass
-
-    def write(self, path: str, text: str) -> bool:
-        """Write ``text`` to an existing file (a sysctl); False on failure."""
-        try:
-            with open(path, "w") as f:
-                f.write(text)
-        except OSError:
-            return False
-        return True
-
-    def rmtree(self, path: str) -> None:
-        shutil.rmtree(path, ignore_errors=True)
-
-    def remove(self, path: str) -> None:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-    def signal(self, sig: int, handler: Handler | int) -> None:
-        signal.signal(sig, handler)
-
-    def ignored(self, sig: int) -> bool:
-        return signal.getsignal(sig) == signal.SIG_IGN
-
-    def environ(self) -> dict[str, str]:
-        return dict(os.environ)
-
-    def stderr(self, message: str) -> None:
-        print(message, file=sys.stderr, flush=True)
 
 
 OS = Ops()
 
 
-def status(returncode: int) -> int:
-    """A child's exit status as bash's ``wait`` reports it: 128+N after
-    signal N."""
-    return 128 - returncode if returncode < 0 else returncode
+def _say(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 class Signals:
-    """INT exits 130, TERM and HUP exit 143, as the bash traps do.
+    """INT exits 130, TERM and HUP exit 143, as a shell's would.
 
     The handler only records the first signal; ``check`` raises it at the
     points where stopping is safe. Raising from the handler itself could
     land between a fork and the record of the child's pid, leaving a
-    holder or relay nobody kills, or in the middle of cleanup.
+    holder or relay nobody kills, or in the middle of cleanup. A signal
+    ignored on entry stays ignored.
     """
 
-    def __init__(self, ops: Ops) -> None:
+    def __init__(self) -> None:
         self.status: int | None = None
-        # A signal ignored on entry stays ignored, as bash cannot trap it.
         for sig in SIGNAL_STATUS:
-            if not ops.ignored(sig):
-                ops.signal(sig, self._record)
+            if signal.getsignal(sig) != signal.SIG_IGN:
+                signal.signal(sig, self._record)
 
     def _record(self, signum: int, frame: FrameType | None) -> None:
         if self.status is None:
@@ -372,15 +293,7 @@ def wait_child(proc: Proc, ops: Ops, signals: Signals) -> int:
     while (rc := proc.poll()) is None:
         signals.check()
         ops.sleep(WAIT_STEP)
-    return status(rc)
-
-
-def stop_relays(relays: list[Proc], ops: Ops) -> None:
-    """TERM each relay's process group, then reap it."""
-    while relays:
-        proc = relays.pop()
-        ops.kill(proc.pid, signal.SIGTERM, group=True)
-        proc.wait()
+    return shell_status(rc)
 
 
 def stop_child(proc: Proc | None, ops: Ops) -> None:
@@ -389,38 +302,65 @@ def stop_child(proc: Proc | None, ops: Ops) -> None:
         proc.wait()
 
 
-def start_relay(
-    argv: Sequence[str], env: Mapping[str, str], ops: Ops, relays: list[Proc]
-) -> bool:
-    """Start a socat relay and record it for ``stop_relays``."""
-    try:
-        relays.append(ops.spawn(argv, env, relay=True))
-    except OSError:
-        return False
-    return True
-
-
-def need(ops: Ops, name: str, why: str) -> str:
+def need(name: str, why: str) -> str:
     """The absolute path of tool ``name``, or a fail-closed refusal."""
-    path = ops.find_tool(name)
+    path = find_tool(name)
     if path is None:
         raise JailError(f"needs {name} {why}")
     return path
 
 
-def _ss(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> str:
-    return ops.run([ss, "-H", "-ltn", f"sport = :{port}"], env)[1]
+def is_socket(path: str) -> bool:
+    try:
+        return stat.S_ISSOCK(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
-def port_in_use(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> bool:
-    """Something listens on TCP ``port`` (in this netns)."""
-    return bool(_ss(ss, port, env, ops))
+def unix_to_tcp(socat: str, sock: str, port: str) -> list[str]:
+    """A relay that listens on the Unix socket ``sock`` and connects each
+    connection to 127.0.0.1:``port``."""
+    return [socat, f"UNIX-LISTEN:{sock},mode=0600,fork", f"TCP4:127.0.0.1:{port}"]
 
 
-def loopback_listening(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> bool:
-    """A listener on 127.0.0.1:``port``. Reads the kernel's listener table:
-    it never connects to the service, which need not be running."""
-    return "127.0.0.1:" in _ss(ss, port, env, ops)
+def tcp_to_unix(socat: str, port: str, sock: str) -> list[str]:
+    """A relay that listens on 127.0.0.1:``port`` and connects each
+    connection to the Unix socket ``sock``."""
+    return [
+        socat,
+        f"TCP4-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork",
+        f"UNIX-CONNECT:{sock}",
+    ]
+
+
+class Relays:
+    """The socat relays one side of the jail starts, stopped together."""
+
+    def __init__(self, env: Mapping[str, str], ops: Ops, signals: Signals) -> None:
+        self.env, self.ops, self.signals = env, ops, signals
+        self.procs: list[Proc] = []
+
+    def start(self, argv: Sequence[str], ready: Callable[[], bool]) -> bool:
+        """Start a relay; True once ``ready`` holds."""
+        try:
+            self.procs.append(self.ops.spawn(argv, self.env, relay=True))
+        except OSError:
+            return False
+        return wait_for(ready, self.ops, self.signals)
+
+    def listening(self, ss: str, port: str, *, loopback: bool = False) -> bool:
+        """Something listens on TCP ``port`` in this netns, on 127.0.0.1 with
+        ``loopback``. Reads the kernel's listener table: it never connects
+        to the service, which need not be running."""
+        found = self.ops.run([ss, "-H", "-ltn", f"sport = :{port}"], self.env)[1]
+        return "127.0.0.1:" in found if loopback else bool(found)
+
+    def stop(self) -> None:
+        """TERM each relay's process group, newest first, then reap it."""
+        while self.procs:
+            proc = self.procs.pop()
+            self.ops.kill(proc.pid, signal.SIGTERM, group=True)
+            proc.wait()
 
 
 # --- DNS ---------------------------------------------------------------------
@@ -439,15 +379,15 @@ _KEEP = re.compile(rb"[ \t\n\v\f\r]*(search|domain|options)[ \t\n\v\f\r]")
 _NAMESERVER = re.compile(rb"[ \t\n\v\f\r]*nameserver")
 
 
-def stage_dns(*, resolv_conf: str = RESOLV_CONF, tmpdir: str = "/tmp") -> StagedDns:
+def stage_dns(*, resolv_conf: str = RESOLV_CONF, tmpdir: str = JAIL_TMP) -> StagedDns:
     """Stage a resolv.conf that sends every query to the pasta forwarder.
 
     The host's ``search``, ``domain`` and ``options`` lines are kept:
     dropping them breaks short-name resolution at sites with a search list.
     Its real resolvers are dropped: a route to one would open that internal
     host on every port (issue #11). Written under /tmp, which bwrap masks,
-    never ``$TMPDIR``, which may sit in the writable workspace (the bash
-    honours it). Raises SandboxError if the file cannot be written.
+    never ``$TMPDIR``, which may sit in the writable workspace. Raises
+    SandboxError if the file cannot be written.
     """
     try:
         fd, path = tempfile.mkstemp(prefix=_RESOLV_PREFIX, dir=tmpdir)
@@ -493,9 +433,9 @@ def stage_dns(*, resolv_conf: str = RESOLV_CONF, tmpdir: str = "/tmp") -> Staged
 
 @dataclass
 class _Outer:
-    """What ``launch`` must undo, in the order the bash undoes it."""
+    """What ``launch`` must undo, in this order."""
 
-    relays: list[Proc] = field(default_factory=list[Proc])
+    relays: Relays
     holder: Proc | None = None
     jail_dir: str | None = None
 
@@ -516,25 +456,26 @@ def launch(
 def _launch(
     config: Config, env: Mapping[str, str], command: Sequence[str], ops: Ops
 ) -> int:
-    signals = Signals(ops)
-    state = _Outer()
+    signals = Signals()
+    state = _Outer(Relays(env, ops, signals))
     try:
         return _start(config, env, command, ops, signals, state)
     except JailError as e:
-        ops.stderr(f"claude-sandbox: egress jail {e}")
+        _say(f"claude-sandbox: egress jail {e}")
         return 1
     except Interrupted as e:
         return e.status
     finally:
         # Signals only set a flag now, so nothing interrupts this.
-        stop_relays(state.relays, ops)
+        state.relays.stop()
         stop_child(state.holder, ops)
         if state.jail_dir is not None:
-            ops.rmtree(state.jail_dir)
+            shutil.rmtree(state.jail_dir, ignore_errors=True)
         resolv = env.get(JAIL_RESOLV, "")
         # Only a file stage_dns made: never delete what a caller named.
         if os.path.basename(resolv).startswith(_RESOLV_PREFIX):
-            ops.remove(resolv)
+            with suppress(OSError):
+                os.remove(resolv)
 
 
 def _start(
@@ -547,13 +488,13 @@ def _start(
 ) -> int:
     # Fail-closed: no unjailed fallback. The messages deliberately do not
     # name the CLAUDE_SANDBOX_EGRESS_JAIL=0 escape hatch.
-    unshare = need(ops, "unshare", "(util-linux)")
-    pasta = need(ops, "pasta", "(apt-get install passt)")
-    if not ops.exists(TUN):
+    unshare = need("unshare", "(util-linux)")
+    pasta = need("pasta", "(apt-get install passt)")
+    if not os.path.exists(TUN):
         raise JailError(f"needs {TUN} — add --device={TUN} to the container")
     # The holder must be this interpreter, by absolute path, never PATH's,
     # and the holder runs the command as given, never searching PATH.
-    if not os.path.isabs(ops.executable):
+    if not os.path.isabs(sys.executable):
         raise JailError("— cannot locate the sandbox's own Python interpreter")
     if not command or not os.path.isabs(command[0]):
         raise JailError("— the command to run must be an absolute path")
@@ -562,13 +503,13 @@ def _start(
     errors = validate_local_model_port(config) + validate_callback_ports(config)
     if errors:
         for error in errors:
-            ops.stderr(error)
+            _say(error)
         return 1
     outbound = local_ports(config)
     inbound = callback_ports(config)
 
     try:
-        state.jail_dir = ops.mkdtemp()
+        state.jail_dir = tempfile.mkdtemp(prefix="claude-jail.", dir=JAIL_TMP)
     except OSError as e:
         raise JailError(f"— cannot create its directory under /tmp: {e}") from None
     holder_env = dict(env)
@@ -578,19 +519,48 @@ def _start(
     if config.allow_ip:
         holder_env[ALLOW_IP] = config.allow_ip
 
+    relays = state.relays
     if outbound or inbound:
-        socat = need(ops, "socat", "for loopback relays")
+        socat = need("socat", "for loopback relays")
         relay_dir = f"{state.jail_dir}/relay"
-        ops.mkdir(relay_dir)
+        os.mkdir(relay_dir)
+        os.chmod(relay_dir, 0o700)
         holder_env[JAIL_RELAY_DIR] = relay_dir
+        # Outer ends of the local-port relays (ADR 20): one private Unix
+        # socket per port, connected to the outer 127.0.0.1. No IP route, no
+        # mapping of the host's whole loopback. Fatal if one does not start.
+        for port in outbound:
+            sock = f"{relay_dir}/{port}.sock"
+            if not relays.start(
+                unix_to_tcp(socat, sock, port), partial(is_socket, sock)
+            ):
+                raise JailError(f"— loopback relay for port {port} failed to start")
         if outbound:
-            _outbound_relays(socat, relay_dir, outbound, env, ops, signals, state)
             holder_env[JAIL_LOCAL_PORTS] = "".join(f"{p} " for p in outbound)
+        # Outer ends of the callback relays (ADR 21), which LISTEN on the
+        # outer 127.0.0.1 and so can collide with a second session or an
+        # unwrapped agent. Fail soft: warn and carry on. The holder waits
+        # only on the ports that started.
         if inbound:
-            ss = need(ops, "ss", "(iproute2) for loopback relays")
-            started = _callback_relays(
-                socat, ss, relay_dir, inbound, env, ops, signals, state
-            )
+            ss = need("ss", "(iproute2) for loopback relays")
+            started: list[str] = []
+            for port in inbound:
+                in_use = partial(relays.listening, ss, port)
+                if in_use():
+                    _say(
+                        f"claude-sandbox: callback-port {port} is already in use on"
+                        " this host; browser logins on that port will not reach this"
+                        " session."
+                    )
+                    continue
+                argv = tcp_to_unix(socat, port, f"{relay_dir}/in-{port}.sock")
+                if relays.start(argv, in_use):
+                    started.append(port)
+                else:
+                    _say(
+                        f"claude-sandbox: callback-port {port} relay failed to start;"
+                        " browser logins on that port will not reach this session."
+                    )
             holder_env[JAIL_CALLBACK_PORTS] = "".join(f"{p} " for p in started)
 
     # The holder inherits stdin and the process group: it, and the script(1)
@@ -598,7 +568,7 @@ def _start(
     # read the terminal without SIGTTIN or SIGTTOU.
     try:
         holder = state.holder = ops.spawn(
-            [unshare, "-rn", ops.executable, "-I", "-m", "claude_sandbox",
+            [unshare, "-rn", sys.executable, "-I", "-m", "claude_sandbox",
              HOLDER_ENTRY, "--", *command],
             holder_env,
         )  # fmt: skip
@@ -614,7 +584,8 @@ def _start(
     def in_own_netns() -> bool:
         if (rc := holder.poll()) is not None:
             raise JailError(
-                f"— holder exited with status {status(rc)} before pasta could attach"
+                f"— holder exited with status {shell_status(rc)}"
+                " before pasta could attach"
             )
         proc = f"/proc/{holder.pid}"
         netns = ops.read(f"{proc}/ns/net")
@@ -634,71 +605,12 @@ def _start(
             + (PASTA_TOO_OLD if PASTA_CANNOT_OPEN in ops.read(PASTA_LOG) else "")
         )
     signals.check()
-    ops.touch(holder_env[JAIL_READY])
+    with open(holder_env[JAIL_READY], "a"):
+        pass
 
     rc = wait_child(holder, ops, signals)
     state.holder = None
     return rc
-
-
-def _outbound_relays(
-    socat: str,
-    relay_dir: str,
-    ports: list[str],
-    env: Mapping[str, str],
-    ops: Ops,
-    signals: Signals,
-    state: _Outer,
-) -> None:
-    """Outer ends of the local-port relays (ADR 20): one private Unix socket
-    per port, connected to the outer 127.0.0.1. No IP route, no mapping of
-    the host's whole loopback. Fatal if one does not start."""
-    for port in ports:
-        sock = f"{relay_dir}/{port}.sock"
-        argv = [socat, f"UNIX-LISTEN:{sock},mode=0600,fork", f"TCP4:127.0.0.1:{port}"]
-        if not start_relay(argv, env, ops, state.relays) or not wait_for(
-            partial(ops.is_socket, sock), ops, signals
-        ):
-            raise JailError(f"— loopback relay for port {port} failed to start")
-
-
-def _callback_relays(
-    socat: str,
-    ss: str,
-    relay_dir: str,
-    ports: list[str],
-    env: Mapping[str, str],
-    ops: Ops,
-    signals: Signals,
-    state: _Outer,
-) -> list[str]:
-    """Outer ends of the callback relays (ADR 21), which LISTEN on the outer
-    127.0.0.1 and so can collide with a second session or an unwrapped
-    agent. Fail soft: warn and carry on. Returns the ports that started, the
-    only ones the holder should wait on."""
-    started: list[str] = []
-    for port in ports:
-        if port_in_use(ss, port, env, ops):
-            ops.stderr(
-                f"claude-sandbox: callback-port {port} is already in use on this"
-                " host; browser logins on that port will not reach this session."
-            )
-            continue
-        argv = [
-            socat,
-            f"TCP4-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork",
-            f"UNIX-CONNECT:{relay_dir}/in-{port}.sock",
-        ]
-        if start_relay(argv, env, ops, state.relays) and wait_for(
-            partial(port_in_use, ss, port, env, ops), ops, signals
-        ):
-            started.append(port)
-        else:
-            ops.stderr(
-                f"claude-sandbox: callback-port {port} relay failed to start;"
-                " browser logins on that port will not reach this session."
-            )
-    return started
 
 
 # --- inside the jail: the holder -------------------------------------------------
@@ -712,27 +624,27 @@ def holder_main(argv: Sequence[str], *, ops: Ops = OS) -> NoReturn:
 
 def _hold(argv: Sequence[str], ops: Ops) -> int:
     if len(argv) < 2 or argv[0] != "--":
-        ops.stderr(f"claude-sandbox: usage: {HOLDER_ENTRY} -- COMMAND...")
+        _say(f"claude-sandbox: usage: {HOLDER_ENTRY} -- COMMAND...")
         return 2
     command = argv[1:]
-    env = ops.environ()
+    env = dict(os.environ)
     # Undo what the interpreter changed at start-up: it ignores SIGPIPE and
     # SIGXFSZ and traps SIGINT (unless SIGINT was ignored on entry), and
     # exec keeps an ignored signal ignored.
     for sig in (signal.SIGPIPE, signal.SIGXFSZ):
-        ops.signal(sig, signal.SIG_DFL)
-    if not ops.ignored(signal.SIGINT):
-        ops.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(sig, signal.SIG_DFL)
+    if signal.getsignal(signal.SIGINT) != signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
     try:
         lock_routes(env, ops)
     except JailError as e:
-        ops.stderr(f"claude-sandbox: egress jail {e}")
+        _say(f"claude-sandbox: egress jail {e}")
         return 1
     if not env.get(JAIL_LOCAL_PORTS, "") + env.get(JAIL_CALLBACK_PORTS, ""):
         try:
             ops.execve(command, env)
         except OSError as e:
-            ops.stderr(f"claude-sandbox: {command[0]}: {e.strerror}")
+            _say(f"claude-sandbox: {command[0]}: {e.strerror}")
             return 126 if isinstance(e, PermissionError) else 127
     return _hold_with_relays(command, env, ops)
 
@@ -779,16 +691,21 @@ def route_prefix(dst: str) -> str:
     return dst if "/" in dst else f"{dst}/32"
 
 
+def as_route(line: str) -> Route:
+    """A non-blank ``ip route`` line, or the arguments of ``ip route
+    replace``, as the allowlist compares it."""
+    tokens = line.split()
+    kind = tokens.pop(0) if tokens[0] in ROUTE_TYPES else "unicast"
+    dst = route_prefix(tokens[0]) if tokens else ""
+    return (kind, dst, route_field("via", line), route_field("dev", line))
+
+
 def parse_route(line: str) -> tuple[Route, str] | None:
     """An ``ip -o route show table all`` line as (route, table), or None for
     a blank one. The main table is not named in the output."""
-    tokens = line.split()
-    if not tokens:
+    if not line.split():
         return None
-    kind = tokens.pop(0) if tokens[0] in ROUTE_TYPES else "unicast"
-    dst = route_prefix(tokens[0]) if tokens else ""
-    route = (kind, dst, route_field("via", line), route_field("dev", line))
-    return route, route_field("table", line) or "main"
+    return as_route(line), route_field("table", line) or "main"
 
 
 def own_addresses(addrs: str) -> set[str]:
@@ -880,6 +797,16 @@ def check_ipv6(addrs: str, routes: str) -> None:
             raise JailError(f"— IPv6 route in the jail: {line.strip()} (fail-closed)")
 
 
+def _switch_off(path: str) -> bool:
+    """Write 1 to the sysctl at ``path``; False when it cannot be written."""
+    try:
+        with open(path, "w") as f:
+            f.write("1\n")
+    except OSError:
+        return False
+    return True
+
+
 def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     """Bring up loopback, wait for pasta, and lock the routing allowlist.
 
@@ -911,19 +838,28 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     Raises JailError at any load-bearing failure, before the agent starts.
     """
 
-    ip_tool = need(ops, "ip", "(iproute2)")
+    ip_tool = need("ip", "(iproute2)")
+    allowed: set[Route] = set()
 
     def ip(*args: str, quiet: bool = False) -> tuple[int, str]:
         return ops.run([ip_tool, *args], env, quiet=quiet)
 
+    def punch(*args: str, quiet: bool = False) -> bool:
+        """``ip route replace ARGS``; once it has taken, the route is one
+        the read-back expects."""
+        if ip("route", "replace", *args, quiet=quiet)[0] != 0:
+            return False
+        allowed.add(as_route(" ".join(args)))
+        return True
+
     def must(message: str, *args: str) -> None:
-        if ip("route", "replace", *args)[0] != 0:
+        if not punch(*args):
             raise JailError(f"— {message} (fail-closed)")
 
     if ip("link", "set", "lo", "up")[0] != 0:
         raise JailError("— could not bring up loopback")
     ready = env.get(JAIL_READY, "")
-    if not wait_for(lambda: bool(ready) and ops.is_file(ready), ops):
+    if not wait_for(lambda: bool(ready) and os.path.isfile(ready), ops):
         raise JailError("— pasta never signalled ready")
     routes = ip("route", "show", "default")[1]
     if not routes.strip():
@@ -945,62 +881,53 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
 
     if ip("-4", "route", "flush", "table", "main")[0] != 0:
         raise JailError("— failed to flush the mirrored routes (fail-closed)")
-    allowed: set[Route] = set()
     for subnet in subnets:
         must(f"failed to blackhole connected subnet {subnet}", "blackhole", subnet)
-        allowed.add(("blackhole", subnet, "", ""))
     for net in BLACKHOLES:
-        note = _BLACKHOLE_NOTES.get(net, "")
-        must(f"failed to blackhole {net}{note}", "blackhole", net)
-        allowed.add(("blackhole", net, "", ""))
+        must(
+            f"failed to blackhole {net}{_BLACKHOLE_NOTES.get(net, '')}",
+            "blackhole",
+            net,
+        )
     must(f"failed to mark {LINK_LOCAL} unreachable", "unreachable", LINK_LOCAL)
-    allowed.add(("unreachable", LINK_LOCAL, "", ""))
     must(
         f"failed to blackhole {WIRESERVER} (Azure WireServer)", "blackhole", WIRESERVER
     )
-    allowed.add(("blackhole", WIRESERVER, "", ""))
     must(f"failed to pin gateway {gw} on-link", f"{gw}/32", "dev", nic, "src", src)
-    allowed.add(("unicast", f"{gw}/32", "", nic))
     must(
         f"failed to restore default via {gw}",
         *("default", "via", gw, "dev", nic, "src", src),
     )
-    allowed.add(("unicast", "0.0.0.0/0", gw, nic))
 
     # The forwarder and allow-ip /32s matter only for destinations inside
     # the blackholed ranges; anywhere else the default route already
     # reaches them. Losing one loses reachability, not containment.
     # DNS goes only to the pasta forwarder.
-    fwd = (f"{JAIL_DNS_FWD}/32", "via", gw, "dev", nic, "src", src)
-    if ip("route", "replace", *fwd, quiet=True)[0] != 0:
-        ops.stderr(
+    via = ("via", gw, "dev", nic, "src", src)
+    if not punch(f"{JAIL_DNS_FWD}/32", *via, quiet=True):
+        _say(
             "claude-sandbox: egress jail — could not route DNS forwarder"
             f" {JAIL_DNS_FWD}"
         )
-    else:
-        allowed.add(("unicast", f"{JAIL_DNS_FWD}/32", gw, nic))
     # allow-ip devices (EPICS IOC, PMAC). Fail soft: the blackhole holds.
     # One address each: a prefix is narrowed to its first address, with a
     # warning, rather than refused, since existing confs carry them.
     for aip in lines(env.get(ALLOW_IP, "")):
         host, _, length = aip.partition("/")
         if length and length != "32":
-            ops.stderr(
+            _say(
                 f"claude-sandbox: egress jail — allow-ip {aip}: only {host} is"
                 " routed (allow-ip takes single addresses)"
             )
-        dev = (f"{host}/32", "via", gw, "dev", nic, "src", src)
-        if ip("route", "replace", *dev, quiet=True)[0] != 0:
-            ops.stderr(f"claude-sandbox: egress jail — could not route allow-ip {aip}")
-        else:
-            allowed.add(("unicast", f"{host}/32", gw, nic))
+        if not punch(f"{host}/32", *via, quiet=True):
+            _say(f"claude-sandbox: egress jail — could not route allow-ip {aip}")
 
     # IPv6: pasta runs IPv4-only. Switch it off where /proc/sys can be
     # written (not in a container, usually); else the read-back below must
     # find nothing. No /proc/sys/net/ipv6 at all: a kernel booted with
     # ipv6.disable=1, where `ip -6` fails and there is nothing to check.
-    v6_off = not ops.exists(IPV6_SYSCTLS) or all(
-        [ops.write(path, "1\n") for path in IPV6_OFF]
+    v6_off = not os.path.exists(IPV6_SYSCTLS) or all(
+        [_switch_off(path) for path in IPV6_OFF]
     )
 
     reads = [
@@ -1032,45 +959,35 @@ def _hold_with_relays(command: Sequence[str], env: Mapping[str, str], ops: Ops) 
     nothing and the browser is refused, not hung. Then COMMAND runs as a
     child, on the terminal, and its status is the holder's.
     """
-    signals = Signals(ops)
-    relays: list[Proc] = []
+    signals = Signals()
+    relays = Relays(env, ops, signals)
     child: Proc | None = None
     relay_dir = env.get(JAIL_RELAY_DIR, "")
     try:
-        socat = need(ops, "socat", "for loopback relays")
-        ss = need(ops, "ss", "(iproute2) for loopback relays")
+        socat = need("socat", "for loopback relays")
+        ss = need("ss", "(iproute2) for loopback relays")
         for port in env.get(JAIL_LOCAL_PORTS, "").split():
-            argv = [
-                socat,
-                f"TCP4-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork",
-                f"UNIX-CONNECT:{relay_dir}/{port}.sock",
-            ]
-            if not start_relay(argv, env, ops, relays) or not wait_for(
-                partial(loopback_listening, ss, port, env, ops), ops, signals
-            ):
+            argv = tcp_to_unix(socat, port, f"{relay_dir}/{port}.sock")
+            on_loopback = partial(relays.listening, ss, port, loopback=True)
+            if not relays.start(argv, on_loopback):
                 raise JailError(f"— loopback listener for port {port} failed to start")
         for port in env.get(JAIL_CALLBACK_PORTS, "").split():
             sock = f"{relay_dir}/in-{port}.sock"
-            argv = [
-                socat,
-                f"UNIX-LISTEN:{sock},mode=0600,fork",
-                f"TCP4:127.0.0.1:{port}",
-            ]
-            if not start_relay(argv, env, ops, relays) or not wait_for(
-                partial(ops.is_socket, sock), ops, signals
+            if not relays.start(
+                unix_to_tcp(socat, sock, port), partial(is_socket, sock)
             ):
                 raise JailError(f"— callback relay for port {port} failed to start")
         try:
             child = ops.spawn(command, env)
         except OSError as e:
-            ops.stderr(f"claude-sandbox: {command[0]}: {e.strerror}")
+            _say(f"claude-sandbox: {command[0]}: {e.strerror}")
             return 126 if isinstance(e, PermissionError) else 127
         return wait_child(child, ops, signals)
     except JailError as e:
-        ops.stderr(f"claude-sandbox: egress jail {e}")
+        _say(f"claude-sandbox: egress jail {e}")
         return 1
     except Interrupted as e:
         return e.status
     finally:
-        stop_relays(relays, ops)
+        relays.stop()
         stop_child(child, ops)

@@ -1,9 +1,7 @@
 """The bwrap argv: a pure function of (profile, config, environment).
 
-Ported line for line from ``bwrap_argv_build`` in the bash shadow that 5.0
-replaced (ADR 26), and kept in the same order:
-bwrap applies its operations in argv sequence, so the order of the sections
-below is part of the security model (a mask must follow the bind it covers;
+bwrap applies its operations in argv sequence, so the order of the
+sections below is part of the security model (a mask must follow the bind it covers;
 an allow-write bind must follow the masks it re-exposes a path through).
 
 This is the ONLY place that contributes binds or environment to the argv
@@ -17,7 +15,7 @@ import os
 import re
 import stat
 from collections.abc import Iterable, Mapping, Sequence
-from typing import NamedTuple, Protocol
+from typing import NamedTuple
 
 from .config import Config, lines, words
 from .errors import SandboxError
@@ -67,16 +65,6 @@ PASS_THROUGH = (
     "CLAUDE_SANDBOX_WORKSPACE_ROOT",
 )
 
-# bash itself gives TERM the value `dumb` when the environment has none, and
-# the bash shadow forwards that shell variable like any other. Kept so the
-# argv matches; an empty TERM in the environment stays empty.
-#
-# TERM is the ONLY shell variable ported, deliberately. The bash's pass-env
-# reads any shell variable by name, so it can also forward ones bash or the
-# shadow invents (HOSTNAME, RANDOM, PPID, AGENT_REAL, ...). That is an
-# accident of `${!name}`, not a feature: the port reads pass-env values from
-# the environment only, which is correct. Don't "fix" it towards the bash.
-SHELL_DEFAULTS = {"TERM": "dumb"}
 
 # Names pass-env may never forward. Passing PATH would undo the shadow's PATH
 # discipline (Invariant 1: plain `claude` must resolve to
@@ -112,47 +100,20 @@ PASS_ENV_DENY = frozenset(
 PASS_ENV_DENY_PREFIX = "LD_"
 
 
-class Probe(Protocol):
-    """The filesystem facts the builder may ask for. Each follows symlinks,
-    as the bash ``test`` operators do."""
+class Probe:
+    """The filesystem facts the builder may ask for: the real filesystem,
+    or a test's. Each follows symlinks, as the shell's ``test`` operators
+    do. A test replaces the first four; the rest derive from ``mode``."""
 
-    def is_dir(self, path: str) -> bool: ...  # [ -d ]
-    def is_file(self, path: str) -> bool: ...  # [ -f ]
-    def exists(self, path: str) -> bool: ...  # [ -e ]
-    def readable(self, path: str) -> bool: ...  # [ -r ]
-    def is_char_device(self, path: str) -> bool: ...  # [ -c ]
-    def is_block_device(self, path: str) -> bool: ...  # [ -b ]
-    def realpath(self, path: str) -> str: ...  # realpath -e; raises OSError
-    def glob(self, pattern: str) -> list[str]: ...  # sorted pathname expansion
-
-
-def _mode_is(path: str, test: int) -> bool:
-    try:
-        return stat.S_IFMT(os.stat(path).st_mode) == test
-    except OSError:
-        return False
-
-
-class HostProbe:
-    """The real filesystem."""
-
-    def is_dir(self, path: str) -> bool:
-        return os.path.isdir(path)
-
-    def is_file(self, path: str) -> bool:
-        return os.path.isfile(path)
-
-    def exists(self, path: str) -> bool:
-        return os.path.exists(path)
+    def mode(self, path: str) -> int:
+        """``st_mode``, or 0 when ``path`` does not resolve."""
+        try:
+            return os.stat(path).st_mode
+        except OSError:
+            return 0
 
     def readable(self, path: str) -> bool:
         return os.access(path, os.R_OK)
-
-    def is_char_device(self, path: str) -> bool:
-        return _mode_is(path, stat.S_IFCHR)
-
-    def is_block_device(self, path: str) -> bool:
-        return _mode_is(path, stat.S_IFBLK)
 
     def realpath(self, path: str) -> str:
         # `realpath -e` as GNU coreutils does it, which is close to the
@@ -176,13 +137,20 @@ class HostProbe:
         return resolved
 
     def glob(self, pattern: str) -> list[str]:
-        # Code-point order on every host. The bash sorts by the launching
-        # locale's collation (en_US puts alpha/ before Beta/, C the reverse);
-        # only the order of binds onto distinct destinations differs.
+        # Code-point order on every host, whatever the locale.
         return sorted(_glob.glob(pattern))
 
+    def is_dir(self, path: str) -> bool:
+        return stat.S_ISDIR(self.mode(path))
 
-HOST = HostProbe()
+    def is_file(self, path: str) -> bool:
+        return stat.S_ISREG(self.mode(path))
+
+    def exists(self, path: str) -> bool:
+        return self.mode(path) != 0
+
+
+HOST = Probe()
 
 
 def path_ahead(
@@ -253,38 +221,10 @@ class Built(NamedTuple):
 
 
 def _lookup(env: Mapping[str, str], name: str) -> str:
-    """``${!name:-}`` in the bash shadow: the variable's value, or empty."""
-    return env[name] if name in env else SHELL_DEFAULTS.get(name, "")
-
-
-def bwrap_argv(
-    profile: AgentProfile,
-    config: Config,
-    env: Mapping[str, str],
-    workspace: str,
-    real_agent: str,
-    args: Sequence[str],
-    *,
-    verify: bool = False,
-    shipped_skills_dir: str = SHIPPED_SKILLS_DIR,
-    gitconfig_path: str = GITCONFIG_PATH,
-    state_dir: str = STATE_DIR,
-    probe: Probe = HOST,
-) -> list[str]:
-    """``bwrap_build``'s argv alone."""
-    return bwrap_build(
-        profile,
-        config,
-        env,
-        workspace,
-        real_agent,
-        args,
-        verify=verify,
-        shipped_skills_dir=shipped_skills_dir,
-        gitconfig_path=gitconfig_path,
-        state_dir=state_dir,
-        probe=probe,
-    ).argv
+    """The variable's value, or empty. Values come from the environment
+    only. With no TERM there, the agent gets TERM=dumb, as from a shell; an
+    empty TERM stays empty."""
+    return env.get(name, "dumb" if name == "TERM" else "")
 
 
 def bwrap_build(
@@ -309,9 +249,8 @@ def bwrap_build(
     ``Config.from_env(env)``. ``real_agent`` is the host binary bound back
     for a ``bind_back`` profile. ``verify`` runs the integrity battery in
     place of the agent. ``shipped_skills_dir`` and ``gitconfig_path`` are
-    constants a caller overrides only in tests; the git config path is not
-    read from the environment (in the bash, the shadow exports its constant
-    before the builder runs). ``env["PATH"]`` is the launching PATH, read
+    constants a caller overrides only in tests, never read from the
+    environment. ``env["PATH"]`` is the launching PATH, read
     only for the entry-point guard. Raises SandboxError for an allow-device
     entry that is not a device node under /dev, and for an allow-write entry
     that is not an absolute path.
@@ -339,13 +278,11 @@ def bwrap_build(
             resolved = probe.realpath(device)
         except OSError as e:
             raise SandboxError(f"realpath: {device}: {e.strerror}") from None
+        mode = probe.mode(resolved)
         if (
             not device.startswith("/dev/")
             or not resolved.startswith("/dev/")
-            or (
-                not probe.is_char_device(resolved)
-                and not probe.is_block_device(resolved)
-            )
+            or not (stat.S_ISCHR(mode) or stat.S_ISBLK(mode))
         ):
             raise SandboxError(
                 "claude-sandbox: allow-device needs a character or block device"
@@ -355,11 +292,9 @@ def bwrap_build(
     if config.gpu:
         # The container runtime supplies driver libraries in the read-only
         # root and selects the available GPUs. Never bind all of /dev.
-        # Glob order is code-point order, not the bash's locale collation:
-        # the binds are to distinct paths, so only their order can differ.
         for pattern in ("/dev/nvidia*", "/dev/nvidia-caps/*", "/dev/dri/*"):
             for device in probe.glob(pattern):
-                if probe.is_char_device(device):
+                if stat.S_ISCHR(probe.mode(device)):
                     argv += ["--dev-bind", device, device]
 
     # /run/{user,secrets} masks are emitted only when the host has the source
@@ -413,12 +348,8 @@ def bwrap_build(
     # them a level down; and a per-skill bind leaves the user's own skills in
     # the same directory visible alongside. Emitted after the rw binds so it
     # sits inside the bound config dir, and read-only so the bundled scripts
-    # stay exactly what install placed.
-    # A `*/` pattern matches only directories and links to them, so unlike
-    # the bash (whose `-d` test drops the unmatched pattern itself) there is
-    # nothing to filter.
-    # As for the GPU nodes, skills come in code-point order where the bash
-    # used the locale's collation; each lands on its own destination.
+    # stay exactly what install placed. A `*/` pattern matches only
+    # directories and links to them.
     for skill_dir in probe.glob(_glob.escape(shipped_skills_dir) + "/*/"):
         skill_dir = skill_dir.removesuffix("/")
         name = skill_dir.rpartition("/")[2]
@@ -577,8 +508,8 @@ def bwrap_build(
     # the like. Opt-in by name, so --clearenv stays the default. Names only:
     # values come from the launching environment, so pass-env can forward a
     # variable the operator's shell already has but cannot invent a value.
-    # Split only: the bash also expands each word as a glob against the cwd,
-    # the jail-writable workspace, which the port refuses (see config.words).
+    # Split only, never globbed against the jail-writable cwd (see
+    # config.words).
     for name in words(config.pass_env):
         # Not a shell identifier — skip rather than emit a --setenv bwrap
         # would choke on.

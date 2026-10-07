@@ -1,12 +1,9 @@
 """The shadow: what runs when a user types ``claude``, ``codex`` or ``pi``.
 
-Once the launch body of the bash shadow that 5.0 replaced (ADR 26), with
-its ``configure_launch``, ``sandbox_launch`` and their helpers; comments
-that say "the bash" record where this keeps or departs from it. The
-three-line bash shim at
-``/usr/local/bin/<agent>`` execs the root-owned interpreter with ``-I`` and
-lands in ``main`` below (ADR 26). Read top to bottom: ``run`` is the order a
-launch happens in, and each step is a function just below it.
+The three-line bash shim at ``/usr/local/bin/<agent>`` execs the root-owned
+interpreter with ``-I`` and lands in ``main`` below (ADR 26). Read top to
+bottom: ``run`` is the order a launch happens in, and each step is a
+function just below it.
 
 This module adds no bind and no environment to the bwrap argv; ``bwrap.py``
 builds all of it. The egress jail is ``jail.py``.
@@ -19,12 +16,9 @@ import os
 import shlex
 import signal
 import stat
-import subprocess
 import sys
-import tempfile
-import termios
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import dataclass, field
 from errno import ENOENT
 from types import FrameType
@@ -34,21 +28,19 @@ from . import jail, watch
 from .bwrap import (
     ENTRY_POINTS,
     GITCONFIG_PATH,
-    HOST,
     SHADOW_DIR,
     STATE_DIR,
-    Built,
-    Probe,
     bwrap_build,
     path_ahead_of_shadow,
 )
 from .config import (
     CONFIG_PATH,
+    MODEL_PORT_ERROR,
     Config,
     egress_jail_enabled,
+    model_port_ok,
     parse_config,
     resolve_workspace_root,
-    valid_tcp_port,
 )
 from .errors import SandboxError
 from .gitconfig import render_gitconfig
@@ -61,7 +53,15 @@ from .profiles import (
     detect_agent,
     filter_chrome_args,
 )
-from .tools import TOOL_PATH, find_tool
+from .tools import (
+    TOOL_PATH,
+    find_tool,
+    output,
+    read_key,
+    spawn_and_wait,
+    working_directory,
+    write_atomic,
+)
 
 # The shim, byte for byte as the installer places it (ADR 26). The self-exec
 # check compares the real binary against it; a test pins it to the file.
@@ -73,48 +73,6 @@ SHIM = (
 )
 
 ExecVE = Callable[[str, list[str], Mapping[str, str]], NoReturn]
-
-
-def read_git_config(key: str, env: Mapping[str, str]) -> str:
-    """``$(git config --get KEY 2>/dev/null || true)``: empty when unset.
-
-    git comes from the fixed tool path (tools.py); without it the identity
-    is empty.
-    """
-    git = find_tool("git")
-    if git is None:
-        return ""
-    try:
-        out = subprocess.run(
-            [git, "config", "--get", key],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).stdout
-    except OSError:
-        return ""
-    return os.fsdecode(out).rstrip("\n")
-
-
-def spawn_and_wait(path: str, argv: list[str], env: Mapping[str, str]) -> int:
-    """Run ``argv`` on this terminal and return its status, 128 plus the
-    signal's number when a signal killed it. Ctrl-C is the child's to
-    handle; a TERM or HUP for this process stops the child too."""
-    proc = subprocess.Popen(argv, executable=path, env=dict(env))
-    try:
-        while True:
-            try:
-                rc = proc.wait()
-                break
-            except KeyboardInterrupt:
-                continue
-    finally:
-        if proc.returncode is None:
-            proc.terminate()
-            proc.wait()
-    return rc if rc >= 0 else 128 - rc
 
 
 @dataclass(frozen=True)
@@ -130,8 +88,6 @@ class Host:
     shipped_skills_dir: str = SHIPPED_SKILLS_DIR
     profiles: Mapping[str, AgentProfile] = field(default_factory=lambda: PROFILES)
     execve: ExecVE = os.execve
-    probe: Probe = HOST
-    git_config_get: Callable[[str, Mapping[str, str]], str] = read_git_config
     find_tool: Callable[[str], str | None] = find_tool
     mountinfo: str = "/proc/self/mountinfo"
     state_dir: str = STATE_DIR
@@ -139,19 +95,17 @@ class Host:
         [watch.Session, Callable[[str], None]], AbstractContextManager[None]
     ] = watch.watching
     fork_watcher: Callable[[watch.Session], None] = watch.fork_watcher
-    getpid: Callable[[], int] = os.getpid
-    spawn: Callable[[str, list[str], Mapping[str, str]], int] = spawn_and_wait
 
 
 INSTALLED = Host()
 
 
 def main(argv0: str, args: list[str], host: Host = INSTALLED) -> NoReturn:
-    """The shim's entry: launch, or exit with the bash shadow's status.
+    """The shim's entry: launch, or exit with the launch's status.
 
     INT, TERM and HUP unwind through ``finally`` (so nothing the shadow
-    created is left behind), then the process dies by that signal, as the
-    bash shadow's EXIT trap does. A signal ignored on entry stays ignored.
+    created is left behind), then the process dies by that signal. A signal
+    ignored on entry stays ignored.
     """
     for signum in (signal.SIGTERM, signal.SIGHUP):
         if signal.getsignal(signum) == signal.SIG_DFL:
@@ -169,7 +123,7 @@ def main(argv0: str, args: list[str], host: Host = INSTALLED) -> NoReturn:
 def run(
     argv0: str, args: Sequence[str], env: Mapping[str, str], host: Host = INSTALLED
 ) -> NoReturn:
-    """One launch, in the bash shadow's order. Ends in an exec or an exit."""
+    """One launch, in order. Ends in an exec or an exit."""
     env = dict(env)
     profile = host.profiles[detect_agent(argv0, env.get("CLAUDE_SANDBOX_AGENT", ""))]
     args, verify = _sandbox_verify(args)
@@ -185,7 +139,7 @@ def run(
             " explicitly."
         )
     _check_real_binary(profile)
-    check_entry_points(env, host.probe)
+    check_entry_points(env)
 
     # configure_launch: the conf (env wins over it), then the git identity.
     try:
@@ -205,8 +159,7 @@ def run(
     # Stage the jail's resolver before the argv is built: bwrap.py binds the
     # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf. jail.launch
     # removes it on exit; the finally removes it if the launch never starts
-    # (a refusal, or Ctrl-C at the pause), which the bash leaves behind (a
-    # known divergence).
+    # (a refusal, or Ctrl-C at the pause).
     jailed = egress_jail_enabled(config)
     resolv = None
     session = None
@@ -220,13 +173,25 @@ def run(
                 env.pop(jail.JAIL_RESOLV, None)
             else:
                 env[jail.JAIL_RESOLV] = resolv
-        built, workspace = build_argv(profile, env, args, verify, host)
+        workspace = resolve_workspace_root(config, working_directory(env))
+        built = bwrap_build(
+            profile,
+            config,
+            env,
+            workspace,
+            profile.real,
+            args,
+            verify=verify,
+            shipped_skills_dir=host.shipped_skills_dir,
+            gitconfig_path=host.gitconfig_path,
+            state_dir=host.state_dir,
+        )
         # The PATH watcher (ADR 27), for everything but the battery: first
         # what earlier sessions left, as launch warnings so the pause shows
         # them.
         if not verify:
             session = watch.Session(
-                env.get("PATH", ""), built.writable, workspace, state, host.probe
+                env.get("PATH", ""), built.writable, workspace, state
             )
             for action in session.scan_at_launch():
                 term.warn(
@@ -235,33 +200,27 @@ def run(
                 )
         terminal, launch_env = terminal_command(built.argv, env, host)
         term.pause(verify)
-        if jailed and session is not None:
-            with host.watching(session, term.warn_raw):
+        if jailed:
+            # The watcher is a thread around the jailed launch (not for the
+            # battery).
+            with host.watching(session, term.warn_raw) if session else nullcontext():
                 jail.launch(config, launch_env, terminal)
-        elif jailed:
-            jail.launch(config, launch_env, terminal)
     finally:
         if resolv is not None:
-            _remove(resolv)
+            with suppress(OSError):
+                os.remove(resolv)
     # The jail is off, so this process is about to become script(1): a child
     # watches for as long as it runs. Not as PID 1 (the image's default
     # command): the watcher would be orphaned to script itself, and each
     # would wait for the other. There script runs as a child instead, and the
     # watcher is a thread, as with the jail on.
     if session is not None:
-        if host.getpid() == 1:
+        if os.getpid() == 1:
             with host.watching(session, term.warn_raw):
-                status = host.spawn(terminal[0], terminal, launch_env)
+                status = spawn_and_wait(terminal[0], terminal, launch_env)
             sys.exit(status)
         host.fork_watcher(session)
     _exec(host, terminal[0], terminal, launch_env)
-
-
-def _remove(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
 
 
 # --- the steps, in order ----------------------------------------------------
@@ -272,8 +231,8 @@ def original_environ(path: str = "/proc/self/environ") -> dict[str, str]:
 
     Python coerces a C or POSIX locale (PEP 538) by setting LC_CTYPE in its
     own environment, even under ``-I``; the bwrap argv forwards LC_CTYPE, so
-    ``os.environ`` would put a value in the jail that the bash shadow never
-    did. ``/proc/self/environ`` holds the block the kernel was given.
+    ``os.environ`` would put a value in the jail that the user never set.
+    ``/proc/self/environ`` holds the block the kernel was given.
     """
     try:
         with open(path, "rb") as f:
@@ -351,7 +310,7 @@ def _check_real_binary(profile: AgentProfile) -> None:
         )
 
 
-def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
+def check_entry_points(env: Mapping[str, str]) -> None:
     """Refuse when an entry-point name precedes the shadow on PATH.
 
     Invariant 1: a plain claude, codex, pi or claude-sandbox reaches the
@@ -360,7 +319,7 @@ def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
     left (a plain file without execute bits, which a PATH lookup passes
     over) may stand there. Nothing is removed here: the user reviews it.
     """
-    for path, name in entry_point_problems(env.get("PATH", ""), probe):
+    for path, name in entry_point_problems(env.get("PATH", "")):
         _refuse(
             f"claude-sandbox: refusing to launch: {path} is ahead of"
             f" {SHADOW_DIR}/{name} on PATH, so a plain `{name}` may not reach"
@@ -370,11 +329,11 @@ def check_entry_points(env: Mapping[str, str], probe: Probe = HOST) -> None:
         )
 
 
-def entry_point_problems(path: str, probe: Probe = HOST) -> list[tuple[str, str]]:
+def entry_point_problems(path: str) -> list[tuple[str, str]]:
     """(path, name) for each entry-point name ahead of the shadow on ``path``
     that is anything but an empty mount point the guard left."""
     found: list[tuple[str, str]] = []
-    for directory in path_ahead_of_shadow(path, probe):
+    for directory in path_ahead_of_shadow(path):
         for name in ENTRY_POINTS:
             entry = f"{directory}/{name}"
             try:
@@ -391,30 +350,22 @@ def write_gitconfig(host: Host, env: Mapping[str, str], *, no_forge: bool) -> No
 
     Called on every launch because VS Code's dev.containers.copyGitConfig
     fires AFTER postCreate, so an install-time render can have an empty
-    user.name. Written to a temporary file and renamed, so a reader never
-    sees half a file; the temporary file goes on any exit.
+    user.name. The identity is ``git config --get``'s, with git from the
+    fixed tool path: empty when unset, or with no git.
     """
+    git = host.find_tool("git")
+
+    def identity(key: str) -> str:
+        return "" if git is None else output([git, "config", "--get", key], env)[1]
+
     text = render_gitconfig(
-        host.git_config_get("user.name", env),
-        host.git_config_get("user.email", env),
-        no_forge=no_forge,
+        identity("user.name"), identity("user.email"), no_forge=no_forge
     )
-    path = host.gitconfig_path
-    directory, _, name = path.rpartition("/")
     try:
-        fd, tmp = tempfile.mkstemp(prefix=f"{name}.", dir=directory or "/")
+        data = text.encode("utf-8", errors="surrogateescape")
+        write_atomic(host.gitconfig_path, data, 0o644)
     except OSError as e:
-        _refuse(f"claude-sandbox: cannot write {path}: {e.strerror}")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
-            f.write(text)
-            os.fchmod(f.fileno(), 0o644)
-        os.replace(tmp, path)
-    except OSError as e:
-        _refuse(f"claude-sandbox: cannot write {path}: {e.strerror}")
-    finally:
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
+        _refuse(f"claude-sandbox: cannot write {host.gitconfig_path}: {e.strerror}")
 
 
 def is_mountpoint(path: str, mountinfo: str = "/proc/self/mountinfo") -> bool:
@@ -543,58 +494,10 @@ def _has_entries(path: str) -> bool:
 
 
 def _check_local_model_port(config: Config) -> None:
-    """Refuse a bad local-model-port before it reaches the argv.
-
-    The argv forwards it into the jail with --setenv. The bash validates it
-    only on the jailed path (netns_launch), so a jail-off launch forwarded
-    any value; here it is checked on every launch (a known divergence).
-    """
-    port = config.local_model_port
-    if port != "0" and not valid_tcp_port(port):
-        _refuse("claude-sandbox: local-model-port must be 1–65535 (or 0 to disable).")
-
-
-def build_argv(
-    profile: AgentProfile,
-    env: Mapping[str, str],
-    args: Sequence[str],
-    verify: bool,
-    host: Host,
-) -> tuple[Built, str]:
-    """The bwrap argv, with its Config read from the same ``env``, and the
-    workspace it binds."""
-    pwd = working_directory(env)
-    config = Config.from_env(env)
-    workspace = resolve_workspace_root(config, pwd)
-    built = bwrap_build(
-        profile,
-        config,
-        env,
-        workspace,
-        profile.real,
-        args,
-        verify=verify,
-        shipped_skills_dir=host.shipped_skills_dir,
-        gitconfig_path=host.gitconfig_path,
-        state_dir=host.state_dir,
-        probe=host.probe,
-    )
-    return built, workspace
-
-
-def working_directory(env: Mapping[str, str]) -> str:
-    """bash's ``$PWD``: the inherited PWD when it names the cwd, else getcwd.
-
-    The shim's bash has already canonicalised an inherited PWD, so a
-    workspace reached through a symlink keeps the path the user typed.
-    """
-    pwd = env.get("PWD", "")
-    try:
-        if pwd.startswith("/") and os.path.samefile(pwd, "."):
-            return pwd
-    except OSError:
-        pass
-    return os.getcwd()
+    """Refuse a bad local-model-port before it reaches the argv, which
+    forwards it into the jail with --setenv, jailed or not."""
+    if not model_port_ok(config.local_model_port):
+        _refuse(MODEL_PORT_ERROR)
 
 
 def terminal_command(
@@ -607,12 +510,11 @@ def terminal_command(
     the sandbox lands in script's pty, which script reads and writes back as
     bytes, not keystrokes, to the host terminal. --return keeps the agent's
     exit status. script runs ``$SHELL -c COMMAND``, so SHELL is bash and the
-    argv is quoted for it (shlex quoting, which bash reads back to the same
-    words as the bash shadow's ``printf %q``).
+    argv is quoted for it with shlex.
 
     Both script and bwrap come from the fixed tool path as absolute paths,
     so neither this process nor the inner shell looks anything up in PATH
-    (ADR 26). The bash shadow uses PATH for both.
+    (ADR 26).
     """
     script, bwrap = _tool(host, "script"), _tool(host, "bwrap")
     command = shlex.join([bwrap, *argv[1:]])
@@ -643,7 +545,7 @@ def _exec(host: Host, path: str, argv: list[str], env: Mapping[str, str]) -> NoR
     try:
         host.execve(path, argv, env)
     except OSError as e:
-        # bash's statuses for a command it cannot run.
+        # A shell's statuses for a command it cannot run.
         _refuse(
             f"claude-sandbox: {path}: {e.strerror}", 127 if e.errno == ENOENT else 126
         )
@@ -659,7 +561,7 @@ class Terminal:
         self.warned = False
 
     def warn(self, message: str) -> None:
-        """A warning that does not stop the launch (bash: launch_warn)."""
+        """A warning that does not stop the launch."""
         self.warn_raw(f"claude-sandbox: {message}\n")
 
     def warn_raw(self, text: str) -> None:
@@ -679,17 +581,7 @@ class Terminal:
             return
         sys.stderr.write("Press any key to continue, Ctrl-C to cancel.")
         sys.stderr.flush()
-        saved = termios.tcgetattr(0)
-        quiet = termios.tcgetattr(0)
-        quiet[3] &= ~(termios.ECHO | termios.ICANON)  # bash: read -s -n 1
-        quiet[6][termios.VMIN] = 1
-        quiet[6][termios.VTIME] = 0
-        try:
-            termios.tcsetattr(0, termios.TCSANOW, quiet)
-            key = os.read(0, 1)
-        finally:
-            termios.tcsetattr(0, termios.TCSANOW, saved)
-        if not key:  # end of input: bash's `read` fails and set -e exits
+        if not read_key(0):  # end of input
             sys.exit(1)
         sys.stderr.write("\n")
 

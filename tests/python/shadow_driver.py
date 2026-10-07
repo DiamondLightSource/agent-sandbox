@@ -26,8 +26,8 @@ host = shadow.Host(
     gitconfig_path=cast(str, spec["gitconfig"]),
     shipped_skills_dir=cast(str, spec["skills"]),
     profiles={name: replace(p, real=real) for name, p in PROFILES.items()},
-    git_config_get=lambda key, env: "",
-    # The fixture's fake bwrap first, then the real script(1).
+    # The fixture's fake bwrap (and a git that knows no identity) first, then
+    # the real script(1).
     find_tool=lambda name: find_tool(
         name, search=(cast(str, spec["tools"]), *TOOL_PATH)
     ),

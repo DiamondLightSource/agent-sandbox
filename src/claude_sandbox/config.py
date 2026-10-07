@@ -1,15 +1,13 @@
 """The host-global ``/etc/claude-sandbox.conf`` and the port checks.
 
-Once ``parse_config``, ``resolve_workspace_root`` and the local-model and
-callback-port helpers in the bash shadow that 5.0 replaced (ADR 26).
 The conf lives at /etc (placed by the installer), NOT inside the rw-bound
 workspace, so a compromised session cannot rewrite it to widen the next
 launch's binds.
 
-The bash applied the conf by exporting ``CLAUDE_SANDBOX_*`` variables, with
-any value already in the environment winning. ``parse_config`` keeps that
-model: it returns the merged environment, and ``Config.from_env`` reads the
-knobs out of it. The argv builder reads the rest of that same environment.
+The conf sets ``CLAUDE_SANDBOX_*`` variables, with any value already in the
+environment winning: ``parse_config`` returns the merged environment, and
+``Config.from_env`` reads the knobs out of it. The argv builder reads the
+rest of that same environment.
 
 Standard library only: this module is on the launch path (ADR 26).
 """
@@ -35,24 +33,9 @@ ALLOW_WRITE = "CLAUDE_SANDBOX_ALLOW_WRITE"
 ALLOW_IP = "CLAUDE_SANDBOX_ALLOW_IP"
 PASS_ENV = "CLAUDE_SANDBOX_PASS_ENV"
 
-# Every variable parse_config can set, in the order the bash lists the keys.
-KNOBS = (
-    WORKSPACE_ROOT,
-    NO_FORGE,
-    EGRESS_JAIL,
-    LOCAL_MODEL_PORT,
-    LOCAL_PORTS,
-    CALLBACK_PORTS,
-    GPU,
-    ALLOW_DEVICES,
-    ALLOW_WRITE,
-    ALLOW_IP,
-    PASS_ENV,
-)
-
 # Keys whose value fills the variable only when it is unset or empty, and
 # the value a bare key (no `= value`) stands for. `no-forge` takes no value:
-# any value, even `0`, means 1, exactly as in the bash.
+# any value, even `0`, means 1.
 _DEFAULTS: Mapping[str, tuple[str, str | None]] = {
     "workspace-root": (WORKSPACE_ROOT, None),  # no value: leave unset
     "no-forge": (NO_FORGE, "1"),
@@ -80,11 +63,8 @@ _LISTS: Mapping[str, str] = {
     "pass-env": PASS_ENV,
 }
 
-# bash's [[:space:]] in the C locale: ASCII whitespace only. Not
-# str.strip(), which also strips Unicode spaces and \x1c-\x1f. Under a UTF-8
-# locale the bash's [[:space:]] also matches some Unicode spaces (U+2000 and
-# friends), so a conf padded with those trims differently there; the port
-# keeps the C-locale reading on every host.
+# ASCII whitespace only, on every host. Not str.strip(), which also strips
+# Unicode spaces and \x1c-\x1f.
 _SPACE = " \t\n\r\f\v"
 
 
@@ -100,7 +80,7 @@ def parse_config(path: str, env: Mapping[str, str]) -> dict[str, str]:
     if not os.path.isfile(path):
         return merged
     with open(path, "rb") as conf:
-        # bash's `read` drops NUL bytes rather than ending the line.
+        # NUL bytes are dropped rather than ending the line.
         text = os.fsdecode(conf.read().replace(b"\0", b""))
     for line in text.split("\n"):
         line = line.partition("#")[0].strip(_SPACE)
@@ -125,8 +105,7 @@ def parse_config(path: str, env: Mapping[str, str]) -> dict[str, str]:
 class Config:
     """The conf knobs, read from the environment ``parse_config`` returned.
 
-    Raw strings where the bash compares strings, so that every check below
-    behaves exactly as the bash one does.
+    Raw strings where the checks below compare strings.
     """
 
     workspace_root: str = ""
@@ -159,19 +138,18 @@ class Config:
 
 
 def lines(text: str) -> list[str]:
-    """Non-empty lines: how the bash walks an accumulated list."""
+    """Non-empty lines: an accumulated list's entries."""
     return [line for line in text.split("\n") if line]
 
 
 def words(text: str) -> list[str]:
     """The words of a comma-, space-, tab- or newline-separated list.
 
-    Deliberately NOT what the bash did. The bash split these lists by
-    leaving the expansion unquoted, which also ran pathname expansion on
-    each word against the current directory: the workspace, writable from
-    inside the jail. A session could then plant files that steer the next
-    launch's pass-env names or relay ports, which is the attack Invariant 4
-    keeps the conf out of the workspace to prevent. This splits only.
+    Split only, never expanded as a pathname against the current
+    directory: the workspace, writable from inside the jail. A session could
+    then plant files that steer the next launch's pass-env names or relay
+    ports, which is the attack Invariant 4 keeps the conf out of the
+    workspace to prevent (4.x's bash shadow did this).
     """
     return [word for word in re.split(r"[, \t\n]+", text) if word]
 
@@ -212,17 +190,12 @@ def valid_tcp_port(port: str) -> bool:
     return re.fullmatch(r"[1-9][0-9]{0,4}", port) is not None and int(port) <= 65535
 
 
-def _dedup(ports: list[str]) -> list[str]:
-    # The bash tracks seen ports as a space-joined string and tests
-    # containment, so a port is dropped when " port " occurs anywhere in it.
-    seen = " "
-    out: list[str] = []
-    for port in ports:
-        if f" {port} " in seen:
-            continue
-        seen += f"{port} "
-        out.append(port)
-    return out
+MODEL_PORT_ERROR = "claude-sandbox: local-model-port must be 1–65535 (or 0 to disable)."
+
+
+def model_port_ok(port: str) -> bool:
+    """A local-model-port is a TCP port, or 0 for none."""
+    return port == "0" or valid_tcp_port(port)
 
 
 def local_ports(config: Config) -> list[str]:
@@ -231,20 +204,12 @@ def local_ports(config: Config) -> list[str]:
     local-model-port plus every local-port entry.
     """
     ports = [config.local_model_port, *words(config.local_port_entries)]
-    return _dedup([p for p in ports if p != "0"])
+    return list(dict.fromkeys(p for p in ports if p != "0"))
 
 
 def callback_ports(config: Config) -> list[str]:
     """The inbound callback relay set (ADR 0021), deduplicated."""
-    return _dedup(words(config.callback_port_entries))
-
-
-def local_model_enabled(config: Config) -> bool:
-    return bool(local_ports(config))
-
-
-def callback_enabled(config: Config) -> bool:
-    return bool(callback_ports(config))
+    return list(dict.fromkeys(words(config.callback_port_entries)))
 
 
 def validate_local_model_port(config: Config) -> list[str]:
@@ -253,12 +218,7 @@ def validate_local_model_port(config: Config) -> list[str]:
     Validates the configuration, not the deduplicated set, so a bad entry is
     named by its key. Only local-model-port may be 0.
     """
-    errors: list[str] = []
-    port = config.local_model_port
-    if port != "0" and not valid_tcp_port(port):
-        errors.append(
-            "claude-sandbox: local-model-port must be 1–65535 (or 0 to disable)."
-        )
+    errors = [] if model_port_ok(config.local_model_port) else [MODEL_PORT_ERROR]
     for port in words(config.local_port_entries):
         if not valid_tcp_port(port):
             errors.append(
@@ -273,10 +233,6 @@ def validate_callback_ports(config: Config) -> list[str]:
     A port cannot be relayed both ways: the outbound relay's in-jail listener
     would sit on the port the agent needs for its own server, and the inbound
     listener outside would sit on the host service's port.
-
-    This always reports an overlap. The bash can miss one: it checks with
-    ``local_ports | grep -qx`` under pipefail, so when grep matches early in
-    a long list and exits, the writer dies of SIGPIPE and the check fails.
     """
     errors: list[str] = []
     outbound = local_ports(config)

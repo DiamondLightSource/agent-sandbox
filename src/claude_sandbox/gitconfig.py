@@ -1,14 +1,13 @@
 """The sandbox's git config (``GIT_CONFIG_GLOBAL`` inside the jail).
 
-Once ``render_gitconfig`` in the bash shadow that 5.0 replaced, as a pure
-function returning the file's text. The shadow
-re-renders it on every launch because VS Code's dev.containers.copyGitConfig
-fires AFTER postCreate, so an install-time render can have an empty
-user.name; by launch time copyGitConfig has run.
+A pure function returning the file's text. The shadow re-renders it on
+every launch because VS Code's dev.containers.copyGitConfig fires AFTER
+postCreate, so an install-time render can have an empty user.name; by
+launch time copyGitConfig has run.
 
-The bash wrote the fixed text, then let ``git config --file`` append the
-``[user]`` block; ``_value`` reproduces how git writes a value, so the bytes
-are the same. Standard library only: this module is on the launch path.
+``_value`` writes a value as git itself would, so git reads back exactly
+the identity it was given. Standard library only: this module is on the
+launch path.
 """
 
 _FORGE_CREDENTIALS = """\
@@ -36,8 +35,7 @@ def _value(value: str) -> str:
     """A value as ``git config`` writes it (config.c, write_pair).
 
     Quoting a value that holds a carriage return is git's fix for
-    CVE-2025-48384; older git wrote it bare, so the bash output varies with
-    the git version and this follows the fixed one.
+    CVE-2025-48384, which older git wrote bare.
     """
     edges = value.startswith(" ") or value.endswith(" ")
     quote = '"' if edges or any(c in value for c in ";#\r") else ""

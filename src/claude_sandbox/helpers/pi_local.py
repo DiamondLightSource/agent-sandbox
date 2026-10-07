@@ -10,9 +10,10 @@ import json
 import os
 import re
 import sys
-import tempfile
 import urllib.request
 from typing import cast
+
+from ..tools import write_atomic
 
 DEFAULT_PORT = "1920"
 USAGE = "Usage: claude-sandbox pi-local [--port PORT] or pi-local MODEL CONTEXT [PORT]"
@@ -28,33 +29,19 @@ def fetch(url: str) -> object:
         return None
 
 
+def _object(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
 def discover(port: str) -> tuple[str, int] | None:
     """The one loaded model and its context, or None."""
-    models = fetch(f"http://127.0.0.1:{port}/v1/models")
-    data = (
-        cast(dict[str, object], models).get("data")
-        if isinstance(models, dict)
-        else None
-    )
-    if not isinstance(data, list) or len(cast(list[object], data)) != 1:
-        return None
-    first = cast(list[object], data)[0]
-    model = (
-        cast(dict[str, object], first).get("id") if isinstance(first, dict) else None
-    )
+    data = _object(fetch(f"http://127.0.0.1:{port}/v1/models")).get("data")
+    listed = cast(list[object], data) if isinstance(data, list) else []
+    model = _object(listed[0]).get("id") if len(listed) == 1 else None
     if not isinstance(model, str) or not model:
         return None
-    props = fetch(f"http://127.0.0.1:{port}/props")
-    settings = (
-        cast(dict[str, object], props).get("default_generation_settings")
-        if isinstance(props, dict)
-        else None
-    )
-    n_ctx = (
-        cast(dict[str, object], settings).get("n_ctx")
-        if isinstance(settings, dict)
-        else None
-    )
+    props = _object(fetch(f"http://127.0.0.1:{port}/props"))
+    n_ctx = _object(props.get("default_generation_settings")).get("n_ctx")
     if isinstance(n_ctx, bool) or not isinstance(n_ctx, int | float):
         return None
     if n_ctx != int(n_ctx):
@@ -65,10 +52,6 @@ def discover(port: str) -> tuple[str, int] | None:
 def _fail(message: str, code: int) -> int:
     print(message, file=sys.stderr)
     return code
-
-
-def _object(value: object) -> dict[str, object]:
-    return cast(dict[str, object], value) if isinstance(value, dict) else {}
 
 
 def _alt(value: object, default: object) -> object:
@@ -159,12 +142,10 @@ def pi_local(args: list[str]) -> int:
     umask = os.umask(0o077)
     try:
         os.makedirs(directory, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".models.")
     finally:
         os.umask(umask)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    os.replace(tmp, path)
+    text = json.dumps(config, indent=2, ensure_ascii=False) + "\n"
+    write_atomic(path, text.encode(), 0o600)
     print(f"Configured Pi's lllm2 provider at http://127.0.0.1:{port}/v1.")
     print("Select lllm2 in Pi's /model picker, or launch pi --model lllm2.")
     print(

@@ -21,7 +21,7 @@ from typing import TextIO
 
 from .. import config
 from ..tools import find_tool
-from .steps import CONF, LIBEXEC, InstallError, Layout, Options
+from .steps import CONF, LIBEXEC, SHADOW_SOURCE, InstallError, Layout, Options
 
 Run = Callable[..., "subprocess.CompletedProcess[bytes]"]
 
@@ -162,27 +162,30 @@ def _codex_purge(layout: Layout, stage: str | None = None) -> None:
         Path(layout.home, ".local/bin", name).unlink(missing_ok=True)
 
 
-def _is_shadow(layout: Layout, path: str) -> bool:
-    scripts = layout.source / ".devcontainer/claude-sandbox"
-    return any(
-        (scripts / name).is_file() and filecmp.cmp(path, scripts / name, shallow=False)
-        for name in ("claude-shim",)
-    )
+def _warn(err: TextIO, text: str) -> None:
+    print(f"claude-sandbox: WARNING — {text}", file=err)
 
 
-def _codex_release(layout: Layout, stage: str) -> tuple[str, list[str]]:
+def _not_the_shadow(layout: Layout, path: str) -> str:
+    """Why ``path`` will not do as the real codex: it is the shim itself."""
+    shim = layout.source / SHADOW_SOURCE
+    if shim.is_file() and filecmp.cmp(path, shim, shallow=False):
+        return (
+            f"{path} is the claude-sandbox\n  shadow itself, not a real codex"
+            " binary; skipping codex relocation."
+        )
+    return ""
+
+
+def _codex_release(layout: Layout, stage: str) -> tuple[str, str]:
     """The vendor's release directory, or "" with the warning why not."""
     link = f"{layout.home}/.local/bin/codex"
     release = ""
     if os.path.islink(link) or _executable(link):
         resolved = os.path.realpath(link)
         if os.path.isfile(resolved):
-            if _is_shadow(layout, resolved):
-                return "", [
-                    f"claude-sandbox: WARNING — {resolved} is the claude-sandbox",
-                    "  shadow itself, not a real codex binary; skipping codex"
-                    " relocation.",
-                ]
+            if why := _not_the_shadow(layout, resolved):
+                return "", why
             if resolved.endswith("/bin/codex"):
                 release = resolved.removesuffix("/bin/codex")
             elif resolved.endswith("/codex"):
@@ -194,17 +197,14 @@ def _codex_release(layout: Layout, stage: str) -> tuple[str, list[str]]:
         if not release and os.path.isdir(current):
             release = os.path.realpath(current)
     if not release or not os.path.isdir(release):
-        return "", [
-            "claude-sandbox: WARNING — the Codex CLI installer ran but no release",
-            "  directory was found; skipping codex relocation.",
-        ]
+        return "", (
+            "the Codex CLI installer ran but no release\n"
+            "  directory was found; skipping codex relocation."
+        )
     binary = f"{release}/bin/codex"
-    if os.path.isfile(binary) and _is_shadow(layout, binary):
-        return "", [
-            f"claude-sandbox: WARNING — {binary} is the claude-sandbox",
-            "  shadow itself, not a real codex binary; skipping codex relocation.",
-        ]
-    return release, []
+    if os.path.isfile(binary) and (why := _not_the_shadow(layout, binary)):
+        return "", why
+    return release, ""
 
 
 def install_codex_binary(
@@ -228,18 +228,17 @@ def install_codex_binary(
         "TAR_OPTIONS": "--no-same-owner",
     }
     if script is None or run([_tool("sh")], input=script, env=env).returncode:
-        print(
-            "claude-sandbox: WARNING — the Codex CLI installer failed; skipping"
-            " codex.\n  The codex shadow is still installed and will refuse to"
-            f" launch until\n  a real binary lands at {real}. Re-run ./install to"
-            " retry.",
-            file=err,
+        _warn(
+            err,
+            "the Codex CLI installer failed; skipping codex.\n  The codex shadow"
+            " is still installed and will refuse to launch until\n  a real"
+            f" binary lands at {real}. Re-run ./install to retry.",
         )
         _codex_purge(layout, stage)
         return
     release, warning = _codex_release(layout, stage)
     if warning:
-        print("\n".join(warning), file=err)
+        _warn(err, warning)
         _codex_purge(layout, stage)
         return
     shutil.rmtree(dist, ignore_errors=True)
@@ -251,10 +250,10 @@ def install_codex_binary(
             if not os.path.islink(node):
                 os.chmod(node, os.stat(node).st_mode & ~0o022 & 0o7777)
     if not _executable(real):
-        print(
-            f"claude-sandbox: WARNING — copied {release} but {real} is not\n"
+        _warn(
+            err,
+            f"copied {release} but {real} is not\n"
             "  executable; codex will refuse to launch.",
-            file=err,
         )
     _codex_purge(layout, stage)
 
@@ -284,11 +283,7 @@ def install_pi_binary(
         return
     arch = {"x86_64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine)
     if arch is None:
-        print(
-            "claude-sandbox: WARNING — Pi standalone supports Linux x64/arm64;"
-            " skipping.",
-            file=err,
-        )
+        _warn(err, "Pi standalone supports Linux x64/arm64; skipping.")
         return
     dest = layout.system(PI_DIST)
     if _executable(dest / "pi"):
@@ -297,33 +292,17 @@ def install_pi_binary(
         stamp = dest / ".sandbox-version"
         if stamp.is_file() and stamp.read_text().strip() == options.pi_version:
             return
+    kept = "existing installation preserved."
     version = options.pi_version
     if version == "latest":
-        url = _fetch(
-            f"{PI_RELEASES}/latest",
-            run,
-            "--retry",
-            "6",
-            "-I",
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{url_effective}",
-        )
+        effective = ("-I", "-o", "/dev/null", "-w", "%{url_effective}")
+        url = _fetch(f"{PI_RELEASES}/latest", run, "--retry", "6", *effective)
         if url is None:
-            print(
-                "claude-sandbox: WARNING — could not resolve the latest Pi"
-                " release; existing installation preserved.",
-                file=err,
-            )
+            _warn(err, f"could not resolve the latest Pi release; {kept}")
             return
         version = url.decode().removeprefix(f"{PI_RELEASES}/tag/v")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?", version):
-        print(
-            "claude-sandbox: WARNING — invalid Pi release version; existing"
-            " installation preserved.",
-            file=err,
-        )
+        _warn(err, f"invalid Pi release version; {kept}")
         return
     asset = f"pi-linux-{arch}.tar.gz"
     base = f"{PI_RELEASES}/download/v{version}"
@@ -331,11 +310,7 @@ def install_pi_binary(
         archive = _fetch(f"{base}/{asset}", run, "--retry", "6")
         sums = _fetch(f"{base}/SHA256SUMS", run, "--retry", "6")
         if archive is None or sums is None:
-            print(
-                "claude-sandbox: WARNING — Pi download failed; its shadow remains"
-                " installed.",
-                file=err,
-            )
+            _warn(err, "Pi download failed; its shadow remains installed.")
             return
         Path(stage, asset).write_bytes(archive)
         checksum = _pi_checksum(sums.decode(errors="replace"), asset)
@@ -345,11 +320,7 @@ def install_pi_binary(
             or run([*tar, "-C", stage], check=False).returncode
             or not _executable(f"{stage}/pi/pi")
         ):
-            print(
-                "claude-sandbox: WARNING — Pi release validation failed; existing"
-                " installation preserved.",
-                file=err,
-            )
+            _warn(err, f"Pi release validation failed; {kept}")
             return
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(dest, ignore_errors=True)

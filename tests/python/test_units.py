@@ -4,6 +4,7 @@ of the argv builder only some hosts reach (a fake host stands in for them).
 
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -13,14 +14,15 @@ from claude_sandbox.bwrap import (
     ENTRY_GUARD_ENV,
     ENTRY_POINTS,
     HOST,
-    bwrap_argv,
+    Probe,
+    bwrap_build,
     path_ahead_of_shadow,
 )
 from claude_sandbox.config import Config, valid_tcp_port
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.gitconfig import render_gitconfig
 from claude_sandbox.profiles import (
-    agent_profile,
+    PROFILES,
     detect_agent,
     filter_chrome_args,
 )
@@ -51,12 +53,6 @@ def test_detect_agent(argv0: str, override: str, expected: str) -> None:
     except SandboxError as e:
         got = str(e)
     assert got == expected
-
-
-def test_unknown_profile_is_refused() -> None:
-    with pytest.raises(SandboxError) as e:
-        agent_profile("bash")
-    assert str(e.value) == "claude-sandbox: unknown agent 'bash'."
 
 
 def test_filter_chrome_args() -> None:
@@ -129,27 +125,17 @@ def test_gitconfig_text() -> None:
     assert "[credential" not in render_gitconfig("", "", no_forge=True)
 
 
-class HostWithEverything:
+class HostWithEverything(Probe):
     """A host that has what CI runners lack: /run/secrets, readable
     /etc/shadow, GPU nodes, a block device and a resolver override."""
 
-    def is_dir(self, path: str) -> bool:
-        return path.startswith("/run/")
-
-    def is_file(self, path: str) -> bool:
-        return False
-
-    def exists(self, path: str) -> bool:
-        return False
+    def mode(self, path: str) -> int:
+        if path.startswith("/run/"):
+            return stat.S_IFDIR
+        return {"/dev/nvidia0": stat.S_IFCHR, "/dev/sda": stat.S_IFBLK}.get(path, 0)
 
     def readable(self, path: str) -> bool:
         return True
-
-    def is_char_device(self, path: str) -> bool:
-        return path == "/dev/nvidia0"
-
-    def is_block_device(self, path: str) -> bool:
-        return path == "/dev/sda"
 
     def realpath(self, path: str) -> str:
         return path
@@ -161,8 +147,10 @@ class HostWithEverything:
 def test_host_only_branches() -> None:
     config = Config(gpu=True, allow_devices="/dev/sda")
     env = {"HOME": "/h", "CLAUDE_SANDBOX_JAIL_RESOLV": "/r"}
-    claude = agent_profile("claude")
-    argv = bwrap_argv(claude, config, env, "", "/real", [], probe=HostWithEverything())
+    claude = PROFILES["claude"]
+    argv = bwrap_build(
+        claude, config, env, "", "/real", [], probe=HostWithEverything()
+    ).argv
     i = argv.index("--dev-bind")
     assert argv[i : i + 14] == [
         "--dev-bind", "/dev/sda", "/dev/sda",
@@ -173,7 +161,7 @@ def test_host_only_branches() -> None:
         "--tmpfs", "/h",
     ]  # fmt: skip
     # A GPU glob can list a dangling link; the real probe says "no".
-    assert not HOST.is_char_device("/dev/no-such-claude-device")
+    assert HOST.mode("/dev/no-such-claude-device") == 0
     i = argv.index("/h/.ICEauthority") + 1
     assert argv[i : i + 12] == [
         "--bind", "/dev/null", "/etc/shadow",
@@ -216,11 +204,9 @@ class GuardProbe(HostWithEverything):
     """No /usr/local/bin on this host, and one writable path that is gone by
     the time it is resolved."""
 
-    def is_dir(self, path: str) -> bool:
-        return path in {"/w", "/w/bin", "/c", "/c/venv/bin", "/elsewhere/bin"}
-
-    def exists(self, path: str) -> bool:
-        return path in {"/c", "/gone", "/"}
+    def mode(self, path: str) -> int:
+        dirs = {"/", "/w", "/w/bin", "/c", "/c/venv/bin", "/elsewhere/bin"}
+        return stat.S_IFDIR if path in dirs else stat.S_IFREG * (path == "/gone")
 
     def readable(self, path: str) -> bool:
         return False
@@ -234,8 +220,8 @@ class GuardProbe(HostWithEverything):
 def guard_argv(path: str, allow_write: str = "/c\n/gone") -> list[str]:
     config = Config(allow_write=allow_write)
     env = {"HOME": "/h", "PATH": path}
-    claude = agent_profile("claude")
-    return bwrap_argv(claude, config, env, "/w", "/real", [], probe=GuardProbe())
+    claude = PROFILES["claude"]
+    return bwrap_build(claude, config, env, "/w", "/real", [], probe=GuardProbe()).argv
 
 
 def guard_binds(argv: list[str]) -> list[str]:
@@ -271,12 +257,12 @@ def test_entry_guard_under_an_allow_write_of_root() -> None:
 
 def test_the_real_binary_is_bound_back_read_only() -> None:
     """A session cannot rewrite the binary later sessions run."""
-    claude = agent_profile("claude")
-    argv = bwrap_argv(claude, Config(), {"HOME": "/h"}, "", "/real", [])
+    claude = PROFILES["claude"]
+    argv = bwrap_build(claude, Config(), {"HOME": "/h"}, "", "/real", []).argv
     i = argv.index("/h/.local/bin/claude")
     assert argv[i - 2 : i + 1] == ["--ro-bind", "/real", "/h/.local/bin/claude"]
     for name in ("codex", "pi"):
-        assert not agent_profile(name).bind_back  # exec'd in place, under /usr
+        assert not PROFILES[name].bind_back  # exec'd in place, under /usr
 
 
 @pytest.mark.parametrize("entry", ["cache", "./cache", "~/cache", "../x"])

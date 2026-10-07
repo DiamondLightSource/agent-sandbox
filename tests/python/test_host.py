@@ -140,17 +140,6 @@ def test_vercmp_sorts_as_sort_v(a: str, b: str) -> None:
     assert launcher.vercmp(a, a) == 0
 
 
-def test_project_dir_keeps_the_logical_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    (tmp_path / "real").mkdir()
-    (tmp_path / "link").symlink_to(tmp_path / "real")
-    monkeypatch.chdir(tmp_path / "link")
-    logical = str(tmp_path / "link")
-    assert launcher.project_dir({"PWD": logical}) == logical
-    assert launcher.project_dir({"PWD": "/nonexistent"}) == str(tmp_path / "real")
-
-
 def test_detect_shell_walks_up_to_a_shell(tmp_path: Path) -> None:
     for pid, comm, ppid in [(50, "uv", 40), (40, "-zsh", 1), (60, "x) y", 9)]:
         (tmp_path / str(pid)).mkdir()

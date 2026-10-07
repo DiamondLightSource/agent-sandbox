@@ -4,11 +4,10 @@ On the HOST it is the project-container launcher (``host/``); inside a
 CONTAINER it is the helper CLI (``helpers/``); inside the JAIL a few
 helpers still work. Every command declares where it runs with
 ``@requires``; this module asks :mod:`claude_sandbox.context` where it is
-and runs, forwards or refuses each command accordingly. That replaces the
-bash launcher's hand-kept list of verbs to forward.
+and runs, forwards or refuses each command accordingly.
 
-On the host the launcher's own options come first and are parsed as the
-bash parses them (:mod:`claude_sandbox.host.options`); the agent verbs,
+On the host the launcher's own options come first and are parsed by hand
+(:mod:`claude_sandbox.host.options`); the agent verbs,
 ``shell`` and every forwarded helper then get the rest of the command line
 untouched. Elsewhere, and for ``clean``, argparse parses it.
 """
@@ -36,8 +35,7 @@ def rest(p: argparse.ArgumentParser) -> None:
 @dataclass(frozen=True)
 class Command:
     """A verb: its function and its arguments. A ``raw`` command gets its
-    arguments as typed (``ns.tail``), as the bash did; argparse parses the
-    others."""
+    arguments as typed (``ns.tail``); argparse parses the others."""
 
     fn: Run
     arguments: Callable[[argparse.ArgumentParser], None] | None = None
@@ -147,7 +145,7 @@ def _main(args: list[str], where: Where) -> int:
         if args[:1] in (["-v"], ["--version"]):
             args = ["version"]
         elif args[:1] in ([], ["-h"], ["--help"]):
-            args = ["help"]  # as the bash helper: usage, exit 0
+            args = ["help"]  # usage, exit 0
         name, tail = args[0], args[1:]
     act = actions.get(name)
     if act is Action.REFUSE:

@@ -106,7 +106,7 @@ repository-only `.claude/commands/verify-sandbox.md` has been removed.
   tree onto the skills dir (hides the user's own skills, wrong depth).
 - Making `SHIPPED_SKILLS_DIR` an env or conf seam: a bind source chosen
   from outside the trust boundary is a new way into the jail. Tests pass a
-  directory as an argument to `bwrap_argv` (and the shadow's host paths),
+  directory as an argument to `bwrap_build` (and the shadow's host paths),
   never through the environment.
 - Merging instead of replacing the installed tree (stale skills keep
   shipping with no source to audit).
