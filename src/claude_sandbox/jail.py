@@ -847,7 +847,9 @@ def check_routes(table: str, rules: str, addrs: str, allowed: set[Route]) -> Non
         route, name = parsed
         if name == "local" and _kernel_local(route, own):
             continue
-        if name != "main" or route not in allowed:
+        if name != "main" or route not in allowed or route in seen:
+            # A second copy of an allowed route (a default with another
+            # metric) is refused too: the holder sets each route once.
             raise JailError(
                 f"— unexpected route in the jail: {line.strip()} (fail-closed)"
             )

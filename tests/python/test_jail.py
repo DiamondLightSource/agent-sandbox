@@ -1179,3 +1179,73 @@ def test_a_kernel_without_ipv6_has_nothing_to_check() -> None:
     with pytest.raises(Exec):
         jail.holder_main(["--", *COMMAND], ops=ops)
     assert ops.written == {}
+
+
+# Captured from a real jail (podman, kernel 7.0, iproute2 6.1), with
+# allow-ip 203.0.113.7: what `ip -4 -o route show table all` and
+# `ip -4 -o addr show` print once the holder has locked the routes.
+# ip ends each line with a space; kept, as the parser must cope.
+CAPTURED_TABLE = "".join(
+    f"{line} \n"
+    for line in (
+        "default via 192.168.1.1 dev enp5s0 src 192.168.1.10",
+        "blackhole 10.0.0.0/8",
+        "blackhole 100.64.0.0/10",
+        "blackhole 168.63.129.16",
+        "unreachable 169.254.0.0/16",
+        "blackhole 172.16.0.0/12",
+        "192.0.2.53 via 192.168.1.1 dev enp5s0 src 192.168.1.10",
+        "blackhole 192.168.0.0/16",
+        "blackhole 192.168.1.0/24",
+        "192.168.1.1 dev enp5s0 scope link src 192.168.1.10",
+        "203.0.113.7 via 192.168.1.1 dev enp5s0 src 192.168.1.10",
+        "local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1",
+        "local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1",
+        "broadcast 127.255.255.255 dev lo table local proto kernel scope link"
+        " src 127.0.0.1",
+        "local 192.168.1.10 dev enp5s0 table local proto kernel scope host"
+        " src 192.168.1.10",
+        "broadcast 192.168.1.255 dev enp5s0 table local proto kernel scope link"
+        " src 192.168.1.10",
+    )
+)
+CAPTURED_ADDRS = (
+    "1: lo    inet 127.0.0.1/8 scope host lo\\"
+    "       valid_lft forever preferred_lft forever\n"
+    "2: enp5s0    inet 192.168.1.10/24 brd 192.168.1.255 scope global"
+    " noprefixroute enp5s0\\       valid_lft forever preferred_lft forever\n"
+)
+CAPTURED_ALLOWED = {
+    ("unicast", "0.0.0.0/0", "192.168.1.1", "enp5s0"),
+    *(("blackhole", net, "", "") for net in jail.BLACKHOLES),
+    ("blackhole", "168.63.129.16/32", "", ""),
+    ("blackhole", "192.168.1.0/24", "", ""),
+    ("unreachable", "169.254.0.0/16", "", ""),
+    ("unicast", "192.0.2.53/32", "192.168.1.1", "enp5s0"),
+    ("unicast", "192.168.1.1/32", "", "enp5s0"),
+    ("unicast", "203.0.113.7/32", "192.168.1.1", "enp5s0"),
+}
+
+
+def test_a_captured_locked_table_passes() -> None:
+    jail.check_routes(CAPTURED_TABLE, RULES, CAPTURED_ADDRS, CAPTURED_ALLOWED)
+
+
+@pytest.mark.parametrize(
+    "leftover",
+    [
+        # What pasta mirrored on the same host before the lock: a DHCP
+        # default with a metric (a second default, refused even though it
+        # matches ours), the connected subnet, a host route a VPN pushed, and
+        # an injected metadata route.
+        "default via 192.168.1.1 dev enp5s0 proto dhcp metric 100 ",
+        "192.168.1.0/24 dev enp5s0 proto kernel scope link metric 100 ",
+        "193.62.221.195 via 192.168.1.1 dev enp5s0 ",
+        "169.254.169.254 via 192.168.1.1 dev enp5s0 ",
+    ],
+)
+def test_a_captured_mirrored_route_is_refused(leftover: str) -> None:
+    with pytest.raises(jail.JailError, match="unexpected route"):
+        jail.check_routes(
+            CAPTURED_TABLE + leftover + "\n", RULES, CAPTURED_ADDRS, CAPTURED_ALLOWED
+        )
