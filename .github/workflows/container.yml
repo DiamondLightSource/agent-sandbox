@@ -101,7 +101,7 @@ jobs:
               /etc/claude-code/managed-settings.json
             /usr/libexec/claude-sandbox/claude --version
             /usr/libexec/claude-sandbox/pi-dist/pi --version
-            # Image-only Python: the sandbox's own pinned interpreter, venv
+            # Image-only Python: the pinned interpreter of the sandbox, venv
             # under /cache reached through the container-local /opt/venv
             # symlink on PATH (the entrypoint repoints it at the per-project
             # venv)
@@ -110,8 +110,8 @@ jobs:
             python -c "import os, sys; assert os.path.realpath(sys.prefix) == \"/cache/venv\", sys.prefix"
             # (uv python find would answer with the active venv itself)
             grep -q "^home = /usr/libexec/claude-sandbox/python/cpython-" /cache/venv/pyvenv.cfg
-            # One Python and one uv in the image (issue #85): the sandbox's
-            # interpreter, and the base image's uv for projects
+            # One Python and one uv in the image (issue #85): the sandbox
+            # interpreter, and the uv of the base image for projects
             test ! -e /opt/uv
             test ! -e /usr/libexec/claude-sandbox/uv
             pythons="$(find / -xdev -type f -name "python3.[0-9]*" ! -name "*-config" -perm -u+x)"
