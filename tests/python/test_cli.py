@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import claude_sandbox
 from claude_sandbox import cli, context
 from claude_sandbox.context import CONTAINER, HOST, Where
 from claude_sandbox.host import commands, launcher
@@ -161,32 +160,7 @@ def test_options_come_from_the_cli() -> None:
         commands.options(argparse.Namespace(opts=None))
 
 
-# --- the opt-in, and python -m ----------------------------------------------
-
-
-def test_opt_in_runs_the_python_cli_with_the_front_doors_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[tuple[list[str], str]] = []
-
-    def fake(argv: list[str]) -> int:
-        seen.append((argv, os.environ["CLAUDE_SANDBOX_LAUNCHER"]))
-        return 5
-
-    monkeypatch.setattr(cli, "main", fake)
-
-    def execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
-        pytest.fail("exec'd the bash")
-
-    monkeypatch.setattr(os, "execvpe", execvpe)
-    monkeypatch.setattr(sys, "argv", ["claude-sandbox", "verify"])
-    for var in ("LAUNCHER", "LAUNCHER_VERSION", "IMAGE"):  # restored after
-        monkeypatch.setenv(f"CLAUDE_SANDBOX_{var}", "")
-        monkeypatch.delenv(f"CLAUDE_SANDBOX_{var}")
-    monkeypatch.setenv("CLAUDE_SANDBOX_IMPL", "python")
-    with pytest.raises(SystemExit) as exc:
-        claude_sandbox.main()
-    assert exc.value.code == 5 and seen == [(["verify"], "uvx")]
+# --- python -m ----------------------------------------------------------------
 
 
 def test_python_m_runs_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,8 +1,5 @@
-"""The PyPI entry point (ADR 23): locate the bundled bash, set env, exec.
-
-Until issue #72 phase 5 the wheel's one module only hands over to the bash
-launcher and installer; these pin what it execs and with which environment.
-"""
+"""The console script (ADR 23, as amended by ADR 26): the Python CLI with
+the environment that pins the image, or the bundled installer bootstrap."""
 
 import os
 import sys
@@ -11,11 +8,11 @@ from typing import NoReturn
 import pytest
 
 import claude_sandbox
-from claude_sandbox import _version
+from claude_sandbox import _version, cli
 
 
 class Exec(Exception):
-    """Raised by the stub execvpe in place of replacing the process."""
+    """Raised by the stub execvpe, and the stub CLI, in place of running."""
 
     def __init__(self, file: str, args: list[str], env: dict[str, str]) -> None:
         super().__init__(file)
@@ -26,13 +23,20 @@ def _execvpe(file: str, args: list[str], env: dict[str, str]) -> NoReturn:
     raise Exec(file, args, env)
 
 
+def _cli(argv: list[str]) -> NoReturn:
+    raise Exec("cli", argv, dict(os.environ))
+
+
 def _main(monkeypatch: pytest.MonkeyPatch, version: str, *argv: str) -> Exec:
-    """Run main() at a given wheel version with execvpe stubbed out."""
+    """Run main() at a given wheel version with execvpe and the CLI stubbed
+    out; the CLI's environment is restored after."""
     monkeypatch.setattr(os, "execvpe", _execvpe)
+    monkeypatch.setattr(cli, "main", _cli)
+    for var in ("LAUNCHER", "LAUNCHER_VERSION", "IMAGE", "VERSION"):
+        monkeypatch.setenv(f"CLAUDE_SANDBOX_{var}", "")
+        monkeypatch.delenv(f"CLAUDE_SANDBOX_{var}")
     monkeypatch.setattr(_version, "__version__", version)
     monkeypatch.setattr(sys, "argv", ["claude-sandbox", *argv])
-    for var in ("CLAUDE_SANDBOX_IMAGE", "CLAUDE_SANDBOX_VERSION"):
-        monkeypatch.delenv(var, raising=False)
     with pytest.raises(Exec) as exc:
         claude_sandbox.main()
     return exc.value
@@ -51,13 +55,17 @@ def _main(monkeypatch: pytest.MonkeyPatch, version: str, *argv: str) -> Exec:
 def test_launcher_pins_the_image_to_the_git_tag(
     monkeypatch: pytest.MonkeyPatch, version: str, tag: str | None
 ) -> None:
+    monkeypatch.setenv("UV", "/usr/bin/uv")
     ex = _main(monkeypatch, version, "--help")
-    assert ex.file == "bash"
-    assert ex.argv[1].endswith(os.path.join("tree", "container", "claude-container"))
-    assert ex.argv[2:] == ["--help"]
+    assert ex.file == "cli" and ex.argv == ["--help"]
     assert ex.env["CLAUDE_SANDBOX_IMAGE"] == f"{claude_sandbox.IMAGE}:{tag or 'latest'}"
     assert ex.env["CLAUDE_SANDBOX_LAUNCHER_VERSION"] == (tag or version)
     assert ex.env["CLAUDE_SANDBOX_LAUNCHER"] == "uvx"
+
+
+def test_a_pip_install_is_not_called_uvx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UV", raising=False)
+    assert _main(monkeypatch, "5.0.0", "verify").env["CLAUDE_SANDBOX_LAUNCHER"] == "pip"
 
 
 def test_install_runs_the_bundled_installer_in_a_container(

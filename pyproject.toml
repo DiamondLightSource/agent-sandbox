@@ -1,7 +1,8 @@
-# claude-sandbox as a Python package (ADR 26, migrating from bash per issue
-# #72). Until the switch-over (phase 5) the wheel is still the PyPI front door
-# of ADR 23: it ships the bash launcher and installer verbatim as package
-# data, and `claude_sandbox:main` execs them. Build with `uv build --wheel`;
+# claude-sandbox as a Python package (ADR 26). The wheel is the PyPI front
+# door of ADR 23 and the implementation: `claude_sandbox:main` runs the CLI,
+# and `claude-sandbox install` runs the bash bootstrap bundled under
+# claude_sandbox/tree, which provisions the root-owned interpreter and hands
+# over to the Python installer. Build with `uv build --wheel`;
 # the version comes from the git tag (hatch-vcs, the same setuptools_scm
 # mechanism the DLS python-copier template uses), so the wheel and the image
 # tag are the same release by construction.
@@ -47,12 +48,15 @@ version-file = "src/claude_sandbox/_version.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_sandbox"]
 
-# The shipped tree mirrors the repository layout, because the `install`
-# shim locates `install.sh` relative to itself and `install.sh` locates the
-# conf and the statusline script relative to the repo root.
+# The shipped tree is what `claude-sandbox install` needs beyond the package:
+# the bootstrap and the files the installer places (the shims, the in-jail
+# wrappers, the battery, the conf, the status line and the shipped skills).
+# It mirrors the repository layout, so a clone and the wheel are both a
+# `--source` tree for the installer, and the `install` shim finds
+# `install.sh` relative to itself. Provisioning copies the package into the
+# root-owned venv without it.
 [tool.hatch.build.targets.wheel.force-include]
 "install" = "claude_sandbox/tree/install"
-"container/claude-container" = "claude_sandbox/tree/container/claude-container"
 ".devcontainer/claude-sandbox" = "claude_sandbox/tree/.devcontainer/claude-sandbox"
 ".devcontainer/claude-sandbox.conf" = "claude_sandbox/tree/.devcontainer/claude-sandbox.conf"
 ".claude/statusline-command.sh" = "claude_sandbox/tree/.claude/statusline-command.sh"

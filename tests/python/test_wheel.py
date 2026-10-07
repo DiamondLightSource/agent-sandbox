@@ -29,7 +29,8 @@ LAUNCH_PATH = (
     "tools",
 )
 
-# Stub execvpe, run main(), then import every module of the package (but
+# Stub execvpe, run `claude-sandbox install` (in a container, so it would
+# exec the bundled bootstrap), then import every module of the package (but
 # __main__, which runs when imported; the shadow test below covers it) and report
 # what main would exec, where the package was imported from, and every
 # top-level module that all this added which is neither the stdlib nor the
@@ -53,7 +54,7 @@ def execvpe(file, args, env):
                       "pkg": claude_sandbox.__file__, "modules": mine}))
     sys.exit(0)
 os.execvpe = execvpe
-sys.argv = ["claude-sandbox", "--help"]
+sys.argv = ["claude-sandbox", "install"]
 import claude_sandbox
 claude_sandbox.main()
 """
@@ -118,12 +119,38 @@ def run_isolated(site: Path, driver: str, env: dict[str, str]) -> dict[str, Any]
     return result
 
 
+IN_CONTAINER = {"container": "podman"}
+
+# What the bundled tree holds: the bootstrap and what the installer places.
+TREE = {
+    "install",
+    ".claude/statusline-command.sh",
+    ".devcontainer/claude-sandbox.conf",
+    *(
+        f".devcontainer/claude-sandbox/{name}"
+        for name in (
+            "alerts-prompt.sh",
+            "claude-sandbox-shim",
+            "claude-shim",
+            "codex-launch",
+            "install.sh",
+            "pi-run",
+            "pi-sandbox-tag.ts",
+            "pi-system.md",
+            "verify-sandbox-battery.sh",
+        )
+    ),
+}
+
+
 def test_wheel_imports_only_the_stdlib(site: Path) -> None:
-    result = run_isolated(site, DRIVER, {})
-    launcher = site / "claude_sandbox" / "tree" / "container" / "claude-container"
-    assert launcher.is_file()
-    assert result["file"] == "bash"
-    assert Path(result["args"][1]).resolve() == launcher.resolve()
+    result = run_isolated(site, DRIVER, IN_CONTAINER)
+    tree = site / "claude_sandbox" / "tree"
+    assert result["file"] == "/bin/bash"
+    assert Path(result["args"][1]).resolve() == (tree / "install").resolve()
+    shipped = {str(p.relative_to(tree)) for p in tree.rglob("*") if p.is_file()}
+    assert {p for p in shipped if not p.startswith("skills/")} == TREE
+    assert "skills/verify-sandbox/SKILL.md" in shipped
     # ADR 26: no runtime dependencies, so no third-party import anywhere.
     modules = {f"claude_sandbox.{m}" for m in (*LAUNCH_PATH, "cli")}
     assert modules <= set(result["modules"])
@@ -134,7 +161,7 @@ def test_the_stdlib_check_can_fail(site: Path) -> None:
     planted = site / "claude_sandbox" / "planted.py"
     planted.write_text("import pytest\n")
     try:
-        assert "pytest" in run_isolated(site, DRIVER, {})["foreign"]
+        assert "pytest" in run_isolated(site, DRIVER, IN_CONTAINER)["foreign"]
     finally:
         planted.unlink()
 

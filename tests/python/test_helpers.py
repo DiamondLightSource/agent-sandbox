@@ -121,11 +121,8 @@ def test_update(
         return subprocess.CompletedProcess(argv, len(clones) - 1)
 
     monkeypatch.setattr(subprocess, "run", git)
-    monkeypatch.setattr(commands, "PYTHON_INSTALL", str(installer))
-    monkeypatch.delenv("CLAUDE_SANDBOX_IMPL", raising=False)
     with pytest.raises(Exec) as exc:
         main("update")
-    assert os.environ["CLAUDE_SANDBOX_IMPL"] == "python"  # a Python install stays one
     assert os.environ["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
     assert clones[0][:3] == [find_tool("git"), "clone", "--quiet"]
     assert clones[0][0] != str(on_path / "git")

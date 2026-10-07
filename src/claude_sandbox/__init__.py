@@ -1,14 +1,12 @@
-"""The uvx front door for claude-sandbox (ADR 23).
+"""The ``claude-sandbox`` console script: the wheel's front door (ADR 23,
+as amended by ADR 26).
 
-This module holds no sandbox logic. It locates the bash files shipped
-under ``tree/`` (the launcher, the installer and what the installer
-reads), sets the two environment variables that tie the wheel version to
-what runs, and execs bash. Read the bash: it is what actually runs.
-
-``CLAUDE_SANDBOX_IMPL=python`` opts in to the Python CLI (issue #72 phase
-3) in place of the bash launcher, with the same environment. ``install``
-runs the bundled ``install`` shim either way; with the opt-in, its
-``install.sh`` is only the bootstrap of the Python installer (phase 4).
+It runs the Python CLI (``claude_sandbox.cli``) with the environment that
+ties the wheel's version to the image it launches. ``install`` is the one
+exception: it runs the bash bootstrap shipped under ``tree/`` (the
+``install`` shim, ``install.sh`` and the data files the installer places),
+which provisions the root-owned interpreter and hands over to the Python
+installer.
 """
 
 import os
@@ -47,9 +45,8 @@ def _in_container() -> bool:
 
 
 def main() -> None:
-    """Exec the launcher, or the installer when the first word is ``install``."""
-    tree = str(files(__name__).joinpath("tree"))
-    launcher = os.path.join(tree, "container", "claude-container")
+    """Run the CLI, or the installer's bootstrap when the first word is
+    ``install``."""
     ver = release_tag()
     argv = sys.argv[1:]
     env = dict(os.environ)
@@ -66,6 +63,7 @@ def main() -> None:
         # `unknown`; the wheel version is the release it was built from.
         env.setdefault("CLAUDE_SANDBOX_VERSION", ver)
         env["CLAUDE_SANDBOX_INSTALLER"] = "uvx"
+        tree = str(files(__name__).joinpath("tree"))
         os.execvpe(
             "/bin/bash", ["/bin/bash", os.path.join(tree, "install"), *argv[1:]], env
         )
@@ -74,10 +72,10 @@ def main() -> None:
     # wheel built between tags (a dev version) has no image of its own.
     tag = "latest" if ("dev" in ver or "+" in ver) else ver
     env.setdefault("CLAUDE_SANDBOX_IMAGE", f"{IMAGE}:{tag}")
-    env["CLAUDE_SANDBOX_LAUNCHER"] = "uvx"
-    if env.get("CLAUDE_SANDBOX_IMPL") == "python":
-        from .cli import main as cli
+    # uvx sets UV for what it runs; a pipx or pip install does not. The
+    # launcher names itself, and its update hint, accordingly.
+    env["CLAUDE_SANDBOX_LAUNCHER"] = "uvx" if env.get("UV") else "pip"
+    from .cli import main as cli
 
-        os.environ.update(env)
-        sys.exit(cli(argv))
-    os.execvpe("bash", ["bash", launcher, *argv], env)
+    os.environ.update(env)
+    sys.exit(cli(argv))
