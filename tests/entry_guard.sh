@@ -4,14 +4,19 @@
 # named claude, codex, pi or claude-sandbox in a writable directory that
 # precedes the shadow on PATH, and the shadow refuses to launch when one is
 # there. Run it INSIDE this repository's image with the egress jail on,
-# started as .github/workflows/container.yml starts it. The image's PATH starts with the
-# project venv's bin, and its conf allows writes under it.
+# started as .github/workflows/container.yml starts it. The image appends the
+# venv's bin to PATH (ADR 28); this puts it first, where the guard matters.
 #
 # It swaps the real claude binary for a probe for the duration (restored on
 # exit), so run it in a throwaway container.
 set -euo pipefail
 
 real=/usr/libexec/claude-sandbox/claude
+case ":$PATH:" in
+    *":/usr/bin:"*":/opt/venv/bin:"*) ;;
+    *) echo "FAIL: the image does not append the venv's bin to PATH ($PATH)" >&2; exit 1 ;;
+esac
+export PATH="/opt/venv/bin:$PATH"
 venv_bin="$(readlink -f "$(dirname "$(command -v python)")")"
 work="$(mktemp -d)"
 cleanup() {

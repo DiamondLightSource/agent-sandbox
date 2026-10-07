@@ -6,7 +6,8 @@ Date: 2026-10-06
 
 ## Status
 
-Accepted. Implemented in 5.0.0 (2026-10-07).
+Superseded by {ref}`ADR 28 <adr-review-what-a-session-leaves>` except for
+the entry-point mount guard. The watcher shipped only in the 5.0.0 betas.
 
 Builds on {ref}`ADR 9 <adr-shadow-on-path>` (the shadow on PATH, Invariant 1)
 and {ref}`ADR 26 <adr-python-implementation>` (the Python shadow). Applies to

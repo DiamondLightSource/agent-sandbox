@@ -62,24 +62,6 @@ def shell_status(returncode: int) -> int:
     return 128 - returncode if returncode < 0 else returncode
 
 
-def spawn_and_wait(path: str, argv: list[str], env: Mapping[str, str]) -> int:
-    """Run ``argv`` on this terminal and return its status as a shell
-    reports it. Ctrl-C is the child's to handle, so an interrupt that
-    reaches this process is waited out; anything else that stops the wait
-    stops the child too."""
-    proc = subprocess.Popen(argv, executable=path, env=dict(env))
-    try:
-        while True:
-            try:
-                return shell_status(proc.wait())
-            except KeyboardInterrupt:
-                continue
-    finally:
-        if proc.returncode is None:
-            proc.terminate()
-            proc.wait()
-
-
 def write_atomic(
     path: str | os.PathLike[str],
     data: bytes,

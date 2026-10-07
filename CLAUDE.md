@@ -39,8 +39,8 @@ Reversal 1):
   host-side `uvx claude-sandbox` launcher/installer (ADR 23) is outside
   this rule.
 - **No bind or environment added to the bwrap argv outside `bwrap.py`.**
-- **Keep the audit core small** — `bwrap.py`, `jail.py`, `shadow.py` and
-  `watch.py` (the PATH watcher, ADR 27), each readable top to bottom. Don't spread the core across many modules: that
+- **Keep the audit core small** — `bwrap.py`, `jail.py` and `shadow.py`,
+  each readable top to bottom. Don't spread the core across many modules: that
   is the `bf65407` / issue #14 failure that ADR 8 reversed.
 
 The documentation toolchain stays isolated to `docs/`:

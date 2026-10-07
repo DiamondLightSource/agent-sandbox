@@ -515,39 +515,11 @@ def test_read_secret_is_unechoed_on_a_terminal(
     assert auth.run(["true"]) == 0
 
 
-# --- alerts, and doctor's checks of the PATH guards -----------------------------
-
-
-@pytest.fixture
-def state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """The PATH watcher's state directories, in a temp dir."""
-    from claude_sandbox import watch
-
-    monkeypatch.setattr(watch, "STATE_DIR", str(tmp_path / "run"))
-    monkeypatch.setattr(watch, "FALLBACK_STATE_DIR", str(tmp_path / "tmp"))
-    (tmp_path / "run").mkdir()
-    return tmp_path / "run"
-
-
-def test_alerts(main: Main, state: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (state / "alerts").write_text("2026-10-06 12:00:00 cleared x (a git hook)\n")
-    assert main("alerts") == 0
-    assert capsys.readouterr().out == "2026-10-06 12:00:00 cleared x (a git hook)\n"
-    assert main("alerts", "--clear") == 0
-    assert main("alerts") == 0
-    assert capsys.readouterr().out == ""
-    # The session must not see or clear them.
-    assert main("alerts", where=JAIL) == 1
-    assert "alerts" in capsys.readouterr().err
-    (state / "alerts").unlink()
-    (state / "alerts").mkdir()  # cannot be emptied
-    assert main("alerts", "--clear") == 1
-    assert "could not empty the alerts" in capsys.readouterr().err
+# --- doctor's check of the entry points --------------------------------------
 
 
 def test_doctor_checks_the_path_guards(
     main: Main,
-    state: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -568,13 +540,11 @@ def test_doctor_checks_the_path_guards(
     assert "skip     entry points" in report()  # the bash shadow
     shadow.write_text(SHIM)
     out = report()
-    assert "ok       entry points" in out and "ok       quarantined" in out
+    assert "ok       entry points" in out
     (venv / "codex").write_text("#!/bin/sh\n")
     (venv / "codex").chmod(0o755)
-    (state / "alerts").write_text("one\ntwo\n")
     out = report()
     assert f"warn     entry points           {venv}/codex is ahead of" in out
-    assert "warn     quarantined            2 alert(s)" in out
 
     # A warning alone fails the report; nothing for --fix to do about it.
     def nothing(*args: object) -> None:

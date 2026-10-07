@@ -18,18 +18,17 @@ import signal
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext, suppress
+from contextlib import suppress
 from dataclasses import dataclass, field
 from errno import ENOENT
 from types import FrameType
 from typing import NoReturn
 
-from . import jail, watch
+from . import jail
 from .bwrap import (
     ENTRY_POINTS,
     GITCONFIG_PATH,
     SHADOW_DIR,
-    STATE_DIR,
     bwrap_build,
     path_ahead_of_shadow,
 )
@@ -58,7 +57,6 @@ from .tools import (
     find_tool,
     output,
     read_key,
-    spawn_and_wait,
     working_directory,
     write_atomic,
 )
@@ -90,11 +88,6 @@ class Host:
     execve: ExecVE = os.execve
     find_tool: Callable[[str], str | None] = find_tool
     mountinfo: str = "/proc/self/mountinfo"
-    state_dir: str = STATE_DIR
-    watching: Callable[
-        [watch.Session, Callable[[str], None]], AbstractContextManager[None]
-    ] = watch.watching
-    fork_watcher: Callable[[watch.Session], None] = watch.fork_watcher
 
 
 INSTALLED = Host()
@@ -153,16 +146,12 @@ def run(
         check_config_persistence(profile, env, term, host.mountinfo)
     prepare_home(profile, env, config, term, host.shipped_skills_dir)
 
-    # The PATH watcher's state directory, before the argv masks it.
-    state = None if verify else watch.state_dir(host.state_dir)
-
     # Stage the jail's resolver before the argv is built: bwrap.py binds the
     # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf. jail.launch
     # removes it on exit; the finally removes it if the launch never starts
     # (a refusal, or Ctrl-C at the pause).
     jailed = egress_jail_enabled(config)
     resolv = None
-    session = None
     try:
         if jailed:
             staged = jail.stage_dns()
@@ -174,7 +163,7 @@ def run(
             else:
                 env[jail.JAIL_RESOLV] = resolv
         workspace = resolve_workspace_root(config, working_directory(env))
-        built = bwrap_build(
+        argv = bwrap_build(
             profile,
             config,
             env,
@@ -184,42 +173,15 @@ def run(
             verify=verify,
             shipped_skills_dir=host.shipped_skills_dir,
             gitconfig_path=host.gitconfig_path,
-            state_dir=host.state_dir,
         )
-        # The PATH watcher (ADR 27), for everything but the battery: first
-        # what earlier sessions left, as launch warnings so the pause shows
-        # them.
-        if not verify:
-            session = watch.Session(
-                env.get("PATH", ""), built.writable, workspace, state
-            )
-            for action in session.scan_at_launch():
-                term.warn(
-                    f"quarantined at launch: {action}. Review the session that"
-                    " created it."
-                )
-        terminal, launch_env = terminal_command(built.argv, env, host)
+        terminal, launch_env = terminal_command(argv, env, host)
         term.pause(verify)
         if jailed:
-            # The watcher is a thread around the jailed launch (not for the
-            # battery).
-            with host.watching(session, term.warn_raw) if session else nullcontext():
-                jail.launch(config, launch_env, terminal)
+            jail.launch(config, launch_env, terminal)
     finally:
         if resolv is not None:
             with suppress(OSError):
                 os.remove(resolv)
-    # The jail is off, so this process is about to become script(1): a child
-    # watches for as long as it runs. Not as PID 1 (the image's default
-    # command): the watcher would be orphaned to script itself, and each
-    # would wait for the other. There script runs as a child instead, and the
-    # watcher is a thread, as with the jail on.
-    if session is not None:
-        if os.getpid() == 1:
-            with host.watching(session, term.warn_raw):
-                status = spawn_and_wait(terminal[0], terminal, launch_env)
-            sys.exit(status)
-        host.fork_watcher(session)
     _exec(host, terminal[0], terminal, launch_env)
 
 

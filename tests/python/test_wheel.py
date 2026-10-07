@@ -129,7 +129,6 @@ TREE = {
     *(
         f".devcontainer/claude-sandbox/{name}"
         for name in (
-            "alerts-prompt.sh",
             "claude-sandbox-shim",
             "claude-shim",
             "codex-launch",

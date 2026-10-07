@@ -11,8 +11,7 @@ import shlex
 import signal
 import stat
 import sys
-from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -20,7 +19,7 @@ from typing import NoReturn
 
 import pytest
 
-from claude_sandbox import cli, jail, shadow, watch
+from claude_sandbox import cli, jail, shadow
 from claude_sandbox.bwrap import bwrap_build
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
@@ -45,7 +44,6 @@ class Fixture:
     root: Path
     host: shadow.Host
     env: dict[str, str]
-    forked: list[watch.Session]  # the jail-off watchers a launch started
 
     @property
     def home(self) -> Path:
@@ -102,7 +100,6 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     executable(tools / "script")
     executable(tools / "bwrap")
     executable(tools / "git", IDENTITY)
-    forked: list[watch.Session] = []
     host = shadow.Host(
         config_path=str(tmp_path / "etc/claude-sandbox.conf"),
         gitconfig_path=str(tmp_path / "etc/claude-gitconfig"),
@@ -111,13 +108,11 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
         execve=fake_execve,
         mountinfo=str(tmp_path / "mountinfo"),
         find_tool=lambda name: find_tool(name, search=(str(tools),)),
-        state_dir=str(tmp_path / "state"),
-        fork_watcher=forked.append,
     )
     (tmp_path / "mountinfo").write_text("")
     monkeypatch.chdir(tmp_path / "work")
     env = {"HOME": str(tmp_path / "home"), "PATH": str(tmp_path / "bin")}
-    return Fixture(tmp_path, host, env, forked)
+    return Fixture(tmp_path, host, env)
 
 
 def test_launch_wraps_the_bwrap_argv_in_script(
@@ -138,12 +133,7 @@ def test_launch_wraps_the_bwrap_argv_in_script(
         ["--chrome", "a b", ""],
         shipped_skills_dir=fx.host.shipped_skills_dir,
         gitconfig_path=fx.host.gitconfig_path,
-        state_dir=fx.host.state_dir,
-    ).argv
-    i = expected.index(fx.host.state_dir)  # created, then masked
-    assert expected[i - 1] == "--tmpfs"
-    # The jail is off: a child watches while script(1) runs.
-    assert [s.roots[-1] for s in fx.forked] == [str(fx.root / "work")]
+    )
     # bwrap by absolute path, so the inner shell looks nothing up.
     assert shlex.split(ex.argv[6]) == [str(fx.root / "tools/bwrap"), *expected[1:]]
     assert expected[-3:] == ["--no-chrome", "a b", ""]
@@ -247,40 +237,6 @@ def jailed(
     with pytest.raises(Launched) as exc:
         shadow.run("claude", args, fx.env, fx.host)
     return exc.value
-
-
-def test_the_path_watcher_around_a_launch(
-    fx: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    venv, system = fx.root / "work/venv/bin", fx.root / "sys"
-    executable(system / "git")
-    venv.mkdir(parents=True)
-    fx.env["PATH"] = f"{venv}:{system}"
-    fx.run()  # the first launch keeps a baseline
-    executable(venv / "git")  # left by something since
-    fx.run()
-    assert "claude-sandbox: quarantined at launch: cleared the execute bits of" in (
-        capsys.readouterr().err
-    )
-    assert not os.access(venv / "git", os.X_OK)
-    assert len(fx.forked) == 2  # each jail-off launch had a watcher
-    # Jailed, the watcher runs around the jail; never for the battery.
-    watched: list[watch.Session] = []
-
-    @contextmanager
-    def watching(
-        session: watch.Session, report: Callable[[str], None]
-    ) -> Generator[None]:
-        watched.append(session)
-        yield
-
-    fx.host = replace(fx.host, watching=watching)
-    staged = jail.StagedDns(None)
-    jailed(fx, monkeypatch, staged)
-    assert [s.path for s in watched] == [fx.env["PATH"]]
-    call = jailed(fx, monkeypatch, staged, ["--sandbox-verify"])
-    assert call.command[6].endswith("verify-sandbox-battery.sh")
-    assert len(watched) == 1 and len(fx.forked) == 2
 
 
 def test_a_jailed_launch_stages_dns_then_goes_through_the_jail(
@@ -707,30 +663,3 @@ def test_dunder_main_dispatches(
         runpy.run_module("claude_sandbox", run_name="__main__")
     assert exc.value.code == 2
     assert "usage:" in capsys.readouterr().err
-
-
-def test_as_pid_1_script_is_a_child_and_the_watcher_a_thread(
-    fx: Fixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """PID 1 (the image's default command): a forked watcher would be
-    orphaned to script(1) itself and each would wait for the other."""
-    watched: list[watch.Session] = []
-    marker = fx.root / "watching"
-
-    @contextmanager
-    def watching(
-        session: watch.Session, report: Callable[[str], None]
-    ) -> Generator[None]:
-        watched.append(session)
-        marker.touch()
-        yield
-
-    # script(1), run as a child: 3 once the watcher has started, else 9.
-    executable(
-        fx.root / "tools/script", f"#!/bin/sh\n[ -e {marker} ] && exit 3\nexit 9\n"
-    )
-    monkeypatch.setattr(os, "getpid", lambda: 1)
-    with pytest.raises(SystemExit) as exc:
-        shadow.run("claude", [], fx.env, replace(fx.host, watching=watching))
-    assert exc.value.code == 3
-    assert len(watched) == 1 and fx.forked == []

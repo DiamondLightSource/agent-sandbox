@@ -91,11 +91,9 @@ to your forges again.
 5.0, is no longer used: unset or `python` installs as usual, and
 `bash` (or any other value) refuses. Remove it from your `postCreate`.
 
-The Python wrapper also adds the entry-point guard and the PATH watcher
-({ref}`ADR 27 <adr-outer-path-guard>`): an executable a session leaves ahead
-of a system command on PATH, or a new Git hook, loses its execute bits, and
-outer shells warn about it. Review it, then run
-`claude-sandbox alerts --clear`.
+If your devcontainer puts its venv first on PATH, append it instead
+(`PATH=$PATH:/path/to/venv/bin`), so nothing a session leaves there shadows a
+system command ({ref}`ADR 28 <adr-review-what-a-session-leaves>`).
 
 The `container/claude-container` script is gone. If you ran it from a
 clone, install the launcher from PyPI instead, with uv or

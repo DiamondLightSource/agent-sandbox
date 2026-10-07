@@ -1,11 +1,9 @@
 """tools.py: find_tool (a fixed search path, never PATH), and the helpers the
-shadow, the watcher, the launcher and the installer share."""
+shadow, the launcher and the installer share."""
 
 import os
 import pty
-import signal
 import stat
-import subprocess
 import termios
 from pathlib import Path
 
@@ -46,60 +44,6 @@ def test_output(tmp_path: Path) -> None:
     assert tools.output([sh, "-c", "echo $X"], {"X": "y"}) == (0, "y")
     assert tools.output([str(tmp_path / "absent")]) == (127, "")
     assert tools.output([sh, "-c", "sleep 5"], timeout=0.1) == (127, "")
-
-
-@pytest.mark.parametrize(
-    ("command", "status"), [("exit 3", 3), ("kill -TERM $$", 128 + signal.SIGTERM)]
-)
-def test_spawn_and_wait_reports_the_status(command: str, status: int) -> None:
-    assert tools.spawn_and_wait("/bin/sh", ["sh", "-c", command], {}) == status
-
-
-def test_spawn_and_wait_waits_out_an_interrupt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class Child:
-        returncode: int | None = None
-        interrupted = False
-
-        def __init__(self, argv: list[str], **kwargs: object) -> None:
-            pass
-
-        def wait(self) -> int:
-            if not Child.interrupted:
-                Child.interrupted = True
-                raise KeyboardInterrupt
-            self.returncode = 0
-            return 0
-
-    monkeypatch.setattr(subprocess, "Popen", Child)
-    assert tools.spawn_and_wait("claude", ["claude"], {}) == 0
-
-
-def test_spawn_and_wait_stops_the_child_it_stops_waiting_for(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A TERM for the shadow unwinds through the wait: the child goes too."""
-
-    class Child:
-        returncode: int | None = None
-        terminated = False
-
-        def __init__(self, argv: list[str], **kwargs: object) -> None:
-            pass
-
-        def wait(self) -> int:
-            if not Child.terminated:
-                raise SystemExit(143)
-            return -signal.SIGTERM
-
-        def terminate(self) -> None:
-            Child.terminated = True
-
-    monkeypatch.setattr(subprocess, "Popen", Child)
-    with pytest.raises(SystemExit):
-        tools.spawn_and_wait("claude", ["claude"], {})
-    assert Child.terminated
 
 
 def test_write_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

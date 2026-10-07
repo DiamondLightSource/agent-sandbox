@@ -52,8 +52,7 @@ def build(
         verify=verify,
         shipped_skills_dir=skills,
         gitconfig_path=gitconfig,
-        state_dir="/nonexistent/state",
-    ).argv
+    )
 
 
 def pair(argv: list[str], first: str, then: str) -> bool:

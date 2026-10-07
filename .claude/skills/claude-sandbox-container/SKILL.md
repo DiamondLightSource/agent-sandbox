@@ -272,8 +272,8 @@ already extended here:
   them and you need `UV_LINK_MODE=copy` and pay a copy per install. And
   persistence of packages was never the goal: that template runs
   `uv venv --clear && uv sync` on every create, the cache makes it fast.
-  Image side: PATH carries `/opt/venv/bin`, a CONTAINER-LOCAL symlink the
-  entrypoint points at `$VIRTUAL_ENV` (a symlink on the shared volume
+  Image side: PATH ends with `/opt/venv/bin` (ADR 28), a CONTAINER-LOCAL
+  symlink the entrypoint points at `$VIRTUAL_ENV` (a symlink on the shared volume
   would be shared by every project), created fresh once per container
   (`/var/lib/claude-sandbox/venv-created` marker; restarts keep it).
   `clean` ALWAYS prunes `venv-for<path>` dirs whose container name
