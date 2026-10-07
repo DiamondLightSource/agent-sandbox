@@ -65,6 +65,14 @@ recommended version, backing up changed files. See
 The published image includes Python, uv, Node.js, npm and Vim. Custom
 containers keep their own toolchain choices.
 
+The image's Python is the sandbox's own pinned interpreter, and uv there
+never downloads another on its own (`UV_PYTHON_DOWNLOADS=manual`). For a
+project that needs a different version, run `uv python install 3.12` (for
+example) from `claude-sandbox shell`, then recreate the project's venv; an
+agent session cannot install one. Don't run `uv python uninstall 3.13` from
+that shell: it removes the sandbox's interpreter and every agent launch
+fails. `uvx claude-sandbox --recreate` recovers it.
+
 Shipped skills provide installers for optional tools, run outside the agent:
 
 - [Browser automation](../how-to/browser-automation.md): Playwright and Chromium.
