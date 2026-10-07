@@ -193,6 +193,12 @@ echo "EGRESSSRC:$(ip route get 1.1.1.1 | head -n1)"
 # The agent's own user namespace (bwrap's, nested in the holder's) cannot
 # change the jail's routes, even as its root: pasta set them once.
 echo "CHANGE:$(unshare -U -r ip route replace blackhole 1.1.1.1/32 2>&1; echo "rc=$?")"
+# And as the agent really runs, where bwrap is installed.
+if command -v bwrap >/dev/null; then
+    echo "BWRAP:$(bwrap --ro-bind / / --dev /dev --unshare-user-try --cap-drop ALL \
+        ip route replace blackhole 1.1.1.1/32 2>&1; echo "rc=$?")"
+fi
+ip -4 -o route show table main | sed 's/^/AFTER:/'
 echo "V6ROUTABLE:$(ip -6 addr show | awk '/inet6/{print $2}' \
     | grep -vE '^(::1/|fe80:)' | tr '\n' ' ')"
 gw="$(ip route show default | awk '{print $3; exit}')"
@@ -304,8 +310,15 @@ def test_routes_are_locked_and_the_internet_is_reachable(
     assert main == expected, out
     src = re.search(r"^EGRESSSRC:.* src (\S+)", out, re.M)
     assert src is not None, out
-    change = re.search(r"^CHANGE:(.*)$", out, re.M)
-    assert change is not None and "rc=0" not in change.group(1), out
+    for probe in ("CHANGE", "BWRAP"):
+        change = re.search(rf"^{probe}:(.*)$", out, re.M)
+        if change is None and probe == "BWRAP":
+            continue  # no bwrap here (a CI runner)
+        assert change is not None and "Operation not permitted" in change.group(1)
+        assert "rc=0" not in change.group(1), out
+    # ... and the table is as it was.
+    after = {normal(m) for m in re.findall(r"^AFTER:(.*)$", out, re.M)}
+    assert after == expected, out
     for target in ("10.99.1.1", "169.254.169.254", "168.63.129.16"):
         got = re.search(rf"^ROUTEGET:{re.escape(target)}:(.*)$", out, re.M)
         assert got is not None and " via " not in got.group(1), out
