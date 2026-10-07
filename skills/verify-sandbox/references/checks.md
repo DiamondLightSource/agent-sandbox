@@ -231,8 +231,10 @@ blackhole are present. It catches a fail-*open* regression (the jail being
 skipped while Claude still launches) and partial programming (e.g. only
 `10/8` blackholed, or CGNAT dropped so Tailscale internal hosts leak).
 
-The jail is fail-*closed* by design — `netns_holder` aborts (so Claude
-never starts) if any blackhole route fails — so a running session is
+The jail is fail-*closed* by design — the holder (`jail.holder_main`,
+`lock_routes`) aborts, so Claude never starts, if any blackhole route
+fails or the rebuilt route table is not exactly the allowlist — so a
+running session is
 either fully jailed or deliberately un-jailed. The intended-state env var
 `CLAUDE_SANDBOX_EGRESS_JAIL` is **not** in the shadow's `--setenv`
 allowlist, so it is invisible from inside; this check therefore keys off
@@ -307,7 +309,7 @@ check count stays constant across agents.
 ### Check 22 — entry-point names guarded ahead of the shadow
 
 Invariant 1 says a plain `claude` (or `codex`, `pi`, `claude-sandbox`)
-reaches the shadow at `/usr/local/bin`. The Python shadow protects the sandbox's entry-point names: a session
+reaches the shadow at `/usr/local/bin`. The shadow protects the sandbox's entry-point names: a session
 cannot create a command named claude, codex, pi or claude-sandbox in a
 writable directory that precedes the shadow on `PATH`. For each such
 directory that exists at launch, `bwrap.py` read-only binds `/dev/null`

@@ -18,7 +18,7 @@ Run this command and capture its output and exit status:
 bash /usr/libexec/claude-sandbox/verify-sandbox-battery.sh
 ```
 
-Expect 21 PASS rows and exit status zero. Read informational notes too:
+Expect 22 PASS rows and exit status zero. Read informational notes too:
 checks 19–20 can pass with network filtering deliberately disabled.
 
 If any check fails, report the failing rows verbatim and stop. Do not attempt
