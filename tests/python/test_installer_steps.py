@@ -469,7 +469,7 @@ def test_the_updater_is_disabled_in_the_managed_policy(
 
 
 # Not one JSON value, a value that is no settings, and what could not be
-# written back: a lone surrogate, nesting too deep.
+# written back: an overflowing float, a lone surrogate, nesting too deep.
 BAD_JSON = (
     "{not json",
     "",
@@ -477,6 +477,7 @@ BAD_JSON = (
     "false",
     "{} {}",
     '{"a":NaN}',
+    '{"a":1e400}',
     '{"s":"\\ud800"}',
     '{"a":' * 100_000 + "1" + "}" * 100_000,
 )

@@ -356,14 +356,19 @@ def _object(value: object) -> dict[str, object] | None:
 
 
 def _dump(value: object) -> bytes:
-    return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
+    # allow_nan=False: a float that overflows (1e400) parses to inf, and
+    # json.dumps would write Infinity, which is not JSON.
+    return (
+        json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    ).encode()
 
 
 def _settings(path: Path, warning: str) -> tuple[object, list[Action]]:
     """The settings file's value (``{}`` when absent), or a warning. A
     symlink is not followed: it is left alone, with a warning. So is a
     file that is not one JSON value, or is ``null`` or ``false``, or holds
-    what cannot be written back (NaN, a lone surrogate, nesting too deep)."""
+    what cannot be written back (NaN, a float that overflows, a lone
+    surrogate, nesting too deep)."""
     if path.is_symlink():
         return None, [Warn(f"claude-sandbox: WARNING — {path} is a symlink; skipped.")]
     data = _read(path)
