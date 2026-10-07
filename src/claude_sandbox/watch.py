@@ -28,6 +28,10 @@ So, from outside the jail and for as long as the session lasts:
   state the previous launch recorded under ``STATE_DIR``.
 - Each action is a line in ``STATE_DIR/alerts``, which the jail cannot see
   (``bwrap.py`` masks it) and which the prompt hook prints in outer shells.
+- A quarantined ``uv`` or ``uvx`` (``tox-uv`` puts PyPI's uv in a venv) is
+  held back from the alerts while a thread checks it against that release's
+  wheel on PyPI: byte-identical, its execute bits come back and a line goes
+  to ``STATE_DIR/verified`` instead; anything else, and it alerts as usual.
 
 inotify (through ``ctypes``) wakes the watcher at once; a pass also runs
 every second, which finds directories that appear later and is the whole
@@ -36,19 +40,25 @@ on the launch path (ADR 26).
 """
 
 import hashlib
+import io
 import json
 import os
+import platform
 import re
 import select
+import shutil
 import signal
 import stat
 import sys
+import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+import urllib.request
+import zipfile
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import NoReturn, cast
+from typing import IO, NoReturn, cast
 
 from .bwrap import STATE_DIR, inside, path_ahead, watched_path_dirs
 from .tools import find_tool, output, write_atomic
@@ -56,8 +66,21 @@ from .tools import find_tool, output, write_atomic
 # Where the alerts go when /run cannot be written (bwrap masks /tmp).
 FALLBACK_STATE_DIR = "/tmp/claude-sandbox"
 ALERTS = "alerts"
+VERIFIED = "verified"  # informational: what was checked and given back
 BASELINES = "baseline"
 TICK = 1.0  # seconds between passes
+
+# The names a shadow of which is let stand when the file is byte-identical to
+# that release's binary in the official ``uv`` wheel on PyPI (``tox-uv``
+# installs it into a venv, ahead of /usr/bin/uv). Constants: nothing the
+# session can write widens them.
+PYPI_UV = frozenset({"uv", "uvx"})
+PYPI_JSON = "https://pypi.org/pypi/uv/{}/json"
+PYPI_FILES = "https://files.pythonhosted.org/"
+PYPI_CACHE = "pypi"  # under the state directory: wheel sha256 -> binaries'
+FETCH_TIMEOUT = 30.0  # seconds, per socket operation
+SETTLE = 3.0  # seconds a session's end waits for checks in flight
+UV_DIST_INFO = re.compile(r"uv-(\d+(?:\.\d+){1,3}(?:(?:a|b|rc)\d+)?)\.dist-info")
 
 # What lstat says about a name, and for a link what it leads to: changes when
 # the name is replaced, written, chmodded or relinked (ctime cannot be set).
@@ -292,6 +315,145 @@ def quarantine(directory: str, name: str) -> str | None:
     return f"cleared the execute bits of {shown}"
 
 
+def restore(directory: str, name: str, digest: str) -> Sig | None:
+    """Give back the execute bits ``quarantine`` cleared from ``name`` in
+    ``directory`` if it is a regular file whose sha256 is ``digest``; its
+    signature after, or None (and nothing done).
+
+    As ``quarantine``: through a checked descriptor for the directory, no
+    link followed. The file is hashed and chmodded through one descriptor,
+    and left alone if it changed while it was read.
+    """
+    dirfd = open_dir(directory)
+    if dirfd is None:
+        return None
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        fd = os.open(name, flags, dir_fd=dirfd)
+    except OSError:
+        return None
+    finally:
+        os.close(dirfd)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o111:
+            return None
+        sha = hashlib.sha256()
+        while chunk := os.read(fd, 1 << 20):
+            sha.update(chunk)
+        after = os.fstat(fd)
+        unchanged = (after.st_ctime_ns, after.st_size) == (
+            before.st_ctime_ns,
+            before.st_size,
+        )
+        if sha.hexdigest() != digest or not unchanged:
+            return None
+        bits = stat.S_IMODE(after.st_mode)
+        os.chmod(f"/proc/self/fd/{fd}", bits | (bits & 0o444) >> 2)
+        st = os.fstat(fd)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return (st.st_ino, st.st_ctime_ns, st.st_mode, st.st_size)
+
+
+# --- uv from PyPI ----------------------------------------------------------------
+
+
+def uv_versions(directory: str) -> list[str]:
+    """The uv versions the venv whose ``bin`` is ``directory`` says it has,
+    from its ``uv-*.dist-info``. Only a hint (the session can write it): a
+    false one just fails the comparison. At most two."""
+    lib = os.path.join(os.path.dirname(directory), "lib")
+    found: set[str] = set()
+    try:
+        pythons = os.listdir(lib)
+    except OSError:
+        return []
+    for python in pythons:
+        try:
+            names = os.listdir(os.path.join(lib, python, "site-packages"))
+        except OSError:
+            continue
+        for name in names:
+            if m := UV_DIST_INFO.fullmatch(name):
+                found.add(m.group(1))
+    return sorted(found)[:2]
+
+
+def fetch(url: str, out: IO[bytes]) -> None:
+    """Copy ``url``, https only, into ``out``."""
+    if not url.startswith("https://"):
+        raise ValueError(f"not https: {url}")
+    with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT) as response:
+        shutil.copyfileobj(response, out)
+
+
+def _wheels(version: str) -> list[tuple[str, str]]:
+    """``(url, sha256)`` of each uv ``version`` wheel on PyPI that this
+    machine could have installed: this architecture, this libc."""
+    meta = io.BytesIO()
+    fetch(PYPI_JSON.format(version), meta)
+    doc = cast(dict[str, object], json.loads(meta.getvalue()))
+    libc = "manylinux" if platform.libc_ver()[0] == "glibc" else "musllinux"
+    arch = f"_{platform.machine()}"
+    wheels: list[tuple[str, str]] = []
+    for entry in cast(list[dict[str, object]], doc["urls"]):
+        filename, url = str(entry["filename"]), str(entry["url"])
+        sha = str(cast(dict[str, object], entry["digests"])["sha256"])
+        tags = filename.removesuffix(".whl").split("-")[-1].split(".")
+        if (
+            filename.startswith(f"uv-{version}-")
+            and filename.endswith(".whl")
+            and url.startswith(PYPI_FILES)
+            and re.fullmatch(r"[0-9a-f]{64}", sha)
+            and any(t.startswith(libc) and t.endswith(arch) for t in tags)
+        ):
+            wheels.append((url, sha))
+    return wheels
+
+
+def _sha256(f: IO[bytes]) -> str:
+    sha = hashlib.sha256()
+    while chunk := f.read(1 << 20):
+        sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _wheel_digests(state: str, version: str, url: str, sha: str) -> dict[str, str]:
+    """The sha256 of ``uv`` and ``uvx`` in the wheel at ``url``: cached
+    under the state directory by the wheel's sha256, else downloaded there
+    once and checked against ``sha`` (PyPI's digest)."""
+    cache = os.path.join(state, PYPI_CACHE)
+    path = os.path.join(cache, f"{sha}.json")
+    with suppress(OSError, ValueError), open(path, encoding="utf-8") as f:
+        cached = cast(dict[str, object], json.load(f))
+        if all(isinstance(cached.get(n), str) for n in PYPI_UV):
+            return {n: str(cached[n]) for n in PYPI_UV}
+    os.makedirs(cache, 0o755, exist_ok=True)
+    digests: dict[str, str] = {}
+    with tempfile.TemporaryFile(dir=cache) as wheel:
+        fetch(url, wheel)
+        wheel.seek(0)
+        if _sha256(wheel) != sha:
+            raise ValueError(f"{url}: not the sha256 PyPI lists")
+        wheel.seek(0)
+        with zipfile.ZipFile(wheel) as z:
+            for name in PYPI_UV:
+                with z.open(f"uv-{version}.data/scripts/{name}") as member:
+                    digests[name] = _sha256(member)
+    write_atomic(path, json.dumps(digests).encode(), 0o644)
+    return digests
+
+
+def pypi_digests(state: str, version: str) -> Iterator[dict[str, str]]:
+    """For each wheel of uv ``version`` on PyPI for this machine, the
+    sha256 of its ``uv`` and ``uvx``. Raises on any failure."""
+    for url, sha in _wheels(version):
+        yield _wheel_digests(state, version, url, sha)
+
+
 # --- state: the alerts and the baselines ----------------------------------------
 
 
@@ -310,15 +472,16 @@ def state_dir(preferred: str = STATE_DIR) -> str | None:
     return None
 
 
-def record(state: str | None, lines: Sequence[str]) -> None:
-    """Append ``lines`` to the alerts, each stamped with the time."""
+def record(state: str | None, lines: Sequence[str], log: str = ALERTS) -> None:
+    """Append ``lines`` to the alerts (or another ``log`` in the state
+    directory), each stamped with the time."""
     if state is None or not lines:
         return
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     text = "".join(f"{stamp} {line}\n" for line in lines)
     flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        fd = os.open(os.path.join(state, ALERTS), flags, 0o644)
+        fd = os.open(os.path.join(state, log), flags, 0o644)
     except OSError:
         return
     try:
@@ -407,6 +570,16 @@ def clear_alerts(states: Sequence[str] | None = None) -> bool:
 # --- the watcher -----------------------------------------------------------------
 
 
+@dataclass(eq=False)
+class Held:
+    """A quarantined ``uv`` or ``uvx`` awaiting its check against PyPI;
+    ``alert`` is recorded unless the check passes. Compared by identity."""
+
+    directory: str
+    name: str
+    alert: str
+
+
 @dataclass
 class Session:
     """One session's watch: what to look at and what has been done.
@@ -425,6 +598,9 @@ class Session:
     seen: dict[tuple[str, str], Sig] = field(default_factory=dict[tuple[str, str], Sig])
     actions: list[str] = field(default_factory=list[str])
     hooks_path: str | None = None  # core.hooksPath at the last look
+    held: list[Held] = field(default_factory=list[Held])
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    verifier: threading.Thread | None = None
 
     def targets(self) -> list[Target]:
         return targets(self.path, self.roots, self.workspace, self.hooks_path)
@@ -456,45 +632,135 @@ class Session:
             if why is None:
                 continue
             action = quarantine(target.directory, name)
-            if action is not None:
-                done.append(f"{action} ({why})")
+            if action is None:
+                continue
+            line = f"{action} ({why})"
+            if (
+                name in PYPI_UV
+                and not target.hooks
+                and self.state is not None
+                and action.startswith("cleared")
+            ):
+                self.held = [h for h in self.held if (h.directory, h.name) != key]
+                self.held.append(Held(target.directory, name, line))
+            else:
+                done.append(line)
         record(self.state, done)
         self.actions += done
         return done
 
+    # A held uv is checked in a thread of the watching process, started by
+    # ``tick`` (not at launch: a jail-off launch execs, and the thread with
+    # it). Every change to ``held``, ``seen`` and ``baseline`` is under
+    # ``lock``; ``tick`` and ``scan_at_launch`` hold it throughout.
+
+    def _verify_later(self) -> None:
+        """Start the checking thread if something is held and none runs.
+        The caller holds the lock."""
+        if self.held and self.verifier is None:
+            self.verifier = threading.Thread(target=self._verify_held, daemon=True)
+            self.verifier.start()
+
+    def _verify_held(self) -> None:
+        while True:
+            with self.lock:
+                if not self.held:
+                    self.verifier = None
+                    return
+                job = self.held[0]
+            self._verify(job)
+
+    def _verify(self, job: Held) -> None:
+        """Restore ``job`` if it is byte-identical to the binary in the uv
+        wheel on PyPI of a version its venv names; else alert. Fails closed:
+        any error leaves it quarantined, with its alert."""
+        state = cast(str, self.state)
+        try:
+            for version in uv_versions(job.directory):
+                for digests in pypi_digests(state, version):
+                    with self.lock:
+                        if job not in self.held:
+                            return  # judged again since, or settled
+                        sig = restore(job.directory, job.name, digests[job.name])
+                        if sig is not None:
+                            self._restored(job, sig, version)
+                            return
+        except (OSError, ValueError, LookupError, TypeError, zipfile.BadZipFile):
+            pass
+        with self.lock:
+            if job in self.held:
+                self.held.remove(job)
+                record(self.state, [job.alert])
+                self.actions.append(job.alert)
+
+    def _restored(self, job: Held, sig: Sig, version: str) -> None:
+        """Take the restored file as the baseline, here and for the next
+        launch, so it is not judged again. The caller holds the lock."""
+        state = cast(str, self.state)
+        self.held.remove(job)
+        self.seen[(job.directory, job.name)] = sig
+        if job.directory in self.baseline:
+            self.baseline[job.directory][job.name] = sig
+        stored = load_baseline(state, job.directory)
+        if stored is not None:
+            stored[job.name] = sig
+            save_baseline(state, job.directory, stored)
+        shown = describe(os.path.join(job.directory, job.name))
+        line = f"verified {shown} as uv {version} from PyPI; execute bits restored"
+        record(state, [line], VERIFIED)
+
+    def settle(self, timeout: float = SETTLE) -> None:
+        """Wait up to ``timeout`` for the checks in flight; alert for any
+        still held."""
+        with self.lock:
+            verifier = self.verifier
+        if verifier is not None:
+            verifier.join(timeout)
+        with self.lock:
+            lines = [h.alert for h in self.held]
+            self.held.clear()
+            record(self.state, lines)
+            self.actions += lines
+
     def scan_at_launch(self) -> list[str]:
         """Judge each directory against the baseline the last launch kept,
         then keep this one. A directory with no baseline yet gets one and is
-        not judged. What was done, for the launch warnings."""
+        not judged. What was done, for the launch warnings; a held uv is
+        not among them until its check fails."""
         done: list[str] = []
         self.hooks_path = git_hooks_path(self.workspace)
-        for target in self.targets():
-            current = snapshot(target.directory)
-            stored = None
-            if self.state is not None:
-                stored = load_baseline(self.state, target.directory)
-            if stored is not None:
-                done += self._judge(target, current, stored)
+        with self.lock:
+            for target in self.targets():
                 current = snapshot(target.directory)
-            if self.state is not None:
-                save_baseline(self.state, target.directory, current)
+                stored = None
+                if self.state is not None:
+                    stored = load_baseline(self.state, target.directory)
+                if stored is not None:
+                    done += self._judge(target, current, stored)
+                    current = snapshot(target.directory)
+                if self.state is not None:
+                    save_baseline(self.state, target.directory, current)
         return done
 
     def start(self) -> None:
         """Take the session's baseline: what is there now is left alone."""
-        self.seen.clear()
-        self.hooks_path = git_hooks_path(self.workspace)
-        for target in self.targets():
-            self.baseline[target.directory] = snapshot(target.directory)
+        with self.lock:
+            self.seen.clear()
+            self.hooks_path = git_hooks_path(self.workspace)
+            for target in self.targets():
+                self.baseline[target.directory] = snapshot(target.directory)
 
     def tick(self) -> list[str]:
         """One pass. A directory that appeared since the start has an empty
         baseline: everything in it is new. A change of core.hooksPath is an
-        alert of its own, and the directory it names is watched from then."""
-        done = self._hooks_path_changed()
-        for target in self.targets():
-            base = self.baseline.setdefault(target.directory, {})
-            done += self._judge(target, snapshot(target.directory), base)
+        alert of its own, and the directory it names is watched from then.
+        A held uv's check starts here."""
+        with self.lock:
+            done = self._hooks_path_changed()
+            for target in self.targets():
+                base = self.baseline.setdefault(target.directory, {})
+                done += self._judge(target, snapshot(target.directory), base)
+            self._verify_later()
         return done
 
     def summary(self) -> str:
@@ -563,6 +829,7 @@ def run(session: Session, stop: Callable[[], bool], wake: int = -1) -> None:
     finally:
         notify.close()
     session.tick()  # last look, so the summary is complete
+    session.settle()
 
 
 @contextmanager
@@ -584,6 +851,7 @@ def watching(session: Session, report: Callable[[str], None]) -> Generator[None]
         thread.join(timeout=5)
         os.close(wake_r)
         os.close(wake_w)
+        session.settle(0)  # anything still held alerts
         if summary := session.summary():
             report(summary)
 

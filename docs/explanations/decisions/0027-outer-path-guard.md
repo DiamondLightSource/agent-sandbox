@@ -77,6 +77,25 @@ new git hooks, while the session runs; warn in outer shells.
     recreate the venv. A regular file of that name, a link into anything the
     session can write, and every other name (`pip`, console scripts) are
     judged as usual.
+  - A second allowance, checked rather than assumed (added 2026-10-07):
+    `tox-uv` and other projects that depend on PyPI's `uv` package put `uv`
+    and `uvx` in the venv's `bin`, ahead of `/usr/bin/uv`, so every `uv
+    sync` that rebuilt the venv would alert. A file of either name is
+    quarantined at once like any shadow, but its alert is held while a
+    thread compares it with the binary in the official `uv` wheel on PyPI.
+    The version comes from the venv's `uv-*.dist-info`, only a hint the
+    session can write. The watcher fetches `pypi.org/pypi/uv/<version>/json`
+    over HTTPS with `urllib`, downloads this machine's wheel (architecture
+    and libc) into the state directory, checks it against PyPI's sha256,
+    and caches the sha256 of its `uv` and `uvx` by the wheel's digest, so a
+    version is downloaded once. A byte-identical file gets its execute bits
+    back, through a checked directory descriptor and without following
+    links, becomes the baseline (for the session and the next launch), and
+    is logged in `/run/claude-sandbox/verified`, not in the alerts. A
+    mismatch, no network, a check still running when the session ends, or
+    any error: it stays quarantined and alerts as before. The two names and
+    the PyPI rule are constants in `watch.py`; nothing the session can write
+    widens them.
 - **A scan at launch.** Before the agent starts, each watched directory is
   compared with a baseline the previous launch kept under
   `/run/claude-sandbox` (root-owned); a shadow that is not in it is
@@ -129,6 +148,16 @@ Options rejected:
   Recreate such a venv outside the jail. Trusting that directory would trust
   an interpreter the session can rewrite, so it is not done; binding it
   read-only into the jail would let the allowance apply.
+- The uv allowance trusts PyPI and its TLS: a uv release, or the `uv`
+  project's PyPI account, that was itself compromised would be let stand.
+  It makes the watcher reach `pypi.org` and `files.pythonhosted.org` from
+  outside the jail, and lets a session choose which uv release it
+  downloads (one ~20 MB wheel per version, then cached). Between the hash
+  and the `chmod` the session could rewrite the file in place; the file is
+  left alone if its size or ctime moved while it was read, and any later
+  write is judged again, but a write inside the same timestamp tick is not
+  seen until then. Where the check cannot complete, as offline, uv in the
+  venv alerts as before.
 - The entry-point binds leave empty, non-executable files named `claude`,
   `codex`, `pi` and `claude-sandbox` in the guarded directories, and a
   session cannot remove the venv's `bin` while they are mounted.

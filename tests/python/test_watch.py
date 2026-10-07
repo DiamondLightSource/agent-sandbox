@@ -5,15 +5,21 @@ A layout stands in for the container: ``rw`` is the jail-writable root (an
 a system command directory after it, and ``rw/work`` the workspace.
 """
 
+import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
+import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -609,3 +615,303 @@ def test_git_hooks_path_survives_git_failing(
 
     monkeypatch.setattr(subprocess, "run", broken)
     assert watch.git_hooks_path(str(lay.work)) is None
+
+
+# --- uv from PyPI: a venv's genuine uv is given back ------------------------------
+
+UV = b"\x7fELF the genuine uv"
+UVX = b"\x7fELF the genuine uvx"
+VERSION = "0.9.7"
+WHEEL_URL = f"{watch.PYPI_FILES}packages/uv-{VERSION}-manylinux.whl"
+JSON_URL = watch.PYPI_JSON.format(VERSION)
+
+
+def wheel(uv: bytes = UV, uvx: bytes = UVX) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr(f"uv-{VERSION}.data/scripts/uv", uv)
+        z.writestr(f"uv-{VERSION}.data/scripts/uvx", uvx)
+        z.writestr(f"uv-{VERSION}.dist-info/RECORD", "")
+    return out.getvalue()
+
+
+def pypi_json(files: list[tuple[str, str, str]]) -> bytes:
+    """PyPI's JSON for ``files``: (filename, url, sha256)."""
+    urls = [
+        {"filename": f, "url": u, "digests": {"sha256": d}, "packagetype": "x"}
+        for f, u, d in files
+    ]
+    return json.dumps({"info": {"version": VERSION}, "urls": urls}).encode()
+
+
+class PyPI:
+    """A stand-in for ``watch.fetch``: serves ``pages``, counts requests,
+    and raises OSError (as urllib does) for anything else."""
+
+    def __init__(self, whl: bytes | None = None) -> None:
+        whl = wheel() if whl is None else whl
+        sha = hashlib.sha256(whl).hexdigest()
+        plat = "manylinux_2_17_x86_64.manylinux2014_x86_64"
+        files = [
+            (f"uv-{VERSION}-py3-none-{plat}.whl", WHEEL_URL, sha),
+            (f"uv-{VERSION}-py3-none-musllinux_1_1_x86_64.whl", WHEEL_URL + "m", sha),
+            (f"uv-{VERSION}-py3-none-manylinux_2_28_aarch64.whl", WHEEL_URL + "a", sha),
+            (f"uv-{VERSION}-py3-none-{plat}.whl", "http://evil/x.whl", sha),
+            (f"uv-{VERSION}-py3-none-{plat}.whl", WHEEL_URL + "s", "not-a-sha"),
+            (f"uv-{VERSION}.tar.gz", WHEEL_URL + "t", sha),
+        ]
+        self.pages = {JSON_URL: pypi_json(files), WHEEL_URL: whl}
+        self.got: list[str] = []
+
+    def __call__(self, url: str, out: Any) -> None:
+        self.got.append(url)
+        if url not in self.pages:
+            raise OSError(f"no route to {url}")
+        out.write(self.pages[url])
+
+
+@pytest.fixture
+def pypi(lay: Layout, monkeypatch: pytest.MonkeyPatch) -> PyPI:
+    """A venv that says it has uv VERSION, a system uv and uvx it shadows,
+    a glibc x86_64 machine, and PyPI mocked."""
+    executable(lay.sys / "uv")
+    executable(lay.sys / "uvx")
+    site = lay.venv.parent / "lib/python3.12/site-packages"
+    (site / f"uv-{VERSION}.dist-info").mkdir(parents=True)
+    (site / "uv-junk.dist-info").mkdir()
+    monkeypatch.setattr(watch.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(watch.platform, "libc_ver", lambda: ("glibc", "2.39"))
+    fake = PyPI()
+    monkeypatch.setattr(watch, "fetch", fake)
+    return fake
+
+
+def install(lay: Layout, uv: bytes = UV, uvx: bytes = UVX) -> None:
+    for name, data in (("uv", uv), ("uvx", uvx)):
+        path = lay.venv / name
+        path.unlink(missing_ok=True)
+        path.write_bytes(data)
+        path.chmod(0o755)
+
+
+def verified(lay: Layout) -> list[str]:
+    try:
+        lines = (lay.state / watch.VERIFIED).read_text().splitlines()
+    except FileNotFoundError:
+        return []
+    return [line.split(" ", 2)[2] for line in lines]
+
+
+def test_a_genuine_uv_is_restored_without_an_alert(lay: Layout, pypi: PyPI) -> None:
+    assert lay.session().scan_at_launch() == []  # a stored baseline
+    s = lay.session()
+    s.start()
+    install(lay)  # what `uv sync` does with tox-uv in the project
+    assert s.tick() == []  # held, not alerted
+    s.settle()
+    assert mode(lay.venv / "uv") == mode(lay.venv / "uvx") == 0o755
+    assert lay.alerts() == [] and s.actions == [] and s.summary() == ""
+    assert verified(lay) == [
+        f"verified {lay.venv}/{name} as uv {VERSION} from PyPI; execute bits restored"
+        for name in ("uv", "uvx")
+    ]
+    # The baseline takes it: not judged again, in this session or the next.
+    assert s.tick() == [] and s.held == []
+    assert mode(lay.venv / "uv") == 0o755
+    assert lay.session().scan_at_launch() == []
+    assert mode(lay.venv / "uv") == 0o755
+    # The wheel came down once; the second file used the cache.
+    assert pypi.got.count(WHEEL_URL) == 1
+    assert (lay.state / watch.PYPI_CACHE).is_dir()
+
+
+def test_a_genuine_uv_found_at_launch(lay: Layout, pypi: PyPI) -> None:
+    """Rebuilt between sessions: held at the launch scan (no warning), and
+    checked once the watcher runs."""
+    assert lay.session().scan_at_launch() == []
+    install(lay)
+    s = lay.session()
+    assert s.scan_at_launch() == []
+    assert mode(lay.venv / "uv") == 0o644 and len(s.held) == 2
+    assert s.verifier is None  # nothing started on the launch path
+    s.start()
+    s.tick()
+    s.settle()
+    assert mode(lay.venv / "uv") == mode(lay.venv / "uvx") == 0o755
+    assert lay.alerts() == []
+    assert lay.session().scan_at_launch() == []
+
+
+@pytest.mark.parametrize(
+    "case", ["planted", "network", "no-version", "bad-wheel", "wheel-sha"]
+)
+def test_anything_but_a_genuine_uv_stays_quarantined(
+    lay: Layout, pypi: PyPI, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    uv = UV
+    if case == "planted":
+        uv = b"#!/bin/sh\necho pwned\n"
+    elif case == "network":
+        pypi.pages.clear()
+    elif case == "no-version":
+        shutil.rmtree(lay.venv.parent / "lib")
+    elif case == "bad-wheel":
+        pypi.pages[WHEEL_URL] = b"not a zip"
+        pypi.pages[JSON_URL] = pypi.pages[JSON_URL].replace(
+            json.loads(pypi.pages[JSON_URL])["urls"][0]["digests"]["sha256"].encode(),
+            hashlib.sha256(b"not a zip").hexdigest().encode(),
+        )
+    else:
+        pypi.pages[WHEEL_URL] = wheel(uv=b"tampered")  # not PyPI's digest
+    s = lay.session()
+    s.start()
+    install(lay, uv=uv)
+    assert s.tick() == []
+    s.settle()
+    assert mode(lay.venv / "uv") == 0o644
+    expected = (
+        [lay.shadows("uv")]
+        if case == "planted"
+        else [
+            lay.shadows("uv"),
+            lay.shadows("uvx"),
+        ]
+    )
+    assert sorted(line.split(" ", 2)[2] for line in lay.alerts()) == expected
+    assert sorted(s.actions) == expected
+    assert "quarantined during this session" in s.summary()
+    assert verified(lay) == (
+        [f"verified {lay.venv}/uvx as uv {VERSION} from PyPI; execute bits restored"]
+        if case == "planted"
+        else []
+    )
+
+
+def test_only_uv_and_uvx_are_checked(lay: Layout, pypi: PyPI) -> None:
+    """Another name, a link named uv, or uv as a git hook: alerted at once,
+    nothing fetched."""
+    s = lay.session()
+    s.start()
+    executable(lay.venv / "git", UV.decode())
+    (lay.venv / "uv").symlink_to(lay.sys / "uv")
+    executable(lay.hooks / "uv")
+    done = s.tick()
+    assert done == [
+        lay.shadows("git"),
+        f"removed the link {lay.venv}/uv -> {lay.sys}/uv (it shadowed {lay.sys}/uv)",
+        cleared(lay.hooks / "uv", "a git hook"),
+    ]
+    assert s.held == [] and s.verifier is None and pypi.got == []
+    # Without a state directory there is nowhere to cache: alerted at once.
+    s = lay.session()
+    s.state = None
+    s.start()
+    install(lay)
+    assert s.tick() == [lay.shadows("uv"), lay.shadows("uvx")]
+    assert pypi.got == []
+
+
+def test_a_uv_changed_while_held_is_judged_afresh(
+    lay: Layout, pypi: PyPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check in flight is dropped for the newer one; and one still in
+    flight when the session ends alerts."""
+    release = threading.Event()
+    real = pypi.__call__
+
+    def slow(url: str, out: Any) -> None:
+        release.wait(5)
+        real(url, out)
+
+    monkeypatch.setattr(watch, "fetch", slow)
+    s = lay.session()
+    s.start()
+    install(lay, uv=b"first")
+    s.tick()
+    first = s.held[0]
+    install(lay)  # the genuine one, rewritten while the first is checked
+    s.tick()
+    assert first not in s.held and len(s.held) == 2
+    s.settle(0.05)  # the session ends before the checks finish: alerts
+    assert sorted(s.actions) == [lay.shadows("uv"), lay.shadows("uvx")]
+    release.set()
+    assert s.verifier is not None
+    s.verifier.join(5)
+    assert mode(lay.venv / "uv") == 0o644 and verified(lay) == []
+    assert len(lay.alerts()) == 2
+
+
+def test_restore_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    digest = hashlib.sha256(UV).hexdigest()
+    (tmp_path / "uv").write_bytes(UV)
+    (tmp_path / "uv").chmod(0o640)
+    assert watch.restore(str(tmp_path / "gone"), "uv", digest) is None
+    assert watch.restore(str(tmp_path), "nothing", digest) is None
+    (tmp_path / "dir").mkdir()
+    assert watch.restore(str(tmp_path), "dir", digest) is None
+    (tmp_path / "link").symlink_to(tmp_path / "uv")
+    assert watch.restore(str(tmp_path), "link", digest) is None  # not followed
+    assert watch.restore(str(tmp_path), "uv", "0" * 64) is None
+    assert mode(tmp_path / "uv") == 0o640
+    # Changed while it was read: left alone.
+    real_fstat = os.fstat
+    calls: list[int] = []
+
+    def moving(fd: int) -> os.stat_result:
+        calls.append(fd)
+        st = real_fstat(fd)
+        if len(calls) == 2:
+            return os.stat_result((*st[:6], st.st_size + 1, *st[7:]))
+        return st
+
+    with monkeypatch.context() as m:
+        m.setattr(os, "fstat", moving)
+        assert watch.restore(str(tmp_path), "uv", digest) is None
+    with monkeypatch.context() as m:
+
+        def refuse(*_: object) -> None:
+            raise PermissionError
+
+        m.setattr(os, "chmod", refuse)
+        assert watch.restore(str(tmp_path), "uv", digest) is None
+    sig = watch.restore(str(tmp_path), "uv", digest)
+    assert mode(tmp_path / "uv") == 0o750  # an x for each r
+    assert sig == watch.signature(str(tmp_path / "uv"))
+    assert watch.restore(str(tmp_path), "uv", digest) is None  # not quarantined
+
+
+def test_pypi_helpers(
+    lay: Layout, pypi: PyPI, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    assert watch.uv_versions(str(tmp_path)) == []
+    (tmp_path / "lib/notpython").mkdir(parents=True)
+    assert watch.uv_versions(str(tmp_path / "bin")) == []
+    assert watch.uv_versions(str(lay.venv)) == [VERSION]
+    # Only this machine's wheels: the glibc x86_64 one from files.pythonhosted.
+    assert [u for u, _ in watch._wheels(VERSION)] == [WHEEL_URL]  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(watch.platform, "libc_ver", lambda: ("", ""))
+    assert [u for u, _ in watch._wheels(VERSION)] == [WHEEL_URL + "m"]  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(watch.platform, "machine", lambda: "aarch64")
+    assert watch._wheels(VERSION) == []  # pyright: ignore[reportPrivateUsage]
+    # A corrupt cache entry is fetched again.
+    monkeypatch.setattr(watch.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(watch.platform, "libc_ver", lambda: ("glibc", "2.39"))
+    [first] = watch.pypi_digests(str(lay.state), VERSION)
+    [entry] = (lay.state / watch.PYPI_CACHE).iterdir()
+    entry.write_text('{"uv": 1}')
+    assert list(watch.pypi_digests(str(lay.state), VERSION)) == [first]
+    assert pypi.got.count(WHEEL_URL) == 2
+
+
+def test_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError):
+        watch.fetch("http://pypi.org/x", io.BytesIO())
+
+    def urlopen(url: str, timeout: float) -> io.BytesIO:
+        assert timeout == watch.FETCH_TIMEOUT
+        return io.BytesIO(url.encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    out = io.BytesIO()
+    watch.fetch("https://pypi.org/x", out)
+    assert out.getvalue() == b"https://pypi.org/x"

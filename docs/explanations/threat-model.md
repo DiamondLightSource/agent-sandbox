@@ -52,7 +52,9 @@ in a diff. The wrapper quarantines both while the session runs and
 warns at your shell prompt; `claude-sandbox alerts` lists what it did. A
 venv's `python` links to an interpreter the session cannot write are left
 alone; where uv keeps its Pythons in a writable place (its default,
-`~/.local/share/uv/python`), recreate the venv outside the sandbox. See
+`~/.local/share/uv/python`), recreate the venv outside the sandbox. A
+venv's `uv` and `uvx` are given back when they match the uv release on PyPI
+byte for byte. See
 {ref}`ADR 27 <adr-outer-path-guard>`.
 
 Review the rest like any contribution before you run it outside the

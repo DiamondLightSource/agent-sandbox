@@ -91,8 +91,10 @@ design; it has two parts.
   bits, or removes it if it is a link. Any new or changed hook other than
   `*.sample` is treated the same way. Files present and unchanged when the
   session started are left alone, as are a venv's `python` links to an
-  interpreter outside the session's reach. A scan at launch also catches
-  shadows left since the previous launch.
+  interpreter outside the session's reach. A `uv` or `uvx` (PyPI's uv,
+  which `tox-uv` installs into the venv) is quarantined, then given back if
+  it is byte-identical to that release's binary in the uv wheel on PyPI. A
+  scan at launch also catches shadows left since the previous launch.
 
 Each action is recorded under `/run/claude-sandbox/`, which the jail cannot
 see. Outer shells print new alerts at the prompt, the wrapper prints a
