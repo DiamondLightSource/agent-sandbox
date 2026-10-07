@@ -65,8 +65,9 @@ def install(
         os.umask(old)
     venv = f"{LIBEXEC}/venv"
     print(system.summary(layout, options, skipped, venv), end="", file=out, flush=True)
-    # Last, so it is not lost above the summary.
+    # Last, so they are not lost above the summary.
     system.warn_if_no_tun(layout, options, warn)
+    system.warn_if_old_passt(layout, options, warn)
 
 
 def container_start(

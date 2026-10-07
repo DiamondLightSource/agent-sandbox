@@ -344,6 +344,7 @@ def test_the_install_and_container_start_warn_but_not_the_image_build(
 
     layout, options = setup(tmp_path)
     monkeypatch.setattr(config, "TUN", str(tmp_path / "tun"))
+    monkeypatch.setattr(config, "passt_version", lambda: "")  # not this host's
     monkeypatch.delenv("CLAUDE_SANDBOX_EGRESS_JAIL", raising=False)
     assert '"runArgs": ["--device=/dev/net/tun"]' in system.TUN_WARNING
 
@@ -364,4 +365,56 @@ def test_the_install_and_container_start_warn_but_not_the_image_build(
     container_start(layout, options, err)
     assert err.getvalue().endswith(system.TUN_WARNING + "\n")
     (tmp_path / "tun").touch()
+    assert warned(options) == ""
+
+
+# --- issue #85: a passt too old to attach, reported at install ---------------
+
+BOOKWORM = "0.0~git20230309.7c7625d-1"
+
+
+def test_an_old_passt_is_too_old_with_the_jail_on(tmp_path: Path) -> None:
+    conf = str(tmp_path / "conf")
+    assert config.passt_date("1:0.0~git20240220.1e6f92b-1") == "20240220"
+    assert config.passt_too_old(conf, {}, BOOKWORM)
+    assert not config.passt_too_old(conf, {}, "0.0~git20230908.05627dc-1")
+    assert not config.passt_too_old(conf, {}, "unknown")  # no false alarm
+    off = {"CLAUDE_SANDBOX_EGRESS_JAIL": "0"}
+    assert not config.passt_too_old(conf, off, BOOKWORM)
+
+
+def test_the_passt_version_comes_from_dpkg(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def output(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return (0, BOOKWORM) if len(calls) == 1 else (1, "")
+
+    monkeypatch.setattr(config, "output", output)
+    found = {"dpkg-query": "/usr/bin/dpkg-query"}
+    monkeypatch.setattr(config, "find_tool", found.get)
+    assert config.passt_version() == BOOKWORM
+    assert calls[0][0] == "/usr/bin/dpkg-query" and calls[0][-1] == "passt"
+    assert config.passt_version() == ""  # not installed
+    found.clear()
+    assert config.passt_version() == ""
+
+
+def test_the_install_warns_of_an_old_passt_but_not_the_image_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout, options = setup(tmp_path)
+    monkeypatch.setattr(config, "passt_version", lambda: BOOKWORM)
+    monkeypatch.delenv("CLAUDE_SANDBOX_EGRESS_JAIL", raising=False)
+
+    def warned(options: Options) -> str:
+        err = io.StringIO()
+        system.warn_if_old_passt(layout, options, err)
+        return err.getvalue()
+
+    assert warned(replace(options, image_build=True)) == ""
+    assert warned(replace(options, smoke=True)) == ""
+    assert warned(options) == system.PASST_WARNING.format(version=BOOKWORM) + "\n"
+    assert f"jail: {BOOKWORM}, older than" in warned(options)
+    monkeypatch.setattr(config, "passt_version", lambda: "0.0~git20240220.1e6f92b-1")
     assert warned(options) == ""

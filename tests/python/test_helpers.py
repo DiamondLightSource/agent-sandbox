@@ -240,7 +240,7 @@ def test_doctor_reports_the_tun_device(
     def nothing(*args: object) -> None:
         return None
 
-    for check in ("tag", "file", "claude_settings", "prompt", "guards"):
+    for check in ("tag", "file", "claude_settings", "prompt", "guards", "passt"):
         monkeypatch.setattr(doctor.Doctor, check, nothing)
     monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "conf"))
     monkeypatch.setattr(config, "TUN", str(tmp_path / "tun"))
@@ -263,6 +263,43 @@ def test_doctor_reports_the_tun_device(
     (tmp_path / "tun").touch()
     assert main("doctor") == 0
     assert "ok       tun device" in capsys.readouterr().out
+
+
+def test_doctor_reports_the_passt_version(
+    main: Main,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from claude_sandbox import config
+
+    def nothing(*args: object) -> None:
+        return None
+
+    for check in ("tag", "file", "claude_settings", "prompt", "guards", "tun"):
+        monkeypatch.setattr(doctor.Doctor, check, nothing)
+    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "conf"))
+    monkeypatch.delenv("CLAUDE_SANDBOX_EGRESS_JAIL", raising=False)
+
+    def doctor_with(version: str, where: Where = CONTAINER) -> tuple[int, str]:
+        monkeypatch.setattr(config, "passt_version", lambda: version)
+        rc = main("doctor", where=where)
+        return rc, capsys.readouterr().out
+
+    rc, out = doctor_with("0.0~git20230309.7c7625d-1")
+    assert rc == 1 and "warn     passt                  0.0~git20230309" in out
+    assert "doctor --fix" not in out
+    rc, out = doctor_with("0.0~git20240220.1e6f92b-1")
+    assert rc == 0 and "ok       passt                  0.0~git20240220" in out
+    # Unparseable: a note, not an alarm.
+    rc, out = doctor_with("")
+    assert rc == 0 and "info     passt                  cannot read" in out
+    assert "(no passt package)" in out
+    rc, out = doctor_with("", JAIL)
+    assert rc == 0 and "skip     passt                  run doctor outside" in out
+    (tmp_path / "conf").write_text("egress-jail = 0\n")
+    rc, out = doctor_with("")
+    assert rc == 0 and "skip     passt                  the egress jail is off" in out
 
 
 def test_doctor_replaces_every_old_block(
