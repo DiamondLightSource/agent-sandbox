@@ -97,6 +97,27 @@ of a system command on PATH, or a new Git hook, loses its execute bits, and
 outer shells warn about it. Review it, then run
 `claude-sandbox alerts --clear`.
 
+A hook installed during a session, by `pre-commit install` or by husky
+through `npm install`, loses its execute bit this way, by design. Check the
+hook, then restore it with `chmod +x .git/hooks/<name>`, or run
+`pre-commit install` again outside the sandbox.
+
+Two alerts only warn and change nothing:
+
+- `core.hooksPath ... changed from ... to ...`: the repository's hooks
+  directory setting changed during a session, or, prefixed
+  `between sessions,`, since the last launch (husky sets
+  `core.hooksPath=.husky`).
+- `<key> in the git config of ... changed from ... to ...`: a key in the
+  repository's `.git/config` that makes git run a command (such as
+  `core.fsmonitor`, `core.pager`, `credential.helper`, a filter or diff
+  driver, an alias or an `include.path`) appeared, changed or went. Remotes,
+  upstream branches and `user.*` never alert.
+
+If you made the change yourself, clear the alert. Otherwise, check the
+value before you run git outside the sandbox: `git config --local --list`
+shows it without running it.
+
 The `container/claude-container` script is gone. If you ran it from a
 clone, install the launcher from PyPI instead, with uv or
 [without it](install-without-uv.md#host-launcher).

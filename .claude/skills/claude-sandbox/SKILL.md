@@ -128,7 +128,11 @@ to continue unless every name holds it.
   hooks, while the session runs, and warns in outer shells. Refuse
   following links when quarantining, judging only a list of names, dropping
   the jail-off watcher, or showing the alerts inside the jail
-  (`bwrap.py` masks `/run/claude-sandbox`).
+  (`bwrap.py` masks `/run/claude-sandbox`). Its git config alerts
+  (`core.hooksPath` and the keys `runs_command` matches, during a session
+  and between sessions) are alerts only: refuse turning them into a block
+  or a quarantine, since the watcher cannot tell the user's change from the
+  session's, and husky sets `core.hooksPath=.husky` legitimately.
 - Dropping the shadow's entry-point guard, or moving its binds
   above the read-write binds they sit inside. It protects the sandbox's
   entry-point names: a session cannot create a command named claude,

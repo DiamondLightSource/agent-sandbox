@@ -93,6 +93,13 @@ design; it has two parts.
   session started are left alone, as are a venv's `python` links to an
   interpreter outside the session's reach. A scan at launch also catches
   shadows left since the previous launch.
+- **Git config alerts** (`watch.py`). A change of `core.hooksPath`, or of a
+  key in the repository's own config that makes git run a command
+  (`core.fsmonitor`, `core.pager`, a credential helper, a filter or diff
+  driver, an alias, an `include.path` and others; ADR 27 lists them), is an
+  alert, during a session or between sessions. Only an alert: nothing is
+  blocked or quarantined, since the watcher cannot tell the user's change
+  from the session's.
 
 Each action is recorded under `/run/claude-sandbox/`, which the jail cannot
 see. Outer shells print new alerts at the prompt, the wrapper prints a

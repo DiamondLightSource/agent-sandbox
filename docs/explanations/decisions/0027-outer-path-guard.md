@@ -6,7 +6,9 @@ Date: 2026-10-06
 
 ## Status
 
-Accepted. Implemented in 5.0.0 (2026-10-07).
+Accepted. Implemented in 5.0.0 (2026-10-07). Amended 2026-10-07 (issue
+#85): alerts on `core.hooksPath` between sessions and on the repository's
+command-running config keys.
 
 Builds on {ref}`ADR 9 <adr-shadow-on-path>` (the shadow on PATH, Invariant 1)
 and {ref}`ADR 26 <adr-python-implementation>` (the Python shadow). Applies to
@@ -68,6 +70,36 @@ new git hooks, while the session runs; warn in outer shells.
     the watcher reads the setting with `git config --get` (git from the fixed
     tool path, a scrubbed environment, fsmonitor off), and a change of the
     setting during the session is an alert of its own.
+  - A key in the repository's own config that makes git run a command is
+    watched too, and a key that appears, changes or goes is an alert naming
+    the key and its old and new values (escaped, quoted, cut short). The
+    watcher reads `git config --local --no-includes --list` the same safe
+    way, plus the worktree config when `extensions.worktreeConfig` is on;
+    the user's and the system's config are out of the session's reach. The
+    keys: `core.fsmonitor`, `core.sshCommand`, `core.pager`, `core.editor`,
+    `core.askPass`, `core.gitProxy`, `core.alternateRefsCommand`,
+    `credential.helper` and `credential.<url>.helper`, `sequence.editor`,
+    `filter.*.clean`, `.smudge` and `.process`, `diff.external`,
+    `diff.*.command` and `.textconv`, `difftool.*.cmd` and `.path`,
+    `merge.*.driver`, `mergetool.*.cmd` and `.path`, every `alias.*` (one
+    without `!` still runs a command through `rebase --exec` or
+    `fetch --upload-pack`), every `pager.*`, `gpg.program`,
+    `gpg.*.program`, `gpg.ssh.defaultKeyCommand`, `interactive.diffFilter`,
+    `gc.recentObjectsHook`, `remote.*.uploadpack` and `.receivepack`,
+    `submodule.*.update` (its `!command` form), `tar.*.command`,
+    `trailer.*.command` and `.cmd`, `imap.tunnel`, `instaweb.httpd`,
+    `browser.*`, `man.*` and `guitool.*` commands, `sendemail`'s
+    `smtpServer`, `toCmd`, `ccCmd` and `headerCmd`, and, though they run
+    nothing themselves, `include.path`, `includeIf.*.path` (includes are
+    not followed: adding one is the alert) and `protocol.allow` and
+    `protocol.*.allow` (which can let an `ext::` URL run a command).
+    `uploadpack.packObjectsHook` is left out: git honours it only from
+    protected (system, global or command-line) config. Branch, remote URL
+    and fetch, and user keys never alert, so `git push -u`,
+    `git remote add` and `git config user.name` stay quiet.
+  - These are alerts only: nothing is blocked or quarantined because of
+    them. The watcher cannot tell the user's change from the session's,
+    and husky sets `core.hooksPath=.husky` by design.
   - What was present and unchanged when the session started is left alone,
     so the venv's own `python3` stays. A changed file is judged again.
   - One allowance: a link named `python`, `python3` or `python3.N` whose
@@ -81,7 +113,12 @@ new git hooks, while the session runs; warn in outer shells.
   compared with a baseline the previous launch kept under
   `/run/claude-sandbox` (root-owned); a shadow that is not in it is
   quarantined and reported as a launch warning, so the pause shows it. The
-  first launch only records the baseline.
+  workspace's `core.hooksPath` and watched config keys are compared with
+  what the previous launch (or a change during the last session) kept
+  there, and a change is an alert and a launch warning. Nothing in a
+  directory a changed `core.hooksPath` now names is quarantined because of
+  the change; that directory gets a baseline like any new one. The first
+  launch only records the baselines.
 - **With the jail off** the shadow execs `script(1)`, so a forked child
   watches instead. It leaves the terminal's session and stops within a
   second of the launch ending. When the shadow is PID 1 (the image's
@@ -138,10 +175,15 @@ Options rejected:
   missing, the watcher polls every second. Phase 4's interpreter pruning
   must keep `_ctypes`.
 - Only the Python shadow does this; the bash shadow is being retired.
+- A hook a session installs (`pre-commit install`, or husky through
+  `npm install`) loses its execute bit by design. Check the hook, then
+  restore it with `chmod +x .git/hooks/<name>`, or run `pre-commit install`
+  again outside the sandbox.
 - Not covered: a directory that does not exist at launch has no mount guard
-  (the watcher and the next launch's checks still apply); a change of
-  `core.hooksPath` between sessions (only one during a session alerts);
-  `.git/config` settings other than `core.hooksPath`; and code in the
-  workspace, the venv's `site-packages` or the caches that the user runs
-  outside the sandbox. Review that like any contribution.
+  (the watcher and the next launch's checks still apply); a remote helper
+  that a remote URL names (`<transport>::<address>` runs
+  `git-remote-<transport>` from PATH, which need not shadow anything); git
+  config keys outside the list above, and the user's and system config;
+  and code in the workspace, the venv's `site-packages` or the caches that
+  the user runs outside the sandbox. Review that like any contribution.
 - The threat model gains a section, "What a session leaves behind".

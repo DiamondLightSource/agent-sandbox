@@ -55,9 +55,22 @@ alone; where uv keeps its Pythons in a writable place (its default,
 `~/.local/share/uv/python`), recreate the venv outside the sandbox. See
 {ref}`ADR 27 <adr-outer-path-guard>`.
 
+A hook installed during a session, by `pre-commit install` or by husky
+through `npm install`, loses its execute bit by design. Check the hook, then
+restore it with `chmod +x .git/hooks/<name>`, or run `pre-commit install`
+again outside the sandbox.
+
+The repository's `.git/config` can also make git run a command: a
+`core.fsmonitor`, `core.pager` or `core.sshCommand`, a credential helper, a
+filter or diff driver, an alias. The wrapper alerts when one of those keys,
+or `core.hooksPath`, appears, changes or goes, during a session or between
+sessions, naming the old and new values. It only alerts: it cannot tell your
+change from the agent's, so it neither blocks nor quarantines anything.
+Remotes, upstream branches and `user.*` never alert.
+
 Review the rest like any contribution before you run it outside the
-sandbox: build scripts, test fixtures, `.git/config` and the venv's
-`site-packages`.
+sandbox: build scripts, test fixtures, the rest of `.git/config` and the
+venv's `site-packages`.
 
 ## The irreducible workspace-visibility caveat
 
