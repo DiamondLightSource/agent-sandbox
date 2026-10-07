@@ -19,7 +19,6 @@ from claude_sandbox import jail
 from claude_sandbox.config import Config
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.jail import Handler, Ops, stage_dns
-from test_parity import driver
 
 PY = "/usr/libexec/claude-sandbox/venv/bin/python"
 JAIL_DIR = "/tmp/claude-jail.T"
@@ -37,6 +36,22 @@ COMMAND = [
 ]
 DEFAULT_ROUTE = "default via 10.0.2.2 dev eth0 proto static metric 100\n"
 LINK_ROUTES = "10.0.2.0/24 proto kernel scope link src 10.0.2.15\n\n"
+ADDRS = (
+    "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n"
+    "2: eth0    inet 10.0.2.15/24 brd 10.0.2.255 scope global eth0\\ ...\n"
+)
+LOCAL_TABLE = (
+    "local 10.0.2.15 dev eth0 table local proto kernel scope host src 10.0.2.15\n"
+    "broadcast 10.0.2.255 dev eth0 table local proto kernel scope link\n"
+    "local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1\n"
+    "local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1\n"
+    "broadcast 127.255.255.255 dev lo table local proto kernel scope link\n"
+)
+RULES = (
+    "0:\tfrom all lookup local\n"
+    "32766:\tfrom all lookup main\n"
+    "32767:\tfrom all lookup default\n"
+)
 
 
 Setup = Callable[["FakeOps"], object]
@@ -78,7 +93,7 @@ class FakeOps(Ops):
     def __init__(self) -> None:
         self.log: list[tuple[object, ...]] = []
         self.missing: set[str] = set()
-        self.files: set[str] = {"/dev/net/tun", READY}
+        self.files: set[str] = {"/dev/net/tun", READY, jail.IPV6_SYSCTLS}
         self.fail: set[str] = set()  # joined argv that exit 1
         self.listening: set[str] = set()  # ports ss reports
         self.procs: dict[int, FakeProc] = {}
@@ -90,6 +105,22 @@ class FakeOps(Ops):
         self.sleeps = 0
         self.env: dict[str, str] = {}
         self.netns_ready = True
+        self.contents: dict[str, str] = {}  # what read() returns for a path
+        # The netns's routes as `ip -o route show table all` prints them:
+        # the main table by destination (what pasta mirrored, then what the
+        # holder set), the other tables, and the policy rules.
+        self.main: dict[str, str] = {}
+        for line in (DEFAULT_ROUTE + LINK_ROUTES).splitlines():
+            if line.split():
+                self.main[jail.route_prefix(line.split()[0])] = line
+        self.other_tables = LOCAL_TABLE
+        self.rules = RULES
+        self.written: dict[str, str] = {}
+        self.unwritable: set[str] = set()
+        self.v6_addrs = ""
+        self.v6_routes = ""
+        self.egress_src = "10.0.2.15"
+        self.main_ignores = ""  # an `ip route replace` that succeeds but never shows
 
     def find_tool(self, name: str) -> str | None:
         return None if name in self.missing else f"/usr/bin/{name}"
@@ -104,6 +135,8 @@ class FakeOps(Ops):
         return path.endswith(".sock") and path not in self.missing
 
     def read(self, path: str) -> str:
+        if path in self.contents:
+            return self.contents[path]
         if path == "/proc/self/ns/net":
             return "net:[1]"
         if path.endswith("/ns/net"):
@@ -128,9 +161,48 @@ class FakeOps(Ops):
             return 0, f"LISTEN 0 5 127.0.0.1:{port}\n" * (port in self.listening)
         if line == "ip route show default":
             return 0, DEFAULT_ROUTE
+        if line == "ip -4 route flush table main":
+            self.main.clear()
+        elif line.startswith("ip route replace ") and " ".join(argv[3:]) != (
+            self.main_ignores
+        ):
+            self.route(argv[3:])
+        if line == "ip -4 -o route show table all":
+            return 0, "".join(f"{r}\n" for r in self.main.values()) + self.other_tables
+        if line == "ip -4 rule show":
+            return 0, self.rules
+        if line == "ip -4 -o addr show dev eth0 scope global":
+            return 0, ADDRS.split("\n", 1)[1]
+        if line == "ip -4 -o addr show":
+            return 0, ADDRS
+        if line == "ip route get 1.1.1.1":
+            return 0, f"1.1.1.1 via 10.0.2.2 dev eth0 src {self.egress_src} uid 0\n"
+        if line == "ip -6 -o addr show":
+            return 0, self.v6_addrs
+        if line == "ip -6 -o route show table all":
+            return 0, self.v6_routes
         if line.startswith("ip -o route show dev"):
             return 0, LINK_ROUTES
         return 0, ""
+
+    def write(self, path: str, text: str) -> bool:
+        if path in self.unwritable:
+            return False
+        self.written[path] = text
+        return True
+
+    def route(self, args: Sequence[str]) -> None:
+        """``ip route replace ARGS`` as the kernel would then print it."""
+        if args[0] in ("blackhole", "unreachable"):
+            self.main[args[1]] = f"{args[0]} {args[1]}"
+            return
+        dst = jail.route_prefix(args[0])
+        shown = args[0].removesuffix("/32")
+        if "via" in args:
+            via = args[list(args).index("via") + 1]
+            self.main[dst] = f"{shown} via {via} dev eth0"
+        else:
+            self.main[dst] = f"{shown} dev eth0 scope link"
 
     def spawn(
         self, argv: Sequence[str], env: Mapping[str, str], *, relay: bool = False
@@ -302,6 +374,19 @@ def test_callback_relay_that_never_listens_fails_soft() -> None:
     assert ops.env["CLAUDE_JAIL_CALLBACK_PORTS"] == ""
 
 
+def test_an_old_pasta_is_named_as_the_cause() -> None:
+    ops = FakeOps()
+    ops.fail.add(" ".join(["pasta", *PASTA[1:]]))
+    ops.contents[jail.PASTA_LOG] = (
+        "Couldn't open user namespace /proc/42/ns/user: Permission denied\n"
+    )
+    assert launch(ops, None) == 1
+    (error,) = map(str, ops.errors())
+    assert error.startswith("claude-sandbox: egress jail — pasta failed to attach")
+    assert "too old to attach" in error and "Ubuntu 24.04" in error
+    assert ("touch", READY) not in ops.log
+
+
 @pytest.mark.parametrize(
     ("setup", "conf", "message"),
     [
@@ -450,16 +535,27 @@ def test_only_a_staged_resolver_is_removed() -> None:
 ROUTES = [
     "ip link set lo up",
     "ip route show default",
+    "ip -4 -o addr show dev eth0 scope global",
     "ip -o route show dev eth0 scope link",
+    "ip -4 route flush table main",
     "ip route replace blackhole 10.0.2.0/24",
     "ip route replace blackhole 10.0.0.0/8",
     "ip route replace blackhole 172.16.0.0/12",
     "ip route replace blackhole 192.168.0.0/16",
     "ip route replace blackhole 100.64.0.0/10",
     "ip route replace unreachable 169.254.0.0/16",
-    "ip route replace 10.0.2.2/32 dev eth0",
-    "ip route replace default via 10.0.2.2 dev eth0",
-    "ip route replace 192.0.2.53/32 via 10.0.2.2",
+    "ip route replace blackhole 168.63.129.16/32",
+    "ip route replace 10.0.2.2/32 dev eth0 src 10.0.2.15",
+    "ip route replace default via 10.0.2.2 dev eth0 src 10.0.2.15",
+    "ip route replace 192.0.2.53/32 via 10.0.2.2 dev eth0 src 10.0.2.15",
+]
+READ_BACK = [
+    "ip -4 -o route show table all",
+    "ip -4 rule show",
+    "ip -4 -o addr show",
+    "ip route get 1.1.1.1",
+    "ip -6 -o addr show",
+    "ip -6 -o route show table all",
 ]
 
 
@@ -479,17 +575,215 @@ def runs(ops: FakeOps) -> list[str]:
 
 def test_holder_locks_routes_then_execs() -> None:
     ops = FakeOps()
-    ops.env = {"CLAUDE_JAIL_READY": READY, "CLAUDE_SANDBOX_ALLOW_IP": "203.0.113.7/24"}
+    ops.env = {
+        "CLAUDE_JAIL_READY": READY,
+        "CLAUDE_SANDBOX_ALLOW_IP": "203.0.113.7/24\n198.51.100.9/32",
+    }
     with pytest.raises(Exec):
         jail.holder_main(["--", *COMMAND], ops=ops)
-    assert runs(ops) == [*ROUTES, "ip route replace 203.0.113.7/32 via 10.0.2.2"]
+    allow = [
+        f"ip route replace {host}/32 via 10.0.2.2 dev eth0 src 10.0.2.15"
+        for host in ("203.0.113.7", "198.51.100.9")
+    ]
+    assert runs(ops) == [*ROUTES, *allow, *READ_BACK]
+    # A prefix is narrowed to one address, and the launch says so.
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — allow-ip 203.0.113.7/24: only 203.0.113.7"
+        " is routed (allow-ip takes single addresses)"
+    ]
     assert ops.log[-1] == ("exec", *COMMAND)
     # Started by Python, it resets what Python changed before exec.
     for sig in (signal.SIGINT, signal.SIGPIPE, signal.SIGXFSZ):
         assert ops.handlers[sig] == signal.SIG_DFL
 
 
-@pytest.mark.parametrize("index", range(3, 11))
+def test_holder_keeps_a_gateway_that_is_a_connected_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mirrored scope-link route can be the gateway's own /32 (DHCP on
+    Azure). It is not blackholed: it is the gateway, pinned on-link."""
+    linked = LINK_ROUTES + "10.0.2.2 proto dhcp scope link src 10.0.2.15\n"
+    monkeypatch.setitem(globals(), "LINK_ROUTES", linked)
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    done = runs(ops)
+    assert "ip route replace blackhole 10.0.2.2/32" not in done
+    assert ops.main["10.0.2.2/32"] == "10.0.2.2 dev eth0 scope link"
+    assert "blackhole 10.0.2.2/32" not in ops.main.values()
+
+
+def test_mirrored_routes_are_flushed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An Azure-shaped table: pasta mirrors every host route, and a DHCP
+    host route to the metadata service or WireServer, or a VPN's internal
+    subnet, beats the blackholes. None survives: the main table is rebuilt
+    as exactly the allowlist."""
+    linked = LINK_ROUTES + "10.0.3.0/24 proto kernel scope link src 10.0.3.9\n"
+    monkeypatch.setitem(globals(), "LINK_ROUTES", linked)
+    ops = FakeOps()
+    for line in (
+        "default via 10.0.2.2 dev eth0 proto dhcp metric 100",
+        "10.0.2.2 dev eth0 proto dhcp scope link metric 100",
+        "169.254.169.254 via 10.0.2.2 dev eth0 proto dhcp metric 100",
+        "168.63.129.16 via 10.0.2.2 dev eth0 proto dhcp metric 100",
+        "10.24.0.0/16 via 10.0.2.2 dev eth0",
+    ):
+        ops.main[line] = line
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    assert sorted(ops.main.values()) == sorted(
+        [
+            "blackhole 10.0.2.0/24",
+            "blackhole 10.0.3.0/24",
+            *(f"blackhole {net}" for net in jail.BLACKHOLES),
+            "unreachable 169.254.0.0/16",
+            "blackhole 168.63.129.16/32",
+            "10.0.2.2 dev eth0 scope link",
+            "default via 10.0.2.2 dev eth0",
+            "192.0.2.53 via 10.0.2.2 dev eth0",
+        ]
+    )
+
+
+def test_ipv6_is_switched_off() -> None:
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    assert ops.written == dict.fromkeys(jail.IPV6_OFF, "1\n")
+
+
+@pytest.mark.parametrize(
+    ("addrs", "routes", "message"),
+    [
+        (
+            "",
+            "fe80::/64 dev eth0 proto kernel metric 256\n"
+            "multicast ff00::/8 dev eth0 table local\n",
+            None,
+        ),
+        ("2: eth0 inet6 2001:db8::5/64 scope global\n", "", "IPv6 address in the jail"),
+        ("", "2001:db8::/64 dev eth0\n", "IPv6 route in the jail"),
+        ("", "default via fe80::1 dev eth0\n", "IPv6 route in the jail"),
+    ],
+)
+def test_ipv6_left_on_must_hold_nothing(
+    addrs: str, routes: str, message: str | None
+) -> None:
+    """Where the sysctl cannot be written, IPv6 must hold only link-local,
+    multicast and the kernel's own routes."""
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.unwritable.add(jail.IPV6_OFF[0])
+    ops.v6_addrs, ops.v6_routes = addrs, routes
+    if message is None:
+        with pytest.raises(Exec):
+            jail.holder_main(["--", *COMMAND], ops=ops)
+        return
+    assert hold(ops, "--", "true") == 1
+    (error,) = map(str, ops.errors())
+    assert message in error and error.endswith("(fail-closed)")
+
+
+def test_egress_must_leave_from_the_interface_address() -> None:
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.egress_src = "10.0.3.9"
+    assert hold(ops, "--", "true") == 1
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — egress does not leave from 10.0.2.15"
+        " (fail-closed)"
+    ]
+
+
+def test_no_address_on_the_egress_interface_refuses() -> None:
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.fail.add("ip -4 -o addr show dev eth0 scope global")
+    assert hold(ops, "--", "true") == 1
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — no IPv4 address on eth0 after pasta attach"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("table", "rules", "message"),
+    [
+        (
+            "10.24.0.0/16 via 10.0.2.2 dev eth0\n",
+            RULES,
+            "unexpected route in the jail: 10.24.0.0/16 via 10.0.2.2 dev eth0",
+        ),
+        (
+            "default via 10.0.2.2 dev eth0 table 100\n",
+            RULES,
+            "unexpected route in the jail: default via 10.0.2.2 dev eth0 table 100",
+        ),
+        (
+            "",
+            RULES + "100:\tfrom all lookup 100\n",
+            "unexpected routing rules in the jail: 100: from all lookup 100",
+        ),
+        ("", RULES + "5:\tfrom 10.0.2.15 lookup main\n", "unexpected routing rules"),
+        ("", RULES.split("\n", 1)[1], "unexpected routing rules"),
+        (
+            "local 10.9.9.9 dev eth0 table local\n",
+            RULES,
+            "unexpected route in the jail: local 10.9.9.9",
+        ),
+        (
+            "local not-an-address dev eth0 table local\n",
+            RULES,
+            "unexpected route in the jail: local not-an-address",
+        ),
+        (
+            "unreachable 10.0.0.0/8 table local\n",
+            RULES,
+            "unexpected route in the jail: unreachable 10.0.0.0/8",
+        ),
+    ],
+)
+def test_anything_left_over_refuses_the_launch(
+    table: str, rules: str, message: str
+) -> None:
+    """A route the holder did not set, a route in another table, or a rule
+    that picks another table: each could route around the allowlist."""
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+
+    ops.other_tables += table
+    ops.rules = rules
+    assert hold(ops, "--", "true") == 1
+    (error,) = map(str, ops.errors())
+    assert message in error
+    assert ops.kinds("exec", "spawn") == []
+
+
+def test_a_route_that_did_not_take_refuses_the_launch() -> None:
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.main_ignores = "blackhole 10.0.0.0/8"
+    assert hold(ops, "--", "true") == 1
+    (error,) = ops.errors()
+    assert error == (
+        "claude-sandbox: egress jail — route missing from the jail:"
+        " blackhole 10.0.0.0/8 (fail-closed)"
+    )
+
+
+def test_routes_that_cannot_be_read_back_refuse_the_launch() -> None:
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.fail.add("ip -4 rule show")
+    assert hold(ops, "--", "true") == 1
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — could not read back the routes (fail-closed)"
+    ]
+
+
+@pytest.mark.parametrize("index", range(4, 14))
 def test_holder_fails_closed_on_each_load_bearing_route(index: int) -> None:
     ops = FakeOps()
     ops.env = {"CLAUDE_JAIL_READY": READY}
@@ -506,7 +800,7 @@ def test_holder_fails_closed_on_each_load_bearing_route(index: int) -> None:
 def test_holder_route_messages() -> None:
     """The bash wording, for the ones whose wording differs."""
     got: list[object] = []
-    for index in (8, 9, 10, 7):
+    for index in (10, 12, 13, 9):
         ops = FakeOps()
         ops.env = {"CLAUDE_JAIL_READY": READY}
         ops.fail.add(ROUTES[index])
@@ -524,7 +818,8 @@ def test_holder_route_messages() -> None:
 def test_holder_soft_failures_still_launch() -> None:
     ops = FakeOps()
     ops.env = {"CLAUDE_JAIL_READY": READY, "CLAUDE_SANDBOX_ALLOW_IP": "\n203.0.113.7"}
-    ops.fail |= {ROUTES[11], "ip route replace 203.0.113.7/32 via 10.0.2.2"}
+    allow = "ip route replace 203.0.113.7/32 via 10.0.2.2 dev eth0 src 10.0.2.15"
+    ops.fail |= {ROUTES[14], allow}
     with pytest.raises(Exec):
         jail.holder_main(["--", *COMMAND], ops=ops)
     assert ops.errors() == [
@@ -657,47 +952,52 @@ def test_holder_agent_that_cannot_start() -> None:
     assert hold(ops, "--", "/not/executable") == 126
 
 
-# --- DNS staging (the bash's scenario 13, through the comparison driver) --------
+# --- DNS staging (the bash's scenario 13) ----------------------------------------
+
+FORWARDER = "nameserver 192.0.2.53\n"
+NO_RESOLVERS = (
+    "egress jail — /etc/resolv.conf lists no resolvers; forwarding Claude DNS to"
+    " the host's resolvers via pasta. If resolution still fails the host has none"
+    " to forward to."
+)
 
 
 @pytest.mark.parametrize(
-    "resolv",
+    ("resolv", "staged_text", "warnings"),
     [
-        "nameserver 8.8.8.8\n",  # routable: still overridden (#11)
-        "nameserver 127.0.0.53\n",  # loopback stub
-        "nameserver 127.0.0.53\nnameserver 192.168.1.1\n",  # mixed
-        "",  # empty: forwarder, with a warning
-        "search a.example b.example\nnameserver 8.8.8.8\noptions timeout:1\n",
-        # beyond the bash suite: indentation, a keyword with no space after
-        # it, a last line with no newline, and CRLF.
-        " domain x\ndomain\n\tsearch y\r\n#options z\noptions ndots:2",
+        # Every case is overridden: the jail has one DNS path, the pasta
+        # forwarder, so the holder punches no route to a real resolver (#11).
+        ("nameserver 8.8.8.8\n", FORWARDER, ()),  # routable
+        ("nameserver 127.0.0.53\n", FORWARDER, ()),  # loopback stub
+        ("nameserver 127.0.0.53\nnameserver 192.168.1.1\n", FORWARDER, ()),
+        ("", FORWARDER, (NO_RESOLVERS,)),  # empty: forwarder, with a warning
+        # search / domain / options survive; the real resolvers do not.
+        (
+            "search a.example b.example\nnameserver 8.8.8.8\noptions timeout:1\n",
+            FORWARDER + "search a.example b.example\noptions timeout:1\n",
+            (),
+        ),
+        # Indentation, a keyword with no space after it, a last line with no
+        # newline, and CRLF.
+        (
+            " domain x\ndomain\n\tsearch y\r\n#options z\noptions ndots:2",
+            FORWARDER + " domain x\n\tsearch y\noptions ndots:2\n",
+            (NO_RESOLVERS,),
+        ),
     ],
 )
-def test_stage_dns_matches_the_bash(tmp_path: Path, resolv: str) -> None:
+def test_stage_dns(
+    tmp_path: Path, resolv: str, staged_text: str, warnings: tuple[str, ...]
+) -> None:
     conf = tmp_path / "resolv.conf"
     conf.write_text(resolv)
-    (tmp_path / "py").mkdir()
-    (tmp_path / "sh").mkdir()
-    staged = stage_dns(resolv_conf=str(conf), tmpdir=str(tmp_path / "py"))
+    (tmp_path / "out").mkdir()
+    staged = stage_dns(resolv_conf=str(conf), tmpdir=str(tmp_path / "out"))
     assert staged.path is not None
-    assert os.path.dirname(staged.path) == str(tmp_path / "py")
-    got = Path(staged.path).read_bytes()
-
-    sh = driver(
-        tmp_path,
-        {"TMPDIR": str(tmp_path / "sh"), "PATH": "/usr/bin:/bin"},
-        "stage_dns",
-        str(conf),
-    )
-    assert sh.returncode == 0, sh.stderr
-    (bash_file,) = (tmp_path / "sh").iterdir()
-    assert bash_file.name.startswith("claude-jail-resolv.")
-    assert got == bash_file.read_bytes()
-    warned = [f"claude-sandbox: {w}\n" for w in staged.warnings]
-    assert os.fsdecode(sh.stderr).replace(str(conf), "/etc/resolv.conf") == "".join(
-        warned
-    )
-    assert got.startswith(b"nameserver 192.0.2.53\n")
+    assert os.path.basename(staged.path).startswith("claude-jail-resolv.")
+    assert os.path.dirname(staged.path) == str(tmp_path / "out")
+    assert Path(staged.path).read_text() == staged_text
+    assert staged.warnings == warnings
 
 
 def test_stage_dns_without_a_resolv_conf(tmp_path: Path) -> None:
@@ -814,3 +1114,138 @@ def test_real_ops_dirs_signals_and_exec() -> None:
         [ops.executable, "-c", code], capture_output=True, text=True, check=False
     )
     assert (done.returncode, done.stderr) == (5, "to stderr\n")
+
+
+def test_ipv6_state_that_cannot_be_read_refuses() -> None:
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.unwritable.add(jail.IPV6_OFF[1])
+    ops.fail.add("ip -6 -o addr show")
+    assert hold(ops, "--", "true") == 1
+    assert ops.errors() == [
+        "claude-sandbox: egress jail — could not read back the IPv6 state (fail-closed)"
+    ]
+
+
+def test_ops_write(tmp_path: Path) -> None:
+    target = tmp_path / "sysctl"
+    target.write_text("0\n")
+    assert jail.OS.write(str(target), "1\n") and target.read_text() == "1\n"
+    assert not jail.OS.write(str(tmp_path / "no/such/dir"), "1\n")
+
+
+def test_an_old_kernels_network_broadcast_route_is_its_own() -> None:
+    """Kernels up to 5.13 add a broadcast route for each subnet's network
+    address to the local table; refusing it would refuse every launch."""
+    addrs = "2: eth0    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0\n"
+    local = (
+        "broadcast 192.168.1.0 dev eth0 table local proto kernel scope link"
+        " src 192.168.1.10\n"
+        "local 192.168.1.10 dev eth0 table local proto kernel scope host"
+        " src 192.168.1.10\n"
+        "broadcast 192.168.1.255 dev eth0 table local proto kernel scope link"
+        " src 192.168.1.10\n"
+    )
+    jail.check_routes(local, RULES, addrs, set())
+    with pytest.raises(jail.JailError, match="unexpected route"):
+        jail.check_routes(
+            "broadcast 192.168.2.0 dev eth0 table local\n", RULES, addrs, set()
+        )
+    assert jail.own_addresses("2: eth0 inet not-an-address scope global\n") == {
+        "not-an-address"
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "default \tnexthop via 10.1.0.2 dev d0 weight 1"
+        " \tnexthop via 10.2.0.2 dev d1 weight 1",
+        "default via 10.0.2.2 dev eth0 via 10.0.3.1 dev eth1",
+    ],
+)
+def test_a_multipath_route_is_refused(line: str) -> None:
+    with pytest.raises(jail.JailError, match="multipath route"):
+        jail.check_routes(line + "\n", RULES, ADDRS, set())
+
+
+def test_a_kernel_without_ipv6_has_nothing_to_check() -> None:
+    """Booted with ipv6.disable=1: no /proc/sys/net/ipv6, and `ip -6` fails.
+    That is IPv6 off, not a refusal."""
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.files.discard(jail.IPV6_SYSCTLS)
+    ops.fail |= {"ip -6 -o addr show", "ip -6 -o route show table all"}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    assert ops.written == {}
+
+
+# Captured from a real jail (podman, kernel 7.0, iproute2 6.1), with
+# allow-ip 203.0.113.7: what `ip -4 -o route show table all` and
+# `ip -4 -o addr show` print once the holder has locked the routes.
+# ip ends each line with a space; kept, as the parser must cope.
+CAPTURED_TABLE = "".join(
+    f"{line} \n"
+    for line in (
+        "default via 192.168.1.1 dev enp5s0 src 192.168.1.10",
+        "blackhole 10.0.0.0/8",
+        "blackhole 100.64.0.0/10",
+        "blackhole 168.63.129.16",
+        "unreachable 169.254.0.0/16",
+        "blackhole 172.16.0.0/12",
+        "192.0.2.53 via 192.168.1.1 dev enp5s0 src 192.168.1.10",
+        "blackhole 192.168.0.0/16",
+        "blackhole 192.168.1.0/24",
+        "192.168.1.1 dev enp5s0 scope link src 192.168.1.10",
+        "203.0.113.7 via 192.168.1.1 dev enp5s0 src 192.168.1.10",
+        "local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1",
+        "local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1",
+        "broadcast 127.255.255.255 dev lo table local proto kernel scope link"
+        " src 127.0.0.1",
+        "local 192.168.1.10 dev enp5s0 table local proto kernel scope host"
+        " src 192.168.1.10",
+        "broadcast 192.168.1.255 dev enp5s0 table local proto kernel scope link"
+        " src 192.168.1.10",
+    )
+)
+CAPTURED_ADDRS = (
+    "1: lo    inet 127.0.0.1/8 scope host lo\\"
+    "       valid_lft forever preferred_lft forever\n"
+    "2: enp5s0    inet 192.168.1.10/24 brd 192.168.1.255 scope global"
+    " noprefixroute enp5s0\\       valid_lft forever preferred_lft forever\n"
+)
+CAPTURED_ALLOWED = {
+    ("unicast", "0.0.0.0/0", "192.168.1.1", "enp5s0"),
+    *(("blackhole", net, "", "") for net in jail.BLACKHOLES),
+    ("blackhole", "168.63.129.16/32", "", ""),
+    ("blackhole", "192.168.1.0/24", "", ""),
+    ("unreachable", "169.254.0.0/16", "", ""),
+    ("unicast", "192.0.2.53/32", "192.168.1.1", "enp5s0"),
+    ("unicast", "192.168.1.1/32", "", "enp5s0"),
+    ("unicast", "203.0.113.7/32", "192.168.1.1", "enp5s0"),
+}
+
+
+def test_a_captured_locked_table_passes() -> None:
+    jail.check_routes(CAPTURED_TABLE, RULES, CAPTURED_ADDRS, CAPTURED_ALLOWED)
+
+
+@pytest.mark.parametrize(
+    "leftover",
+    [
+        # What pasta mirrored on the same host before the lock: a DHCP
+        # default with a metric (a second default, refused even though it
+        # matches ours), the connected subnet, a host route a VPN pushed, and
+        # an injected metadata route.
+        "default via 192.168.1.1 dev enp5s0 proto dhcp metric 100 ",
+        "192.168.1.0/24 dev enp5s0 proto kernel scope link metric 100 ",
+        "193.62.221.195 via 192.168.1.1 dev enp5s0 ",
+        "169.254.169.254 via 192.168.1.1 dev enp5s0 ",
+    ],
+)
+def test_a_captured_mirrored_route_is_refused(leftover: str) -> None:
+    with pytest.raises(jail.JailError, match="unexpected route"):
+        jail.check_routes(
+            CAPTURED_TABLE + leftover + "\n", RULES, CAPTURED_ADDRS, CAPTURED_ALLOWED
+        )

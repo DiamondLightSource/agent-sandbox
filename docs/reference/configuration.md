@@ -5,9 +5,13 @@ The sandbox reads `/etc/claude-sandbox.conf` inside the container and
 `~/.config/claude-sandbox.conf` on the host; it is mounted read-only at that
 container path. See [mounting the config](../how-to/use-the-container-image.md#configure-the-sandbox).
 
-On the host, `claude-sandbox` launches containers. Inside the container, the
-same name is an administrative helper (`verify`, `gh-auth`, `version`, etc.).
-Run `claude-sandbox --help` on the host for launcher options.
+`claude-sandbox` is one command in every context. On the host it launches
+project containers, and forwards helpers such as `verify`, `gh-auth` and
+`version` into the project container. Inside the container it runs those
+helpers. Inside an agent session, helpers that would take a credential or
+change the installation refuse. Run `claude-sandbox --help` in each place
+for the commands available there; on the host it also lists the launcher
+options.
 
 ## `/etc/claude-sandbox.conf`
 
@@ -33,14 +37,15 @@ through [team setup](../how-to/sandbox-a-team-devcontainer.md).
 |---|---|---|
 | `workspace-root` | absolute path | Sets the rw bind-mount root if `CLAUDE_SANDBOX_WORKSPACE_ROOT` is not already set. Empty value ignored |
 | `no-forge` | bare flag (no value) | Equivalent to `CLAUDE_SANDBOX_NO_FORGE=1`: skips the `gh`/`glab` token binds and removes the credential helpers from the generated gitconfig |
-| `allow-write` | absolute path | Adds a writable path; repeatable. Empty or missing paths are skipped. Never expose host container-engine, session-bus or X11 sockets: they grant control beyond the sandbox. See [socket access](../how-to/configure-workspace-scope.md#sockets-grant-access-to-services) |
+| `allow-write` | absolute path | Adds a writable path; repeatable. Empty or missing paths are skipped; a relative path refuses the launch, since it would resolve against the writable workspace. Never expose host container-engine, session-bus or X11 sockets: they grant control beyond the sandbox. See [socket access](../how-to/configure-workspace-scope.md#sockets-grant-access-to-services) |
 | `pass-env` | variable name(s) | Forwards named environment variables through the `--clearenv` scrub. Comma- or space-separated, and repeatable. Names only — the value is read from the launching environment. Unset, non-identifier and denied names are skipped |
 | `allow-device` | absolute `/dev/…` path | Exposes one existing character or block device read-write to agents using a device bind. Repeatable; merged with the environment. Symlinks resolve to their canonical path. Missing or invalid devices fail launch. Container access must already be configured; the host launcher `--device PATH` does both steps |
 | `local-model-port` | TCP port 1–65535; shipped default `1920`; `0` drops it; bare flag means `1920` | The port Pi discovers a model on at startup. Always part of the loopback relay set ({ref}`adr-local-port-all-agents`), so every agent reaches it on its own `127.0.0.1`. Environment `CLAUDE_SANDBOX_LOCAL_MODEL_PORT` takes precedence. See [Use Pi](../how-to/use-pi.md) |
 | `local-port` | TCP port 1–65535 | Adds a port to the loopback relay set: the outer container's `127.0.0.1:<port>` becomes reachable at the same address inside the jail, for every agent. Repeatable — one port per line. Merged with `CLAUDE_SANDBOX_LOCAL_PORTS` from the environment and deduplicated. Each relayed service is exposed in full. Requires the network jail and `socat`. See [Reach services on the host's loopback](../how-to/network-egress-jail.md#reach-services-on-the-hosts-loopback) |
 | `callback-port` | TCP port 1–65535; disabled by default (commented examples) | Reverse relay: exposes an agent's loopback listener on the outer container's loopback for browser OAuth. Repeatable; merged with `CLAUDE_SANDBOX_CALLBACK_PORTS`. Cannot overlap `local-port` or `local-model-port`. Occupied host ports are skipped with a warning. See [browser logins](../how-to/network-egress-jail.md#let-a-browser-login-reach-the-agent) |
 | `egress-jail` | bare flag / `1` reaffirms on | Network isolation is on by default and refuses launch if prerequisites are missing. Environment override takes precedence; see the [threat model](../explanations/threat-model.md#the-egress-jail-and-the-native-sandbox) for disabling it |
-| `allow-ip` | bare IP (no CIDR) | Allows an IP through the network jail; repeatable. Grants access to the whole device, not one service. No effect with the jail disabled |
+| `gpu` | bare flag | Experimental and under development, like the host launcher's `--gpu` (see [devices](../how-to/use-the-container-image.md#devices)). Binds the NVIDIA and DRI device nodes the container already exposes (`/dev/nvidia*`, `/dev/dri/*`) into the sandbox. Equivalent to `CLAUDE_SANDBOX_GPU=1` |
+| `allow-ip` | bare IP (no CIDR) | Allows an IP through the network jail; repeatable. Grants access to the whole device, not one service. A prefix is narrowed to the address written before the `/`, with a warning at launch. No effect with the jail disabled |
 
 ```ini
 # .devcontainer/claude-sandbox.conf  (installed to /etc/claude-sandbox.conf)
@@ -65,7 +70,9 @@ These names are ignored, and the sandbox's own value always wins:
 ## Environment variables
 
 With the host launcher, `CLAUDE_SANDBOX_*` variables are forwarded at container
-creation; recreate to change them. Other host variables are not forwarded.
+creation, apart from the launcher's own settings such as
+`CLAUDE_SANDBOX_IMAGE` and `CLAUDE_SANDBOX_ENGINE`; recreate to change them.
+Other host variables are not forwarded.
 Inside your own devcontainer, set variables in the launching terminal or
 `remoteEnv`. Config-file settings are usually simpler for durable host-launcher
 configuration.
@@ -83,8 +90,7 @@ configuration.
 | `CLAUDE_SANDBOX_ALLOW_WRITE` | populated by `parse_config` from `allow-write` lines | Newline-separated extra writable paths bound in addition to the workspace |
 | `CLAUDE_SANDBOX_ALLOW_DEVICES` | launcher `--device` / conf `allow-device` → shadow | Newline-separated device paths to expose inside the jail; setting this alone does not mount devices into the outer container |
 | `CLAUDE_SANDBOX_PASS_ENV` | populated by `parse_config` from `pass-env` lines | Names of environment variables to forward into the sandbox. Set it directly to forward a variable for one session without editing the conf |
-| `CLAUDE_SANDBOX_GITCONFIG_PATH` | exported by the shadow | Path to the curated gitconfig (`/etc/claude-gitconfig`) consumed by the argv builder |
-| `DISABLE_AUTOUPDATER` | set to `1` in managed settings by `install.sh` | Disables Claude Code's in-container auto-updater (alongside `autoUpdates:false`) so a self-update can't re-arm the unwrapped-launch bypass |
+| `DISABLE_AUTOUPDATER` | set to `1` in managed settings by the installer | Disables Claude Code's in-container auto-updater (alongside `autoUpdates:false`) so a self-update can't re-arm the unwrapped-launch bypass |
 
 `CLAUDE_SANDBOX_NO_FORGE` is documented as a task in
 [run a no-push session](../how-to/authenticate-with-forges.md#run-without-push-access); workspace scope

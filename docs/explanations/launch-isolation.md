@@ -1,15 +1,21 @@
 # Launch isolation and updates
 
 The sandbox is created by the wrapper at `/usr/local/bin/claude`,
-`codex` or `pi`. It builds the filesystem mounts, enters the network
-jail and starts the selected agent. Missing isolation prerequisites cause
-launch to fail.
+`codex` or `pi`: a three-line shim that runs the sandbox's root-owned
+Python interpreter in isolated mode. It builds the filesystem mounts,
+enters the network jail and starts the selected agent. Missing isolation
+prerequisites cause launch to fail.
 
 The real agent binaries live off PATH under `/usr/libexec/claude-sandbox`.
 Use the wrapper commands to run agents. Directly invoking a vendor binary
 bypasses the wrapper; there is no managed prompt or session hook to stop it.
 The environment marker `IS_SANDBOX=1` prevents recursive wrapping of nested
 agent calls. It is a convention, not independent proof of isolation.
+
+The wrapper names its interpreter by absolute path and runs it with `-I`, so
+`PATH`, `PYTHONPATH` and files in the workspace or caches cannot change the
+code that builds the sandbox. See
+[Sandbox internals](sandbox-internals.md#an-interpreter-the-agent-cannot-redirect).
 
 ## Agent updates
 
@@ -24,6 +30,13 @@ Codex receives `check_for_update_on_startup=false` in
 `CODEX_UPDATE_DISABLED=1`. A managed file owned by another administrator is
 left unchanged with a warning. Pi runs from a read-only standalone package
 and skips version checks.
+
+An executable a session leaves ahead of the wrapper or a system command on
+PATH is handled by two guards. The
+[entry-point guard](sandbox-internals.md#the-entry-point-guard-and-the-path-watcher)
+keeps the names `claude`, `codex`, `pi` and `claude-sandbox` read-only
+in writable directories ahead of the wrapper, and the PATH watcher quarantines other
+shadowing executables while the session runs ({ref}`ADR 27 <adr-outer-path-guard>`).
 
 Update agents by upgrading the image and recreating the container, or by
 creating a fresh devcontainer. Reinstalling the sandbox preserves existing

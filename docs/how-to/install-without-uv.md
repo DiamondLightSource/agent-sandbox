@@ -5,19 +5,32 @@ fallbacks when uv is unavailable.
 
 ## Host launcher
 
-Clone the repository at a chosen release and run its launcher:
+The launcher is an ordinary Python package with no dependencies, and pipx
+or pip installs the same `claude-sandbox` command that uvx runs. With
+Python 3.11 or later on the host, install it with pipx:
 
 ```bash
-git clone --branch 4.0.0 --depth 1 https://github.com/DiamondLightSource/claude-sandbox /path/to/claude-sandbox
+pipx install claude-sandbox==5.0.0
 cd ~/src/my-project
-CLAUDE_SANDBOX_IMAGE=ghcr.io/diamondlightsource/claude-sandbox:4.0.0 \
-  /path/to/claude-sandbox/container/claude-container
+claude-sandbox
 ```
 
-Choose an unused clone path. Rootless Podman and the other
+Or into a venv of its own:
+
+```bash
+python3 -m venv ~/.local/share/claude-sandbox-venv
+~/.local/share/claude-sandbox-venv/bin/pip install claude-sandbox==5.0.0
+cd ~/src/my-project
+~/.local/share/claude-sandbox-venv/bin/claude-sandbox
+```
+
+The package version selects the matching image, as it does with uv.
+Rootless Podman and the other
 [host prerequisites](../tutorials/getting-started.md#1-install-on-your-host)
-still apply. Keep the script release and image tag aligned when updating;
-the copied script otherwise defaults to the `:latest` image.
+still apply. Upgrade with `pipx upgrade claude-sandbox` (or `pip install
+--upgrade` in the venv), then `claude-sandbox --recreate` in each project.
+When the image is newer than the launcher, the launcher says so and prints
+the `pipx` command.
 
 ## Install into a devcontainer
 
@@ -25,10 +38,17 @@ Inside a Debian/Ubuntu devcontainer, as root:
 
 ```bash
 CSBX_DIR="$(mktemp -d)"
-git clone --depth 1 --branch 4.0.0 https://github.com/DiamondLightSource/claude-sandbox "$CSBX_DIR"
+git clone --depth 1 --branch 5.0.0 https://github.com/DiamondLightSource/claude-sandbox "$CSBX_DIR"
 bash "$CSBX_DIR/install" --here
 claude
 ```
+
+`install` is a short bootstrap: it fetches a pinned uv (checked against a
+pinned SHA-256, and kept under `/usr/libexec/claude-sandbox/uv`), has it
+install the sandbox's own pinned Python, then runs the same Python installer
+as `uvx claude-sandbox install`. The container does not need uv or Python
+beforehand, only `apt-get`; it needs network access during installation, as
+it does to fetch the agents.
 
 `--here` installs the chosen checkout. Without it, the installer attempts
 to select the newest release and refuses a pinned or modified checkout.

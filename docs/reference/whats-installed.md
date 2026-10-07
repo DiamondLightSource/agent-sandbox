@@ -8,12 +8,17 @@ into your own devcontainer.
 
 | Path | Purpose |
 |---|---|
-| `/usr/local/bin/{claude,codex,pi}` | The same wrapper, selecting an agent profile by command name |
+| `/usr/local/bin/{claude,codex,pi}` | The same three-line wrapper. It runs the sandbox's own interpreter, which selects an agent profile by command name |
+| `/usr/libexec/claude-sandbox/python/` | Pinned CPython for the sandbox, pruned to about 55 MB, root-owned and byte-compiled |
+| `/usr/libexec/claude-sandbox/venv/` | The `claude_sandbox` package and nothing else: it has no runtime dependencies |
+| `/usr/libexec/claude-sandbox/uv/` | The pinned uv that installed that CPython, kept so a reinstall need not fetch it again |
 | `/usr/libexec/claude-sandbox/claude` | Claude binary, relocated off PATH |
 | `/usr/libexec/claude-sandbox/codex-dist/` | Codex release, including its bundled helpers; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-dist/` | Standalone Pi executable and assets; read-only inside the sandbox |
 | `/usr/libexec/claude-sandbox/pi-run` | Pi launch-marker check; see [its limits](../how-to/use-pi.md#verify-the-sandbox) |
-| `/usr/local/bin/claude-sandbox` | Container helper: `gh-auth`, `glab-auth`, `update`, `verify`, `pi-local`, `doctor`, `version` |
+| `/usr/libexec/claude-sandbox/pi-system.md` | System-prompt note that tells Pi about the sandbox it runs in |
+| `/usr/libexec/claude-sandbox/codex-launch` | Codex's in-jail launch wrapper |
+| `/usr/local/bin/claude-sandbox` | The `claude-sandbox` command, run by the same interpreter: `gh-auth`, `glab-auth`, `update`, `verify`, `pi-local`, `doctor`, `alerts`, `version` |
 | `/usr/libexec/claude-sandbox/verify-sandbox-battery.sh` | Installed isolation checks |
 | `/usr/libexec/claude-sandbox/skills/` | Shipped skills, mounted read-only into each agent's discovery directory |
 | `/usr/libexec/claude-sandbox/statusline-command.sh` | Recommended Claude status line |
@@ -24,8 +29,8 @@ into your own devcontainer.
 | `/etc/claude-code/managed-settings.json` | Disables Claude's updater; preserves existing administrator settings and hooks |
 | `/etc/codex/managed_config.toml` | Disables Codex startup update checks; an administrator-owned file is left unchanged with a warning |
 | `/etc/claude-sandbox.conf` | [Sandbox configuration](configuration.md) |
-| `/etc/profile.d/claude-sandbox-alerts.sh` | Python shadow only: warns at outer shell prompts about what the PATH watcher quarantined; sourced from `/etc/bash.bashrc` and `/etc/zsh/zshrc` ({ref}`ADR 27 <adr-outer-path-guard>`) |
-| `/run/claude-sandbox/` | Python shadow only: the PATH watcher's alerts and baselines, hidden inside the sandbox; `claude-sandbox alerts` lists them |
+| `/etc/profile.d/claude-sandbox-alerts.sh` | Warns at outer shell prompts about what the PATH watcher quarantined; sourced from `/etc/bash.bashrc` and `/etc/zsh/zshrc` ({ref}`ADR 27 <adr-outer-path-guard>`) |
+| `/run/claude-sandbox/` | The PATH watcher's alerts and baselines, hidden inside the sandbox; `claude-sandbox alerts` lists them |
 
 The installer adds `passt` (providing `pasta`) for the network jail. Custom
 devcontainers must supply `/dev/net/tun` through `runArgs`; the host launcher

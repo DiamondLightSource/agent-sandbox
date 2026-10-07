@@ -7,7 +7,7 @@
 # kills DNS, and the mirrored connected-subnet route (more specific than the
 # blackhole) leaves the whole local /20 reachable.
 #
-# v2 policy (validated here before patching claude-shadow):
+# v2 policy (validated here before patching the shadow, now jail.py):
 #   - IPv4-only netns: pasta attaches with --ipv4-only, so there is NO IPv6
 #     address family in the netns (no GUA/ULA/link-local v6 lateral path)
 #   - blackhole RFC1918 (10/8, 172.16/12, 192.168/16), CGNAT (100.64/10), and
@@ -19,7 +19,7 @@
 #
 # Stub-resolver DNS (issue #60): when /etc/resolv.conf names ONLY loopback
 # resolvers (systemd-resolved 127.0.0.53, Tailscale MagicDNS) they're
-# unreachable from the netns, so the probe mirrors the claude-shadow fix —
+# unreachable from the netns, so the probe mirrors the jail.py fix —
 # pasta --dns-forward listens on JAIL_DNS_FWD (RFC5737 192.0.2.53) inside the
 # netns and relays to the host's real resolvers, and the INNER bwrap gets a
 # resolv.conf pointed at that forwarder. This box (127.0.0.53 + Tailscale) is
@@ -173,7 +173,7 @@ fi
 
 export JAIL_GW="$gw" JAIL_SUBNET="${subnet:-}" JAIL_DNS="${dns[*]:-}"
 # On a stub-resolver host, point INNER's resolv.conf at the pasta forwarder
-# (mirrors the claude-shadow bind); otherwise INNER keeps the host resolv.conf.
+# (mirrors the bwrap.py bind); otherwise INNER keeps the host resolv.conf.
 resolv_bind=()
 [ -n "${RESOLV_FWD:-}" ] && [ -r "${RESOLV_FWD:-}" ] && resolv_bind=(--ro-bind "$RESOLV_FWD" /etc/resolv.conf)
 exec bwrap --ro-bind / / "${resolv_bind[@]}" --dev /dev --unshare-pid --cap-drop ALL -- bash "$INNER"

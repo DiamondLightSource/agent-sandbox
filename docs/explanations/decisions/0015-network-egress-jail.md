@@ -8,6 +8,10 @@ Date: 2026-06-17
 
 Accepted
 
+Amended 2026-10-07 (5.0): the holder flushes the mirrored main table,
+rebuilds exactly the allowlist and verifies it fail-closed; layering
+blackholes over pasta's copied routes left more-specific routes reachable.
+
 Layers on top of {ref}`adr-network-egress-open` (ADR 5) — same
 mechanism-beneath-bwrap relationship — but **as of 2026-06-18 the jail is the
 default**. That overrides ADR 5's *open-egress default* (not its reasoning:

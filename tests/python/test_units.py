@@ -1,8 +1,5 @@
-"""Unit tests for the pure modules, beyond the comparison harness.
-
-Literal expectations, so they outlive the bash (issue #72 phase 5), plus
-the branches the harness can reach only on some hosts. Where a table also
-asks the bash, it is to keep the literal honest while the bash still ships.
+"""Unit tests for the pure modules: literal expectations, and the branches
+of the argv builder only some hosts reach (a fake host stands in for them).
 """
 
 import os
@@ -27,7 +24,6 @@ from claude_sandbox.profiles import (
     detect_agent,
     filter_chrome_args,
 )
-from test_parity import driver
 
 
 @pytest.mark.parametrize(
@@ -36,7 +32,7 @@ from test_parity import driver
         ("/usr/local/bin/claude", "", "claude"),
         ("/usr/local/bin/codex", "", "codex"),
         ("/usr/local/bin/pi", "", "pi"),
-        ("/tmp/bwrap_argv.sh", "", "claude"),  # anything else falls back
+        ("/tmp/test-runner", "", "claude"),  # anything else falls back
         ("codex/", "", "claude"),
         ("", "", "claude"),
         ("/usr/local/bin/claude", "codex", "codex"),  # the override wins...
@@ -49,22 +45,18 @@ from test_parity import driver
         ),
     ],
 )
-def test_detect_agent(tmp_path: Path, argv0: str, override: str, expected: str) -> None:
+def test_detect_agent(argv0: str, override: str, expected: str) -> None:
     try:
         got = detect_agent(argv0, override)
     except SandboxError as e:
         got = str(e)
     assert got == expected
-    sh = driver(tmp_path, {}, "call", "detect_agent", argv0, override)
-    assert os.fsdecode(sh.stdout or sh.stderr).rstrip("\n") == expected
 
 
-def test_unknown_profile_is_refused(tmp_path: Path) -> None:
+def test_unknown_profile_is_refused() -> None:
     with pytest.raises(SandboxError) as e:
         agent_profile("bash")
     assert str(e.value) == "claude-sandbox: unknown agent 'bash'."
-    sh = driver(tmp_path, {}, "call", "agent_profile", "bash")
-    assert (sh.returncode, os.fsdecode(sh.stderr)) == (1, f"{e.value}\n")
 
 
 def test_filter_chrome_args() -> None:
@@ -92,37 +84,42 @@ def test_valid_tcp_port(port: str, ok: bool) -> None:
 
 GIT_IDENTITIES = [
     ("Ann Smith", "ann@example.com", False),
-    (None, None, False),  # unset: empty values
+    ("", "", False),  # unset: empty values
     (" lead", "a;b#c", True),
     ('say "hi" \\o/ \t', "line\nbreak", False),
+    ('Sam "SJ" Jones', "sam@example.invalid", False),
+    ("Sam #1; Jones", "sam@example.invalid", False),
+    ("Sam\nJones", "sam@example.invalid", False),
+    ("Sam\n[core]\n    hooksPath = /unexpected", "sam@example.invalid", False),
 ]
 
 
 @pytest.mark.parametrize(("name", "email", "no_forge"), GIT_IDENTITIES)
-def test_gitconfig_matches_bash(
-    tmp_path: Path, name: str | None, email: str | None, no_forge: bool
+def test_gitconfig_identity_round_trips(
+    tmp_path: Path, name: str, email: str, no_forge: bool
 ) -> None:
+    """What git reads back is the identity, never a directive of its own."""
     git = shutil.which("git")
     if git is None:
-        pytest.skip("the bash renderer needs git")
-    home = tmp_path / "home"
-    home.mkdir()
-    for key, value in (("user.name", name), ("user.email", email)):
-        if value is not None:
-            subprocess.run(
-                [git, "config", "--file", str(home / ".gitconfig"), key, value],
-                check=True,
-            )
-    env = {
-        "HOME": str(home),
-        "PATH": f"{os.path.dirname(git)}:/usr/bin:/bin",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        **({"CLAUDE_SANDBOX_NO_FORGE": "1"} if no_forge else {}),
-    }
-    out = tmp_path / "gitconfig"
-    driver(tmp_path, env, "gitconfig", str(out)).check_returncode()
-    rendered = render_gitconfig(name or "", email or "", no_forge=no_forge)
-    assert rendered == out.read_text()
+        pytest.skip("needs git to read the file back")
+    path = tmp_path / "gitconfig"
+    path.write_text(render_gitconfig(name, email, no_forge=no_forge))
+
+    def get(*args: str) -> subprocess.CompletedProcess[str]:
+        env = {"PATH": os.path.dirname(git), "HOME": str(tmp_path)}
+        return subprocess.run(
+            [git, "config", "--file", str(path), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    assert get("user.name").stdout == f"{name}\n"
+    assert get("user.email").stdout == f"{email}\n"
+    assert get("--get", "core.hooksPath").returncode == 1
+    helpers = get("--get-regexp", r"credential\..*helper").stdout.splitlines()
+    assert len(helpers) == (0 if no_forge else 2)
 
 
 def test_gitconfig_text() -> None:
@@ -280,3 +277,11 @@ def test_the_real_binary_is_bound_back_read_only() -> None:
     assert argv[i - 2 : i + 1] == ["--ro-bind", "/real", "/h/.local/bin/claude"]
     for name in ("codex", "pi"):
         assert not agent_profile(name).bind_back  # exec'd in place, under /usr
+
+
+@pytest.mark.parametrize("entry", ["cache", "./cache", "~/cache", "../x"])
+def test_a_relative_allow_write_is_refused(entry: str) -> None:
+    # Not skipped: bwrap would resolve it against the workspace, which a
+    # session can write, so the conf line could bind a path it never named.
+    with pytest.raises(SandboxError, match=f"absolute path: {entry}"):
+        guard_argv("/usr/local/bin", allow_write=f"/c\n{entry}")

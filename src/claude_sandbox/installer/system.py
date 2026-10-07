@@ -1,11 +1,10 @@
 """The installer's steps that touch the system rather than files it owns:
-the platform checks, apt, and the three agent downloads, ported from
-``install.sh``'s functions of the same names.
+the platform checks, apt, and the three agent downloads, named after the
+bash functions they replaced.
 
 Each runs its tools by absolute path (``tools.find_tool``, ADR 26) through
 an injectable ``Run``, so the tests can stand in for apt, curl and the
-vendors' install scripts. ``CLAUDE_SANDBOX_SMOKE=1`` skips them all, as it
-does in the bash.
+vendors' install scripts. ``CLAUDE_SANDBOX_SMOKE=1`` skips them all.
 """
 
 import filecmp
@@ -144,7 +143,7 @@ def _is_shadow(layout: Layout, path: str) -> bool:
     scripts = layout.source / ".devcontainer/claude-sandbox"
     return any(
         (scripts / name).is_file() and filecmp.cmp(path, scripts / name, shallow=False)
-        for name in ("claude-shadow", "claude-shim")
+        for name in ("claude-shim",)
     )
 
 
@@ -355,10 +354,7 @@ def summary(layout: Layout, options: Options, skipped: Sequence[str], venv: str)
         "  shadow:      "
         + ", ".join(str(p(f"/usr/local/bin/{a}")) for a in ("claude", "codex", "pi")),
     ]
-    if options.impl == "python":
-        lines.append(
-            f"  python:      the Python shadow (opt-in), interpreter in {p(venv)}"
-        )
+    lines.append(f"  python:      interpreter in {p(venv)} (root-owned, run with -I)")
     lines += [
         f"  real pi:     {p(PI_DIST)}/pi "
         + state(

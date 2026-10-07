@@ -113,9 +113,9 @@ this has one entry; inside one nested pidns it has two.
 The companion property (procfs *view* aligned with the new pidns) is
 not checked here. On rootless devcontainer hosts bwrap's `--proc /proc`
 mounts procfs against its outer pidns rather than the spawned child's,
-so process-tree visibility leaks even though kernel kill/ptrace
-scoping is intact. The launch-time probe in claude-shadow detects this
-and sets `CLAUDE_SANDBOX_FRESH_PROC=0`. Credential-bearing procfs
+so the shadow always read-only binds the host's `/proc` instead: the
+process tree is visible even though kernel kill/ptrace scoping is
+intact. Credential-bearing procfs
 entries (`/proc/<pid>/environ`, `/maps`, `/fd`, `/mem`) stay gated by
 `PTRACE_MODE_READ_FSCREDS` + YAMA `ptrace_scope=1`, so leaked
 visibility does not become credential exfil — but see the [threat model](https://diamondlightsource.github.io/claude-sandbox/explanations/threat-model.html)
@@ -141,7 +141,7 @@ We dropped `--new-session` so SIGWINCH and job control reach the
 sandbox. The TIOCSTI defence is now delivered by two coupled
 mechanisms: the shadow wraps bwrap in `script(1)` (the in-sandbox
 process inherits script's allocated pty as its controlling terminal,
-not the host's), and `bwrap_argv.sh` uses `--dev /dev` (a fresh
+not the host's), and the bwrap argv uses `--dev /dev` (a fresh
 devtmpfs with a fresh devpts mount — the host's `/dev/pts/*` is
 not visible). An ioctl(TIOCSTI) inside the sandbox can therefore
 only inject into script's pty, whose contents script reads and
@@ -200,7 +200,7 @@ can't produce a false positive.
 ### Check 18 — config read from `/etc`, not the workspace
 
 The shadow reads its config from the host-global
-`/etc/claude-sandbox.conf` (placed by `install.sh`), **not** from
+`/etc/claude-sandbox.conf` (placed by the installer), **not** from
 `$PWD/.devcontainer/claude-sandbox.conf`. The old per-workspace read
 sat inside the rw-bound workspace, so a compromised session could
 rewrite it (`allow-write = /`, `workspace-root = /`) and the next
@@ -208,19 +208,14 @@ launch would honour it — a cross-session bind-escalation. `/etc` is
 not in the sandbox's rw set, closing that vector.
 
 This inspects the installed shadow on `$PATH` (visible read-only via
-`--ro-bind / /`): it must pin `CONFIG_PATH` to `/etc/...` and feed
-that to `parse_config`, with no `parse_config` call reading from
-`.devcontainer` (the old, attacker-writable call site). The negative
-match is scoped to the `parse_config` line so the `/etc` rationale
-comment — which legitimately names the source path — doesn't trip it.
-
-When the opt-in Python shadow is installed (issue #72 phase 2), the
-shadow on `$PATH` is a three-line shim. The check then requires the shim
-to exec the root-owned interpreter under `/usr/libexec/claude-sandbox`
-with `-I`, and reads the same pins from the package in that
-interpreter's venv: `config.py` sets `CONFIG_PATH` to `/etc/...`, and
-`shadow.py` defaults the conf path to it and passes that to
-`parse_config`, with no `.devcontainer` read.
+`--ro-bind / /`). It must be the three-line shim that execs the root-owned
+interpreter under `/usr/libexec/claude-sandbox` with `-I`; anything else
+fails. The pins are then read from the package in that interpreter's venv:
+`config.py` sets `CONFIG_PATH` to `/etc/...`, and `shadow.py` defaults the
+conf path to it and passes that to `parse_config`, with no `parse_config`
+call reading from `.devcontainer` (the old, attacker-writable call site).
+The negative match is scoped to the `parse_config` call so a rationale
+comment that names the source path doesn't trip it.
 
 ### Check 19 — egress jail active: netns isolated, RFC1918 blackholed
 
@@ -236,8 +231,10 @@ blackhole are present. It catches a fail-*open* regression (the jail being
 skipped while Claude still launches) and partial programming (e.g. only
 `10/8` blackholed, or CGNAT dropped so Tailscale internal hosts leak).
 
-The jail is fail-*closed* by design — `netns_holder` aborts (so Claude
-never starts) if any blackhole route fails — so a running session is
+The jail is fail-*closed* by design — the holder (`jail.holder_main`,
+`lock_routes`) aborts, so Claude never starts, if any blackhole route
+fails or the rebuilt route table is not exactly the allowlist — so a
+running session is
 either fully jailed or deliberately un-jailed. The intended-state env var
 `CLAUDE_SANDBOX_EGRESS_JAIL` is **not** in the shadow's `--setenv`
 allowlist, so it is invisible from inside; this check therefore keys off
@@ -312,7 +309,7 @@ check count stays constant across agents.
 ### Check 22 — entry-point names guarded ahead of the shadow
 
 Invariant 1 says a plain `claude` (or `codex`, `pi`, `claude-sandbox`)
-reaches the shadow at `/usr/local/bin`. The Python shadow protects the sandbox's entry-point names: a session
+reaches the shadow at `/usr/local/bin`. The shadow protects the sandbox's entry-point names: a session
 cannot create a command named claude, codex, pi or claude-sandbox in a
 writable directory that precedes the shadow on `PATH`. For each such
 directory that exists at launch, `bwrap.py` read-only binds `/dev/null`
@@ -325,7 +322,6 @@ a read-only mount still reports writable) and is not a symlink, a
 directory or an executable.
 
 When the variable is unset the check passes with a note: no writable
-directory precedes the shadow, or the shadow in use does not guard them
-(the bash shadow does not). A directory that does not exist at launch
+directory precedes the shadow. A directory that does not exist at launch
 cannot be covered without creating it; the shadow's launch-time refusal
 covers what a session leaves there.

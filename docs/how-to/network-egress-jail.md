@@ -1,7 +1,10 @@
 # Configure the network egress jail
 
-The jail is on by default. It blocks private, link-local and connected networks
-while allowing internet access, DNS and explicitly allowed IPs. Agents get a
+The jail is on by default. It blocks private, link-local and connected networks,
+and the cloud metadata addresses, while allowing internet access, DNS and
+explicitly allowed IPs. Routes your host or VPN adds for internal networks
+are not carried into the jail: it rebuilds its route table from that
+allowlist alone and checks it before the agent starts. Agents get a
 private IPv4-only network namespace; ordinary container shells do not.
 
 With the PyPI launcher, edit `~/.config/claude-sandbox.conf` on the host.
@@ -20,7 +23,11 @@ devcontainer, add this run argument and rebuild:
 ```
 
 Missing tun, pasta or namespace support makes agent launch fail closed.
-Use rootless Podman: rootful Docker cannot host the default jail.
+Use rootless Podman: rootful Docker cannot host the default jail. The
+devcontainer's base image must also have a recent enough `passt`:
+Debian 12's (2023-03, in `node:22-slim` and other bookworm images) cannot
+attach from inside a container, and the launch says so. Ubuntu 24.04 and
+Debian 13 images work.
 
 ## Keep a lab device or internal forge reachable
 

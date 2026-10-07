@@ -8,6 +8,9 @@ Date: 2026-10-06
 
 Accepted
 
+Implemented in 5.0.0 (2026-10-07): the Python implementation is the only
+one, and the bash shadow, installer steps, CLI and launcher are removed.
+
 Amended 2026-10-06: the CLI uses argparse, and the package has no runtime
 dependencies. Typer would have put rich, pygments and click, about 15 MB
 (measured in the phase 0 spike on issue #72), into the trusted set of

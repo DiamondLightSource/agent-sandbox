@@ -7,9 +7,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
 REPO="$HERE/.."
-# CLAUDE_SANDBOX_TEST_CLI runs the suite against another CLI, a bash file
-# (tests/python/test_bash_suites.py points it at the Python CLI).
-CLI="${CLAUDE_SANDBOX_TEST_CLI:-$REPO/.devcontainer/claude-sandbox/claude-sandbox}"
+# CLAUDE_SANDBOX_TEST_CLI is a bash file that runs the Python CLI in the
+# container context; tests/python/test_bash_suites.py writes one and runs this.
+CLI="${CLAUDE_SANDBOX_TEST_CLI:?run through tests/python/test_bash_suites.py}"
 
 TMP="$(mktemp -d)"
 register_cleanup "$TMP"

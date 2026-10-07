@@ -57,7 +57,7 @@ claude
 The container needs `--device=/dev/net/tun`. For automatic installation on
 rebuild, follow [Sandbox a team devcontainer](https://diamondlightsource.github.io/claude-sandbox/how-to/sandbox-a-team-devcontainer.html).
 [Install without uv](https://diamondlightsource.github.io/claude-sandbox/how-to/install-without-uv.html)
-covers the clone fallback.
+covers pipx, pip and the clone fallback.
 
 ## What the sandbox protects
 
@@ -78,8 +78,10 @@ for the implementation.
 guides, configuration reference and design decisions.
 [DLS users start here](https://diamondlightsource.github.io/claude-sandbox/dls/claude-at-dls.html).
 
-The sandbox implementation is Bash, migrating to Python (ADR 26); the PyPI
-package bundles its launcher and installer. See the [contributing guide](https://diamondlightsource.github.io/claude-sandbox/how-to/contribute.html)
+The sandbox is a Python package that uses the standard library only and has
+no runtime dependencies (ADR 26). The same package is the host launcher, the
+installer and the in-container wrapper, which runs on a pinned, root-owned
+interpreter that agents cannot modify. See the [contributing guide](https://diamondlightsource.github.io/claude-sandbox/how-to/contribute.html)
 for tests and the isolated documentation toolchain.
 
 ## License

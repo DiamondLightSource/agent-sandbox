@@ -1,9 +1,8 @@
-"""The Python installer (ADR 26, issue #72 phase 4).
+"""The installer (ADR 26).
 
-``install.sh`` runs it when ``CLAUDE_SANDBOX_IMPL=python`` is set: its bash
-bootstrap fetches uv, ``provision`` installs the pinned interpreter and the
-venv, and the venv runs ``python -I -m claude_sandbox.installer``. Without
-the opt-in the bash installer runs, unchanged. Each file step is a plan
+``install.sh`` is its bash bootstrap: it fetches uv, ``provision`` installs
+the pinned interpreter and the venv, and the venv runs
+``python -I -m claude_sandbox.installer``. Each file step is a plan
 (``steps.plan_*``, reading only) and an apply (``actions.apply``); the
 steps that touch the system are in ``system``. Standard library only: it
 runs as root.
@@ -37,7 +36,7 @@ def install(
     out: TextIO | None = None,
     run: system.Run = subprocess.run,
 ) -> None:
-    """Run ``install.sh``'s main() in its order, then print its summary.
+    """Run every step in order, then print the summary.
     Each file step is planned against what the previous ones left, then
     applied, under umask 022 whatever the caller's: new directories are
     0755."""

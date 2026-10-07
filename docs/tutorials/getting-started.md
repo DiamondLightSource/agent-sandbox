@@ -82,7 +82,7 @@ claude
 
 Add `"--device=/dev/net/tun"` to its `runArgs` and rebuild before launching
 an agent. Inside the container, `claude`, `codex` and `pi` launch sandboxed
-agents; `claude-sandbox` is the administrative helper.
+agents; `claude-sandbox` runs the helpers, such as `verify` and `gh-auth`.
 
 Throughout these guides, `claude-sandbox shell` just opens a container terminal.
 If you are already in your devcontainer terminal, skip that step and the matching

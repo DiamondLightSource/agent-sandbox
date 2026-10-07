@@ -9,7 +9,7 @@ the interpreter is installed straight into ``UV_PYTHON_INSTALL_DIR`` under
 not uv's ``cpython-3.13-…`` minor-version symlink.
 
 ``install.sh``'s bootstrap runs ``main`` with the pinned interpreter it has
-just had uv install, when ``CLAUDE_SANDBOX_IMPL=python`` is set.
+just had uv install.
 """
 
 import argparse
@@ -258,7 +258,7 @@ def _provision(
         raise ProvisionError(f"the venv runs {venv_home}, not {interpreter.parent}")
     python = venv / "bin" / "python"
     # Standard library only, with no dependencies, so a copy is the whole
-    # install: no build, no index. The wheel's bundled bash (tree/) and any
+    # install: no build, no index. The wheel's bundled tree (tree/) and any
     # bytecode stay behind.
     for site in venv.glob("lib/python3.*/site-packages"):
         shutil.copytree(

@@ -1,7 +1,7 @@
 """The egress jail (ADR 0015, Design D) and its loopback relays (ADRs 20, 21).
 
-Ported from ``netns_launch``, ``netns_holder``, ``jail_stage_dns`` and the
-relay helpers in ``.devcontainer/claude-sandbox/claude-shadow``. The launch
+Once ``netns_launch``, ``netns_holder``, ``jail_stage_dns`` and the relay
+helpers in the bash shadow that 5.0 replaced (ADR 26). The launch
 runs inside a user+net namespace that a *holder* process owns, bridged to the
 internet by pasta, with a routing allowlist the agent cannot change:
 
@@ -31,7 +31,7 @@ No executable is found through PATH (ADR 26). ``unshare``, ``pasta``,
 and a missing one is a fail-closed refusal; the command to run must already
 be absolute; the holder re-enters ``sys.executable``.
 
-Deliberate differences from the bash:
+Deliberate differences from the bash it replaced:
 
 - Readiness: the bash attaches pasta once ``/proc/<holder>/ns/net`` exists,
   which is already true before ``unshare`` has made the namespace. Here
@@ -56,6 +56,7 @@ Every side effect goes through ``Ops`` so tests can replace it. Standard
 library only: this module is on the launch path (ADR 26).
 """
 
+import ipaddress
 import os
 import re
 import shutil
@@ -108,6 +109,18 @@ JAIL_CALLBACK_PORTS = "CLAUDE_JAIL_CALLBACK_PORTS"
 # diagnostics.
 PASTA_LOG = "/tmp/claude-pasta.log"
 
+# What an old pasta logs when it cannot attach from inside a container.
+# Debian 12's passt (2023-03) drops its capabilities before it opens the
+# holder's namespaces and its own log file, and both opens then fail with
+# EACCES; the passt in Ubuntu 24.04 and Debian 13 opens them first. The jail
+# stays closed either way; this only says why.
+PASTA_CANNOT_OPEN = "Couldn't open"
+PASTA_TOO_OLD = (
+    "\n  This passt is too old to attach to a namespace from inside a container"
+    "\n  (Debian 12's is); use a base image with a newer passt, such as"
+    "\n  Ubuntu 24.04 or Debian 13."
+)
+
 # pasta flags. IPv4-only keeps all traffic within the routing policy (the
 # netns has no IPv6 to blackhole). Port forwarding and gateway-to-loopback
 # mapping are off (ADR 19): loopback crosses only through the relays below.
@@ -125,9 +138,13 @@ PASTA_FLAGS = (
 )  # fmt: skip
 
 # Internal ranges the holder blackholes (CGNAT so a Tailscale-addressed host
-# cannot be pivoted to), then link-local marked unreachable.
+# cannot be pivoted to), then link-local, where the clouds' metadata
+# services live, marked unreachable.
 BLACKHOLES = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
 _BLACKHOLE_NOTES = {"100.64.0.0/10": " CGNAT"}
+# Azure's WireServer: a public address only the VM it serves can reach, so
+# through pasta the jail could. A metadata-class service, like link-local.
+WIRESERVER = "168.63.129.16/32"
 LINK_LOCAL = "169.254.0.0/16"
 
 # wait_for: up to ~10s, 200 polls 50ms apart.
@@ -270,6 +287,15 @@ class Ops:
     def touch(self, path: str) -> None:
         with open(path, "a"):
             pass
+
+    def write(self, path: str, text: str) -> bool:
+        """Write ``text`` to an existing file (a sysctl); False on failure."""
+        try:
+            with open(path, "w") as f:
+                f.write(text)
+        except OSError:
+            return False
+        return True
 
     def rmtree(self, path: str) -> None:
         shutil.rmtree(path, ignore_errors=True)
@@ -604,7 +630,10 @@ def _start(
 
     rc, _ = ops.run([pasta, *PASTA_FLAGS, str(holder.pid)], env, stderr_to=PASTA_LOG)
     if rc != 0:
-        raise JailError(f"— pasta failed to attach to the netns (see {PASTA_LOG})")
+        raise JailError(
+            f"— pasta failed to attach to the netns (see {PASTA_LOG})"
+            + (PASTA_TOO_OLD if PASTA_CANNOT_OPEN in ops.read(PASTA_LOG) else "")
+        )
     signals.check()
     ops.touch(holder_env[JAIL_READY])
 
@@ -719,16 +748,166 @@ def route_field(key: str, route: str) -> str:
     return ""
 
 
+# Route types `ip route` prints before the destination; anything else is a
+# unicast route.
+ROUTE_TYPES = frozenset(
+    "unicast blackhole unreachable prohibit throw local broadcast multicast nat"
+    " anycast".split()
+)
+
+# One route as the allowlist compares it: (type, destination, via, dev).
+# proto, scope, src, metric and flags are not compared.
+Route = tuple[str, str, str, str]
+
+# The kernel's own policy rules, and nothing else may pick a table.
+DEFAULT_RULES = (
+    "0: from all lookup local",
+    "32766: from all lookup main",
+    "32767: from all lookup default",
+)
+IPV6_SYSCTLS = "/proc/sys/net/ipv6"
+IPV6_OFF = (
+    "/proc/sys/net/ipv6/conf/all/disable_ipv6",
+    "/proc/sys/net/ipv6/conf/default/disable_ipv6",
+)
+
+
+def route_prefix(dst: str) -> str:
+    """A destination as a prefix: ``default`` is 0.0.0.0/0, a bare
+    address /32."""
+    if dst == "default":
+        return "0.0.0.0/0"
+    return dst if "/" in dst else f"{dst}/32"
+
+
+def parse_route(line: str) -> tuple[Route, str] | None:
+    """An ``ip -o route show table all`` line as (route, table), or None for
+    a blank one. The main table is not named in the output."""
+    tokens = line.split()
+    if not tokens:
+        return None
+    kind = tokens.pop(0) if tokens[0] in ROUTE_TYPES else "unicast"
+    dst = route_prefix(tokens[0]) if tokens else ""
+    route = (kind, dst, route_field("via", line), route_field("dev", line))
+    return route, route_field("table", line) or "main"
+
+
+def own_addresses(addrs: str) -> set[str]:
+    """The addresses, broadcast addresses and network addresses in
+    ``ip -4 -o addr show``. Kernels up to 5.13 (RHEL 8, Ubuntu 20.04,
+    Debian 11) also put a ``broadcast`` route for the network address of
+    each /30 or shorter in the local table."""
+    found: set[str] = set()
+    for line in addrs.split("\n"):
+        if inet := route_field("inet", line):
+            found.add(inet.partition("/")[0])
+            try:
+                net = ipaddress.IPv4Interface(inet).network
+            except ValueError:
+                continue
+            found.add(str(net.network_address))
+        if brd := route_field("brd", line):
+            found.add(brd)
+    return found
+
+
+def _kernel_local(route: Route, own: set[str]) -> bool:
+    kind, dst, _, _ = route
+    if kind not in ("local", "broadcast"):
+        return False
+    try:
+        net = ipaddress.IPv4Network(dst, strict=False)
+    except ValueError:
+        return False
+    return net.subnet_of(ipaddress.IPv4Network("127.0.0.0/8")) or (
+        net.prefixlen == 32 and str(net.network_address) in own
+    )
+
+
+def check_routes(table: str, rules: str, addrs: str, allowed: set[Route]) -> None:
+    """Refuse unless the main table holds exactly the routes the holder set
+    (``allowed``), the local table only the kernel's routes for this
+    namespace's own addresses and loopback, no other table holds any, and
+    the policy rules are the kernel's three. A route left over, in any
+    table, or a rule that picks another table, would route around the
+    allowlist. A multipath route (``nexthop``) is refused outright: the
+    allowlist compares one gateway and one device per route, and a second
+    default or next hop must not hide behind the first."""
+    own = own_addresses(addrs)
+    seen: set[Route] = set()
+    for line in table.split("\n"):
+        words = line.split()
+        if "nexthop" in words or words.count("via") > 1 or words.count("dev") > 1:
+            raise JailError(
+                f"— multipath route in the jail: {' '.join(words)} (fail-closed)"
+            )
+        parsed = parse_route(line)
+        if parsed is None:
+            continue
+        route, name = parsed
+        if name == "local" and _kernel_local(route, own):
+            continue
+        if name != "main" or route not in allowed or route in seen:
+            # A second copy of an allowed route (a default with another
+            # metric) is refused too: the holder sets each route once.
+            raise JailError(
+                f"— unexpected route in the jail: {line.strip()} (fail-closed)"
+            )
+        seen.add(route)
+    if missing := sorted(allowed - seen):
+        shown = " ".join(word for word in missing[0] if word)
+        raise JailError(f"— route missing from the jail: {shown} (fail-closed)")
+    got = [" ".join(line.split()) for line in rules.split("\n") if line.split()]
+    if sorted(got) != sorted(DEFAULT_RULES):
+        extra = next((r for r in got if r not in DEFAULT_RULES), "a default missing")
+        raise JailError(
+            f"— unexpected routing rules in the jail: {extra} (fail-closed)"
+        )
+
+
+def check_ipv6(addrs: str, routes: str) -> None:
+    """With IPv6 still on (the sysctl could not be written): refuse a global
+    address, or any route but link-local, multicast and the kernel's own."""
+    for line in addrs.split("\n"):
+        inet6 = route_field("inet6", line)
+        if inet6 and not inet6.startswith(("fe80:", "::1/")):
+            raise JailError(f"— IPv6 address in the jail: {inet6} (fail-closed)")
+    for line in routes.split("\n"):
+        tokens = line.split()
+        if not tokens or route_field("table", line) == "local":
+            continue
+        dst = tokens[1] if tokens[0] in ROUTE_TYPES else tokens[0]
+        if not dst.startswith(("fe80::/", "ff00::/", "multicast")):
+            raise JailError(f"— IPv6 route in the jail: {line.strip()} (fail-closed)")
+
+
 def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     """Bring up loopback, wait for pasta, and lock the routing allowlist.
 
-    pasta --config-net mirrors the host's L3 config into the netns (address,
-    connected subnets, gateway). The allowlist is SURGICAL: blackhole RFC1918,
-    CGNAT and every connected subnet, mark link-local unreachable, then punch
-    back only the gateway, the DNS forwarder and the allow-ip devices. A
-    blanket blackhole would cut the gateway on an all-RFC1918 site, and a
-    connected-subnet route left alone (more specific than the blackholes)
-    would leave the whole local subnet reachable.
+    pasta --config-net mirrors the host's L3 config into the netns, once, at
+    attach: the address, the connected subnets, the gateway, and every
+    other route the host has, a DHCP host route to a cloud's metadata
+    service or a VPN's internal subnets included. Any of those, more
+    specific than the blackholes, would beat them. So the main table is
+    FLUSHED (only it: the local table holds loopback and the namespace's own
+    addresses, which the relays and the DNS forwarder use) and rebuilt as
+    exactly the allowlist: blackhole RFC1918, CGNAT and every connected
+    subnet, mark link-local unreachable and blackhole Azure's WireServer,
+    then punch back only the gateway, the DNS forwarder and the allow-ip
+    devices, each with the interface's address as the source. Then every
+    table and the policy rules are read back, and anything else refuses the
+    launch. IPv6 is read back too: it may hold only link-local, multicast
+    and the kernel's own routes, with no global address. That check is
+    what holds in a container, where /proc/sys is read-only; writing the
+    namespace's disable_ipv6 sysctls, where it can, is a bonus, and a
+    kernel booted without IPv6 has nothing to check.
+
+    The allowlist compares one gateway and one device per route, so a
+    multipath route, or a second default, is refused rather than compared.
+
+    The gateway's /32 is pinned on-link before the default route through it
+    (which needs it): with the kernel's connected route flushed, that /32 is
+    what reaches the gateway, and pasta answers its ARP.
 
     Raises JailError at any load-bearing failure, before the agent starts.
     """
@@ -754,35 +933,95 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     gw, nic = route_field("via", default), route_field("dev", default)
     if not gw or not nic:
         raise JailError("— no default route via/dev after pasta attach")
-    # EVERY connected subnet on the egress NIC: each is more specific than
-    # the blackholes below, so one left alone stays reachable.
+    addr = ip("-4", "-o", "addr", "show", "dev", nic, "scope", "global", quiet=True)[1]
+    src = route_field("inet", addr).partition("/")[0]
+    if not src:
+        raise JailError(f"— no IPv4 address on {nic} after pasta attach")
+    # EVERY connected subnet on the egress NIC: blackholed, since the
+    # gateway is all of it the jail may reach. Not the gateway's own /32 (a
+    # DHCP route on Azure), which is pinned below.
     linked = ip("-o", "route", "show", "dev", nic, "scope", "link", quiet=True)[1]
-    subnets = [line.split()[0] for line in linked.split("\n") if line.split()]
+    subnets = [route_prefix(ln.split()[0]) for ln in linked.split("\n") if ln.split()]
+    subnets = [net for net in dict.fromkeys(subnets) if net != f"{gw}/32"]
 
-    # Blackhole first, then punch back. A mirrored scope-link route can be the
-    # gateway's own /32 (DHCP on Azure); pinning the gateway before this would
-    # let the subnet blackhole overwrite it.
+    if ip("-4", "route", "flush", "table", "main")[0] != 0:
+        raise JailError("— failed to flush the mirrored routes (fail-closed)")
+    allowed: set[Route] = set()
     for subnet in subnets:
         must(f"failed to blackhole connected subnet {subnet}", "blackhole", subnet)
+        allowed.add(("blackhole", subnet, "", ""))
     for net in BLACKHOLES:
         note = _BLACKHOLE_NOTES.get(net, "")
         must(f"failed to blackhole {net}{note}", "blackhole", net)
+        allowed.add(("blackhole", net, "", ""))
     must(f"failed to mark {LINK_LOCAL} unreachable", "unreachable", LINK_LOCAL)
-    must(f"failed to pin gateway {gw} on-link", f"{gw}/32", "dev", nic)
-    must(f"failed to restore default via {gw}", "default", "via", gw, "dev", nic)
+    allowed.add(("unreachable", LINK_LOCAL, "", ""))
+    must(
+        f"failed to blackhole {WIRESERVER} (Azure WireServer)", "blackhole", WIRESERVER
+    )
+    allowed.add(("blackhole", WIRESERVER, "", ""))
+    must(f"failed to pin gateway {gw} on-link", f"{gw}/32", "dev", nic, "src", src)
+    allowed.add(("unicast", f"{gw}/32", "", nic))
+    must(
+        f"failed to restore default via {gw}",
+        *("default", "via", gw, "dev", nic, "src", src),
+    )
+    allowed.add(("unicast", "0.0.0.0/0", gw, nic))
 
-    # DNS goes only to the pasta forwarder. Losing this loses DNS, not
-    # containment.
-    if ip("route", "replace", f"{JAIL_DNS_FWD}/32", "via", gw, quiet=True)[0] != 0:
+    # The forwarder and allow-ip /32s matter only for destinations inside
+    # the blackholed ranges; anywhere else the default route already
+    # reaches them. Losing one loses reachability, not containment.
+    # DNS goes only to the pasta forwarder.
+    fwd = (f"{JAIL_DNS_FWD}/32", "via", gw, "dev", nic, "src", src)
+    if ip("route", "replace", *fwd, quiet=True)[0] != 0:
         ops.stderr(
             "claude-sandbox: egress jail — could not route DNS forwarder"
             f" {JAIL_DNS_FWD}"
         )
+    else:
+        allowed.add(("unicast", f"{JAIL_DNS_FWD}/32", gw, nic))
     # allow-ip devices (EPICS IOC, PMAC). Fail soft: the blackhole holds.
+    # One address each: a prefix is narrowed to its first address, with a
+    # warning, rather than refused, since existing confs carry them.
     for aip in lines(env.get(ALLOW_IP, "")):
-        host = aip.rpartition("/")[0] if "/" in aip else aip
-        if ip("route", "replace", f"{host}/32", "via", gw, quiet=True)[0] != 0:
+        host, _, length = aip.partition("/")
+        if length and length != "32":
+            ops.stderr(
+                f"claude-sandbox: egress jail — allow-ip {aip}: only {host} is"
+                " routed (allow-ip takes single addresses)"
+            )
+        dev = (f"{host}/32", "via", gw, "dev", nic, "src", src)
+        if ip("route", "replace", *dev, quiet=True)[0] != 0:
             ops.stderr(f"claude-sandbox: egress jail — could not route allow-ip {aip}")
+        else:
+            allowed.add(("unicast", f"{host}/32", gw, nic))
+
+    # IPv6: pasta runs IPv4-only. Switch it off where /proc/sys can be
+    # written (not in a container, usually); else the read-back below must
+    # find nothing. No /proc/sys/net/ipv6 at all: a kernel booted with
+    # ipv6.disable=1, where `ip -6` fails and there is nothing to check.
+    v6_off = not ops.exists(IPV6_SYSCTLS) or all(
+        [ops.write(path, "1\n") for path in IPV6_OFF]
+    )
+
+    reads = [
+        ip("-4", "-o", "route", "show", "table", "all", quiet=True),
+        ip("-4", "rule", "show", quiet=True),
+        ip("-4", "-o", "addr", "show", quiet=True),
+        ip("route", "get", "1.1.1.1", quiet=True),
+        ip("-6", "-o", "addr", "show", quiet=True),
+        ip("-6", "-o", "route", "show", "table", "all", quiet=True),
+    ]
+    if any(rc != 0 for rc, _ in reads[:4]):
+        raise JailError("— could not read back the routes (fail-closed)")
+    (_, table), (_, rules), (_, addrs), (_, egress) = reads[:4]
+    check_routes(table, rules, addrs, allowed)
+    if route_field("src", egress) != src:
+        raise JailError(f"— egress does not leave from {src} (fail-closed)")
+    if not v6_off:
+        if any(rc != 0 for rc, _ in reads[4:]):
+            raise JailError("— could not read back the IPv6 state (fail-closed)")
+        check_ipv6(reads[4][1], reads[5][1])
 
 
 def _hold_with_relays(command: Sequence[str], env: Mapping[str, str], ops: Ops) -> int:

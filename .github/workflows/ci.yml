@@ -42,24 +42,8 @@ jobs:
       - name: Pre-create /run/secrets so bwrap can mount its tmpfs there
         run: sudo mkdir -p /run/secrets
 
-      # ubuntu-latest runners have $GITHUB_WORKSPACE living under
-      # $HOME=/home/runner. Anything that path-checks $HOME contains-X
-      # gets tripped by the workspace bind — re-home to a clean dir
-      # before invoking bwrap.
-      - name: Run bwrap_argv unit tests
-        run: |
-          export HOME=/tmp/sandbox-home
-          mkdir -p "$HOME/.claude" "$HOME/.cache"
-          CLAUDE_SANDBOX_SMOKE=1 bash tests/bwrap_argv.sh
-
       - name: Run Codex launcher lifecycle tests
         run: bash tests/codex_launch.sh
-
-      - name: Run shadow terminal wrapper tests
-        run: bash tests/shadow_launch.sh
-
-      - name: Run direct sandbox verification tests
-        run: bash tests/verify.sh
 
       # Which git ref `install` selects, and when it refuses to select one.
       # Hermetic — builds its own throwaway origin+clone with synthetic tags,
@@ -70,51 +54,33 @@ jobs:
       - name: Run install revision-selection tests
         run: sudo -E bash tests/install_ref.sh
 
+      # ubuntu-latest runners have $GITHUB_WORKSPACE living under
+      # $HOME=/home/runner. Anything that path-checks $HOME contains-X
+      # gets tripped by the workspace bind — re-home to a clean dir first.
+      # A smoke run starts the Python installer from the tree with the
+      # runner's python3.
       - name: Run install smoke test
         run: |
           export HOME=/tmp/sandbox-home
           mkdir -p "$HOME/.claude" "$HOME/.cache"
           CLAUDE_SANDBOX_SMOKE=1 sudo -E bash tests/smoke.sh
 
-      # The same suite against the opt-in Python installer (issue #72 phase
-      # 4). A smoke run starts it from the tree with the runner's python3.
-      - name: Run install smoke test (Python installer)
-        run: |
-          export HOME=/tmp/sandbox-home
-          mkdir -p "$HOME/.claude" "$HOME/.cache"
-          CLAUDE_SANDBOX_IMPL=python CLAUDE_SANDBOX_SMOKE=1 \
-            CLAUDE_SANDBOX_SMOKE_PYTHON="$(command -v python3)" sudo -E bash tests/smoke.sh
-
-      - name: Run Pi profile and configuration tests
-        run: bash tests/pi.sh
-
       - name: Compare container and image installation modes
-        run: |
-          bash tests/install_modes.sh
-          CLAUDE_SANDBOX_IMPL=python bash tests/install_modes.sh
-
-      # Launcher verbs and host-network default against a fake engine.
-      - name: Run container launcher tests
-        run: bash tests/launcher.sh
+        run: bash tests/install_modes.sh
 
       - name: Run user NVIDIA CDI setup tests
         run: bash tests/nvidia_cdi.sh
 
-      - name: Run doctor tests
-        run: bash tests/doctor.sh
-
       - name: Run container Git configuration tests
         run: bash tests/container_git.sh
 
-      - name: Run shadow Git configuration tests
-        run: bash tests/shadow_git.sh
-
   python:
     # The Python package (ADR 26): lint, type-check and test against the
-    # committed dev lockfile. pytest collects tests/python only; the bash
-    # suites above stay as they are. Run on the requires-python floor and on
-    # 3.13, the interpreter the sandbox will install: os.path.realpath and
-    # friends differ between the two, and the argv must not.
+    # committed dev lockfile. pytest collects tests/python only, and runs
+    # the launcher and doctor bash suites against the CLI
+    # (test_bash_suites.py). Run on the requires-python floor and on 3.13,
+    # the interpreter the sandbox installs: os.path.realpath and friends
+    # differ between the two, and the argv must not.
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -140,15 +106,14 @@ jobs:
         run: uv run pyright
 
       # Coverage settings, including fail_under = 95, live in pyproject.toml.
-      # The bash-vs-Python argv comparison (tests/python/test_parity.py)
-      # also runs here; it needs bash, coreutils and git, which the runner has.
       - name: pytest with coverage
         run: uv run pytest --cov
 
   wheel:
     # The PyPI front door (ADR 23): build the wheel from the root
-    # pyproject.toml, prove the entry point execs the bundled bash, and prove
-    # `install` refuses on a host (the runner is a VM, not a container).
+    # pyproject.toml, prove the entry point runs the Python CLI at the wheel
+    # version, and prove `install` refuses on a host (the runner is a VM, not
+    # a container).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -159,7 +124,7 @@ jobs:
       - name: Build the wheel
         run: uv build --wheel -o dist
 
-      - name: "Test: the entry point runs the bundled launcher at the wheel version"
+      - name: "Test: the entry point runs the CLI at the wheel version"
         run: |
           v="$(uvx --from dist/*.whl claude-sandbox --version)"
           echo "$v"
@@ -168,7 +133,7 @@ jobs:
           if [ "${{ github.ref_type }}" = tag ]; then
             test "$v" = "claude-sandbox ${{ github.ref_name }}"
           fi
-          uvx --from dist/*.whl claude-sandbox --help | grep -q "^Usage: claude-container"
+          uvx --from dist/*.whl claude-sandbox --help | grep -q "^usage: claude-sandbox"
 
       - name: "Test: install refuses outside a container"
         run: |
@@ -177,39 +142,41 @@ jobs:
           fi
           grep -q "refusing to install outside a container" err
 
+      # What `install` needs beyond the package: the bootstrap and the files
+      # the installer places.
       - name: "Test: the bundled tree is the checkout's"
         run: |
           mkdir -p x && (cd x && unzip -q ../dist/*.whl)
           diff -r x/claude_sandbox/tree/.devcontainer/claude-sandbox .devcontainer/claude-sandbox
           cmp x/claude_sandbox/tree/install install
-          cmp x/claude_sandbox/tree/container/claude-container container/claude-container
           cmp x/claude_sandbox/tree/.devcontainer/claude-sandbox.conf .devcontainer/claude-sandbox.conf
           cmp x/claude_sandbox/tree/.claude/statusline-command.sh .claude/statusline-command.sh
           diff -r x/claude_sandbox/tree/skills skills
 
   egress-jail:
-    # Exercises the egress-jail netns routing enforcement (ADR 0015 / issue #56),
-    # which the rest of CI never touches: smoke.sh stays outside the netns and
-    # verify-sandbox's jail checks need a live jailed `claude` (manual). The test
-    # drives the REAL netns_holder in a throwaway netns and asserts the blackhole
-    # allowlist + fail-closed behaviour. The test is CAPABILITY-GATED and skips
-    # cleanly where the caps are absent (a dev box, or an in-jail session where
-    # namespaces cannot nest) — but this job runs it with EGRESS_JAIL_REQUIRE=1,
-    # which turns any skip into a FAILURE. A green check here therefore means the
-    # assertions ran, not merely that nothing exploded. Kept a separate job (not
-    # folded into `test`) so the jail's enforcement coverage is legible on its own
-    # in the CI matrix.
+    # Exercises the egress jail's netns routing enforcement (ADR 0015 / issue
+    # #56) in real namespaces: the Python jail (src/claude_sandbox/jail.py)
+    # driven by tests/python/test_jail_netns.py through tests/jail_python.sh,
+    # which asserts the blackhole allowlist, DNS through the forwarder, the
+    # loopback relays, cleanup and Ctrl-C. The tests are CAPABILITY-GATED and
+    # skip where the caps are absent (a dev box, or an in-jail session where
+    # namespaces cannot nest) — but jail_python.sh sets JAIL_NETNS_REQUIRE=1,
+    # which turns any skip into a FAILURE. A green check here therefore means
+    # the assertions ran, not merely that nothing exploded. container.yml runs
+    # the same tests inside the image; this job gates the release on them.
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
 
       - name: Install netns deps (passt + iproute2)
         run: |
           sudo apt-get update -qq
-          # passt provides `pasta` (the live leg); iproute2 (`ip`) and
-          # util-linux (`unshare`) are normally preinstalled — install to be safe.
+          # passt provides `pasta` (the live leg); iproute2 (`ip`, `ss`) and
+          # util-linux (`unshare`, `script`) are normally preinstalled —
+          # install to be safe.
           sudo apt-get install -y -qq --no-install-recommends \
             passt iproute2 util-linux socat curl
 
@@ -217,30 +184,14 @@ jobs:
       # which blocks the `unshare -rn` the holder needs. Relax it (mirrors the
       # `test` job's bwrap workaround). `|| true` keeps a runner whose sysctl name
       # has changed from failing HERE — the next step is where it must surface,
-      # and under EGRESS_JAIL_REQUIRE=1 it will: no caps means a failed job, not
+      # and under JAIL_NETNS_REQUIRE=1 it will: no caps means a failed job, not
       # a silent skip. That is deliberate. If this starts failing because GitHub
       # changed the runner image, fix the workaround — do not relax the require.
       - name: Allow unprivileged userns on Ubuntu 24.04
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      - name: Run egress-jail netns enforcement test
-        env:
-          # A skip must FAIL here. The test self-gates on netns/CAP_NET_ADMIN
-          # (and pasta/tun for the live leg), which is right on a dev box or in
-          # an in-jail session where namespaces cannot nest — but in CI a skip
-          # is invisible: the check goes green either way and the only evidence
-          # is a log line nobody reads on a passing run. Since this file is the
-          # jail enforcement's ONLY automated coverage, a runner that quietly
-          # stopped granting the caps would retire every blackhole and
-          # fail-closed assertion with CI still green. EGRESS_JAIL_REQUIRE=1
-          # makes green mean "the assertions actually ran".
-          EGRESS_JAIL_REQUIRE: 1
-        run: bash tests/egress_jail.sh
-
-      - name: Run localhost model relay tests
-        env:
-          EGRESS_JAIL_REQUIRE: 1
-        run: bash tests/local_model.sh
+      - name: Run the egress jail and loopback relay tests in real namespaces
+        run: bash tests/jail_python.sh
 
   lint:
     runs-on: ubuntu-latest

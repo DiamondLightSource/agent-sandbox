@@ -6,7 +6,7 @@ Date: 2026-10-06
 
 ## Status
 
-Proposed
+Accepted. Implemented in 5.0.0 (2026-10-07).
 
 Builds on {ref}`ADR 9 <adr-shadow-on-path>` (the shadow on PATH, Invariant 1)
 and {ref}`ADR 26 <adr-python-implementation>` (the Python shadow). Applies to
@@ -84,7 +84,10 @@ new git hooks, while the session runs; warn in outer shells.
   first launch only records the baseline.
 - **With the jail off** the shadow execs `script(1)`, so a forked child
   watches instead. It leaves the terminal's session and stops within a
-  second of the launch ending.
+  second of the launch ending. When the shadow is PID 1 (the image's
+  default command) the orphaned watcher would be reparented to `script`
+  itself, so there `script` runs as a child and the watcher is a thread,
+  as with the jail on.
 - **Surfacing.** Each action is a line in `/run/claude-sandbox/alerts`
   (`/tmp/claude-sandbox/alerts` if `/run` cannot be written), which
   `bwrap.py` masks inside the jail. A root-owned

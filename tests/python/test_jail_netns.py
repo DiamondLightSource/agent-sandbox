@@ -4,12 +4,13 @@ Needs unprivileged user+net namespaces, /dev/net/tun, pasta, socat, ip and
 ss: run inside this repository's image, as tests/jail_python.sh does. Skips
 elsewhere, unless JAIL_NETNS_REQUIRE=1, which turns a skip into a failure.
 
-The assertions are those of tests/egress_jail.sh and tests/local_model.sh,
-ported to drive the Python jail directly, so each case can choose its own
-command and configuration. Each test runs a small driver as
-`python -I -m claude_sandbox._jail_driver COMMAND...` from a venv holding a
-copy of the package: the holder re-enters that same interpreter as
-`python -I -m claude_sandbox _jail_holder`, exactly as installed.
+The assertions are those of the bash egress-jail and local-model suites,
+which drove the bash shadow's holder; these drive the Python jail directly,
+so each case can choose its own command and configuration. Each test runs a
+small driver as `python -I -m claude_sandbox._jail_driver COMMAND...` from a
+venv holding a copy of the package: the holder re-enters that same
+interpreter as `python -I -m claude_sandbox _jail_holder`, exactly as
+installed.
 """
 
 import os
@@ -182,17 +183,32 @@ def clean() -> Iterator[None]:
     assert_clean()
 
 
-# --- egress_jail.sh: the routing allowlist ------------------------------------
+# --- the routing allowlist ------------------------------------------------------
 
 ROUTES_PROBE = r"""
 set -u
 ip -4 route show table all
+ip -4 -o route show table main | sed 's/^/MAIN:/'
+echo "EGRESSSRC:$(ip route get 1.1.1.1 | head -n1)"
+# The agent's own user namespace (bwrap's, nested in the holder's) cannot
+# change the jail's routes, even as its root: pasta set them once.
+echo "CHANGE:$(unshare -U -r ip route replace blackhole 1.1.1.1/32 2>&1; echo "rc=$?")"
+# And as the agent really runs, where bwrap is installed.
+if command -v bwrap >/dev/null; then
+    echo "BWRAP:$(bwrap --ro-bind / / --dev /dev --unshare-user-try --cap-drop ALL \
+        ip route replace blackhole 1.1.1.1/32 2>&1; echo "rc=$?")"
+fi
+ip -4 -o route show table main | sed 's/^/AFTER:/'
 echo "V6ROUTABLE:$(ip -6 addr show | awk '/inet6/{print $2}' \
     | grep -vE '^(::1/|fe80:)' | tr '\n' ' ')"
 gw="$(ip route show default | awk '{print $3; exit}')"
 echo "GW:$gw"
 echo "GWROUTE:$(ip route get "$gw" | head -n1)"
-for ip in 10.1.2.3 172.16.5.5 192.168.77.1 100.64.1.1 169.254.169.254; do
+for ip in 10.99.1.1 168.63.129.16 169.254.169.254; do
+    echo "ROUTEGET:$ip:$(ip route get "$ip" 2>&1 | head -n1)"
+done
+for ip in 10.1.2.3 172.16.5.5 192.168.77.1 100.64.1.1 169.254.169.254 \
+        168.63.129.16; do
     if timeout 3 bash -c "exec 3<>/dev/tcp/$ip/80" 2>/dev/null; then
         echo "REACHED:$ip"
     fi
@@ -203,42 +219,149 @@ echo "EGRESS:$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 20 \
 """
 
 
-def test_routes_are_locked_and_the_internet_is_reachable(python: str) -> None:
+def prefix(dst: str) -> str:
+    if dst == "default":
+        return "0.0.0.0/0"
+    return dst if "/" in dst else f"{dst}/32"
+
+
+def normal(route: str) -> str:
+    """An ``ip -o route`` line without what the allowlist does not compare:
+    proto, scope, src, metric and flags."""
+    words = route.split()
+    kind = [words.pop(0)] if words[0] in ("blackhole", "unreachable") else []
+    words[0] = prefix(words[0])
+    kept: list[str] = []
+    while words:
+        word = words.pop(0)
+        if word in ("proto", "scope", "src", "metric"):
+            words.pop(0)
+        elif word not in ("linkdown", "onlink"):
+            kept.append(word)
+    return " ".join(kind + kept)
+
+
+def outer_route(*args: str) -> bool:
+    """``ip route ARGS`` in this (the outer) namespace; False without the
+    capability to change its routes."""
+    return subprocess.run(["ip", "route", *args], capture_output=True).returncode == 0
+
+
+def outer_gateway() -> str:
+    out = subprocess.run(
+        ["ip", "route", "show", "default"], capture_output=True, text=True
+    ).stdout
+    return out.split()[2]
+
+
+@pytest.fixture
+def host_routes() -> Iterator[bool]:
+    """Routes a host often has beyond its subnet and default: a DHCP host
+    route to a cloud's metadata service and a VPN's internal subnet, each
+    via the gateway. pasta mirrors them into the jail, and each is more
+    specific than the jail's blackholes. Yields whether they could be added
+    (it takes CAP_NET_ADMIN here: root in the image, not a CI runner)."""
+    gw = outer_gateway()
+    extra = [("169.254.169.254/32", gw), ("10.99.0.0/16", gw)]
+    added = [net for net, via in extra if outer_route("add", net, "via", via)]
+    yield len(added) == len(extra)
+    for net in added:
+        outer_route("del", net)
+
+
+def test_routes_are_locked_and_the_internet_is_reachable(
+    python: str, host_routes: bool
+) -> None:
     done = run(python, ROUTES_PROBE, CLAUDE_SANDBOX_ALLOW_IP="203.0.113.7")
     assert done.returncode == 0, done.stderr
     out = done.stdout
     gw = re.search(r"^GW:(\S+)$", out, re.M)
     assert gw is not None, out
     gw_re = re.escape(gw.group(1))
-    for line in (
+    nic = re.search(rf"^default via {gw_re} dev (\S+)", out, re.M)
+    assert nic is not None, out
+    dev = nic.group(1)
+    # The main table is EXACTLY the allowlist: every connected subnet pasta
+    # mirrored from this container blackholed (but the gateway's own /32,
+    # a DHCP route on Azure), the fixed ranges, link-local and Azure's
+    # WireServer, then the gateway, the default, the forwarder and the
+    # allow-ip device. Nothing pasta mirrored survives.
+    mirrored = subprocess.run(
+        ["ip", "-o", "route", "show", "dev", dev, "scope", "link"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\n")
+    subnets = {line.split()[0] for line in mirrored if line.split()} - {gw.group(1)}
+    expected = {
+        *(f"blackhole {prefix(net)}" for net in subnets),
         "blackhole 10.0.0.0/8",
         "blackhole 172.16.0.0/12",
         "blackhole 192.168.0.0/16",
         "blackhole 100.64.0.0/10",
         "unreachable 169.254.0.0/16",
-    ):
-        assert re.search(rf"^{re.escape(line)}( |$)", out, re.M), out
-    nic = re.search(rf"^default via {gw_re} dev (\S+)", out, re.M)
-    assert nic is not None, out
-    # Every connected subnet pasta mirrored from this container is
-    # blackholed: each is more specific than the RFC1918 blackholes.
-    mirrored = subprocess.run(
-        ["ip", "-o", "route", "show", "dev", nic.group(1), "scope", "link"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split("\n")
-    for subnet in (line.split()[0] for line in mirrored if line.split()):
-        assert re.search(rf"^blackhole {re.escape(subnet)}( |$)", out, re.M), out
-    # The gateway stays routable, on-link, and only the forwarder and the
-    # allow-ip device are punched back through it.
-    assert re.search(rf"^{gw_re} dev {nic.group(1)}", out, re.M), out
+        "blackhole 168.63.129.16/32",
+        f"{gw.group(1)}/32 dev {dev}",
+        f"0.0.0.0/0 via {gw.group(1)} dev {dev}",
+        f"192.0.2.53/32 via {gw.group(1)} dev {dev}",
+        f"203.0.113.7/32 via {gw.group(1)} dev {dev}",
+    }
+    main = {normal(m) for m in re.findall(r"^MAIN:(.*)$", out, re.M)}
+    assert main == expected, out
+    src = re.search(r"^EGRESSSRC:.* src (\S+)", out, re.M)
+    assert src is not None, out
+    for probe in ("CHANGE", "BWRAP"):
+        change = re.search(rf"^{probe}:(.*)$", out, re.M)
+        if change is None and probe == "BWRAP":
+            continue  # no bwrap here (a CI runner)
+        assert change is not None and "Operation not permitted" in change.group(1)
+        assert "rc=0" not in change.group(1), out
+    # ... and the table is as it was.
+    after = {normal(m) for m in re.findall(r"^AFTER:(.*)$", out, re.M)}
+    assert after == expected, out
+    for target in ("10.99.1.1", "169.254.169.254", "168.63.129.16"):
+        got = re.search(rf"^ROUTEGET:{re.escape(target)}:(.*)$", out, re.M)
+        assert got is not None and " via " not in got.group(1), out
+    if host_routes:
+        assert "10.99.0.0/16" not in out and "169.254.169.254 via" not in out
+    # The gateway stays routable, on-link.
     assert re.search(rf"^GWROUTE:{gw_re} dev ", out, re.M), out
-    assert re.search(rf"^192\.0\.2\.53 via {gw_re} ", out, re.M), out
-    assert re.search(rf"^203\.0\.113\.7 via {gw_re} ", out, re.M), out
     assert re.search(r"^V6ROUTABLE: *$", out, re.M), out
     assert "REACHED:" not in out
     assert re.search(r"^EGRESS:[23]\d\d$", out, re.M), out
+
+
+def test_a_route_that_fails_keeps_the_agent_out(python: str, tmp_path: Path) -> None:
+    """Fail closed in real namespaces: `ip` refuses one blackhole, and the
+    command never runs. The tools come from the fixed tool path, so a
+    failing wrapper is bind-mounted over the real `ip` in a user and mount
+    namespace of the test's own, where the holder nests its namespaces."""
+    real = next(
+        f"{d}/ip"
+        for d in ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+        if os.access(f"{d}/ip", os.X_OK)
+    )
+    shutil.copy(real, tmp_path / "real-ip")
+    wrapper = tmp_path / "ip"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *"route replace blackhole 10.0.0.0/8"*) exit 2 ;; esac\n'
+        f'exec {tmp_path}/real-ip "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    driver = driver_argv(python, "bash", "-c", "echo PROBE-RAN")
+    script = f'mount --bind {wrapper} {real} && exec "$@"'
+    done = subprocess.run(
+        ["unshare", "-r", "-m", "sh", "-c", script, "sh", *driver],
+        env=ENV,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "failed to blackhole 10.0.0.0/8 (fail-closed)" in done.stderr
+    assert "PROBE-RAN" not in done.stdout
 
 
 def test_dns_goes_through_the_forwarder(python: str) -> None:
@@ -252,7 +375,7 @@ def test_dns_goes_through_the_forwarder(python: str) -> None:
     assert re.search(r"example\.com", done.stdout), done.stdout
 
 
-# --- local_model.sh: the loopback relays ---------------------------------------
+# --- the loopback relays --------------------------------------------------------
 
 RELAY_PROBE = r"""
 set -euo pipefail

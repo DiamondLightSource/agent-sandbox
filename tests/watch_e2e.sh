@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# The PATH watcher of the opt-in Python shadow, end to end (ADR 27):
+# The shadow's PATH watcher, end to end (ADR 27):
 # quarantine executables a session adds ahead of system commands on PATH,
 # and new git hooks, while the session runs; warn in outer shells.
 #
-# Run it INSIDE this repository's image with the Python shadow installed
-# (CLAUDE_SANDBOX_IMPL=python), started as .github/workflows/container.yml
-# starts it. The image's PATH starts with the project venv's bin, under the
+# Run it INSIDE this repository's image, started as
+# .github/workflows/container.yml starts it. The image's PATH starts with the project venv's bin, under the
 # conf's `allow-write = /cache`. A probe stands in for the real claude
 # (restored on exit): from inside the jail it leaves a `git` in the venv's
 # bin and a pre-push hook in the workspace's repository, and waits while

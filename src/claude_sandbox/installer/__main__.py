@@ -3,8 +3,8 @@
 What ``install.sh``'s bootstrap hands over to, from the provisioned venv.
 ``--container-start`` and ``--probe-userns`` are the published image's
 entrypoint's share of the install (the steps an image build skips).
-The environment carries the same settings ``install.sh`` reads
-(``INSTALL_PREFIX``, ``CLAUDE_SANDBOX_IMPL``, ``WITH_CODEX``, ...);
+The environment carries the installer's settings (``INSTALL_PREFIX``,
+``WITH_CODEX``, ..., listed in ``install.sh``);
 ``TREE`` is the clone, or the wheel's bundled tree, being installed.
 """
 

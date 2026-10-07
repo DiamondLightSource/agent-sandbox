@@ -48,7 +48,7 @@ The commonest route is PATH: the container's PATH starts with the project
 venv's `bin`, which the session can write, so an executable left there
 shadows a system command, or `claude` itself, in every outer shell. Git hooks
 in the workspace run on your next `git commit` or `git push` and never show
-in a diff. The Python shadow quarantines both while the session runs and
+in a diff. The wrapper quarantines both while the session runs and
 warns at your shell prompt; `claude-sandbox alerts` lists what it did. A
 venv's `python` links to an interpreter the session cannot write are left
 alone; where uv keeps its Pythons in a writable place (its default,
@@ -85,9 +85,16 @@ permissions and the no-push setup.
 ## The egress jail and the native sandbox
 
 The default jail uses an IPv4-only network namespace. It blocks RFC1918,
-CGNAT (`100.64/10`), connected subnets and link-local addresses, including the
-usual cloud metadata address. The gateway, DNS resolvers and configured
-`allow-ip` destinations remain reachable. Explicit loopback relays expose the
+CGNAT (`100.64/10`), connected subnets and link-local addresses, including
+the usual cloud metadata addresses: `169.254.0.0/16` and Azure's
+`168.63.129.16`. The gateway, DNS resolvers and configured `allow-ip`
+destinations remain reachable. The jail does not add these rules on top of
+the routes it inherits: pasta copies the outer network's routes into the
+namespace, including more specific ones (a DHCP route to a metadata
+service, a VPN's internal subnets) that would otherwise win over a
+blackhole. The jail empties its route table, builds exactly the allowlist,
+and reads every table back before the agent starts; anything else refuses
+the launch. Explicit loopback relays expose the
 whole service on their selected port.
 
 This limits lateral movement to internal hosts and lab devices. It does not
@@ -96,7 +103,8 @@ If that is required, apply an egress policy at the container boundary.
 Claude Code's native domain controls are a separate layer; they do not replace
 this sandbox's credential isolation or IP-based lab-device access rules.
 
-The wrapper refuses to launch if `/dev/net/tun`, `pasta` or `unshare` is missing.
+The wrapper refuses to launch if `/dev/net/tun`, `pasta`, `unshare` or `ip` is
+missing, and if `socat` or `ss` is missing when loopback relays are configured.
 Setting `CLAUDE_SANDBOX_EGRESS_JAIL=0` disables the network jail and restores
 access through the outer container's network. Ordinary container shells are
 also outside this jail. See [network configuration](../how-to/network-egress-jail.md).

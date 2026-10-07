@@ -1,10 +1,11 @@
-"""tests/launcher.sh and tests/doctor.sh, unchanged, against the Python CLI.
+"""tests/launcher.sh and tests/doctor.sh: black-box suites of the CLI.
 
 Each suite drives a bash file by path; here that file is a two-line
 wrapper that runs ``python -I -m claude_sandbox`` (the suites run their
 target under ``env -i``, so the wrapper carries what it needs). The
 launcher suite reads the launcher's version from a ``VERSION=`` line, so
-the wrapper has one, holding the release tag the Python reports.
+the wrapper has one, holding the release tag the Python reports. The suites
+refuse to run without the wrapper: this is how CI runs them.
 """
 
 import os
@@ -28,7 +29,7 @@ TESTS = Path(__file__).resolve().parents[1]
         ("doctor.sh", "CLAUDE_SANDBOX_TEST_CLI", "CLAUDE_SANDBOX_CONTEXT=container "),
     ],
 )
-def test_bash_suite_passes_against_python(
+def test_bash_suite_passes(
     tmp_path: Path, suite: str, variable: str, seam: str
 ) -> None:
     for tool in ("jq", "script", "cksum"):

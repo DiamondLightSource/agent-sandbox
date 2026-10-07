@@ -265,20 +265,17 @@ else
 fi
 
 # 18 — config read from /etc, not the rw workspace. Inspect the installed
-# shadow (visible ro via --ro-bind / /): it must pin CONFIG_PATH to /etc
-# and feed it to parse_config, with no parse_config reading .devcontainer.
-# The opt-in Python shadow (issue #72 phase 2) is a shim that must exec the
-# root-owned interpreter with -I; the same pins are then read from the
-# package in that interpreter's venv.
+# shadow (visible ro via --ro-bind / /): a shim that must exec the
+# root-owned interpreter with -I. The package in that interpreter's venv
+# must pin CONFIG_PATH to /etc and feed it to parse_config, with no
+# parse_config reading .devcontainer.
 check_18() {
     local shadow pkg
     shadow="$(command -v claude || true)"
     [ -n "$shadow" ] || { EXTRA_DETAIL="no claude shadow found on PATH"; return 1; }
     if ! grep -qxF 'exec /usr/libexec/claude-sandbox/venv/bin/python -I -m claude_sandbox _shadow "${0##*/}" -- "$@"' "$shadow"; then
-        grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
-            && grep -qF 'parse_config "$CONFIG_PATH"' "$shadow" \
-            && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
-        return
+        EXTRA_DETAIL="$shadow is not the shim that runs the root-owned interpreter with -I"
+        return 1
     fi
     for pkg in /usr/libexec/claude-sandbox/venv/lib/python3*/site-packages/claude_sandbox; do
         [ -f "$pkg/shadow.py" ] || continue
@@ -295,7 +292,7 @@ EXTRA_DETAIL=""
 if check_18; then
     result 18 "config read from /etc/claude-sandbox.conf (no \$PWD/.devcontainer read)" 0
 else
-    result 18 "config read from /etc/claude-sandbox.conf (no \$PWD/.devcontainer read)" 1 "${EXTRA_DETAIL:-shadow does not pin CONFIG_PATH to /etc}"
+    result 18 "config read from /etc/claude-sandbox.conf (no \$PWD/.devcontainer read)" 1 "${EXTRA_DETAIL:-the shadow does not pin CONFIG_PATH to /etc}"
 fi
 
 # 19 — egress jail active (or deliberately disabled). Blackhole routes
@@ -399,7 +396,7 @@ fi
 # is not the launching one); each name in each must be a read-only mount
 # point (so it cannot be replaced, renamed or removed) that is not
 # executable. Unset, there is nothing to check: no writable directory
-# precedes the shadow, or the shadow does not guard them.
+# precedes the shadow.
 check_22() {
     local dir name path dirs=()
     IFS=: read -r -a dirs <<<"$CLAUDE_SANDBOX_ENTRY_GUARD"

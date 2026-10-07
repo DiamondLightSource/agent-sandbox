@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# postCreate: run the bash installer. Idempotent so devcontainer
+# postCreate: run the installer. Idempotent so devcontainer
 # rebuilds re-establish the shadow without re-downloading Claude.
 #
 # --here is required: this is the sandbox's OWN devcontainer, so the

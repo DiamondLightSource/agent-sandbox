@@ -1,9 +1,8 @@
-"""The installer's steps, ported from ``.devcontainer/claude-sandbox/install.sh``.
+"""The installer's steps (ADR 26), which the bash ``install.sh`` once held.
 
 Each ``plan_*`` function reads the filesystem and returns the actions that
-bring it to the installed state; it writes nothing. The bash function each
-one replaces is named in its docstring, and ``tests/python`` runs both on
-the same fixtures and compares the trees they leave.
+bring it to the installed state; it writes nothing. Its docstring names the
+bash function it replaced, the name the install summary and the docs use.
 
 The steps that run tools rather than write files the installer owns (the
 probes, apt and the three agent downloads) are in ``system``; ``install``
@@ -60,18 +59,11 @@ _STATUSLINE = ".claude/statusline-command.sh"
 
 # (source relative to the tree, destination, mode). The shadow first, under
 # all three names: it must own them on PATH before any vendor installer runs
-# (Invariant 1). Then the helper CLI, as main() places them.
+# (Invariant 1). Then the helper CLI. Both are three-line shims that run the
+# Python ones from the root-owned venv with -I.
 SHADOW_NAMES = ("/usr/local/bin/claude", "/usr/local/bin/codex", "/usr/local/bin/pi")
-# Per CLAUDE_SANDBOX_IMPL: the shadow and the helper CLI, as bash, or as the
-# shims that run the Python ones from the root-owned venv with -I.
-SHADOW_SOURCE = {
-    "bash": f"{_SCRIPTS}/claude-shadow",
-    "python": f"{_SCRIPTS}/claude-shim",
-}
-CLI_SOURCE = {
-    "bash": f"{_SCRIPTS}/claude-sandbox",
-    "python": f"{_SCRIPTS}/claude-sandbox-shim",
-}
+SHADOW_SOURCE = f"{_SCRIPTS}/claude-shim"
+CLI_SOURCE = f"{_SCRIPTS}/claude-sandbox-shim"
 HELPER_FILES = (
     (f"{_SCRIPTS}/pi-run", f"{LIBEXEC}/pi-run", 0o755),
     (f"{_SCRIPTS}/pi-system.md", f"{LIBEXEC}/pi-system.md", 0o644),
@@ -125,15 +117,13 @@ class Layout:
 class Options:
     """``CLAUDE_SANDBOX_VERSION`` (empty: ``git describe``, when stamped),
     ``CLAUDE_SANDBOX_INSTALLER``,
-    ``STATUS=1``, ``CLAUDE_SANDBOX_IMPL`` (which shadow: the bash one, or the
-    shim that runs the Python one), ``CLAUDE_SANDBOX_SMOKE``, ``WITH_CODEX``,
+    ``STATUS=1``, ``CLAUDE_SANDBOX_SMOKE``, ``WITH_CODEX``,
     ``WITH_PI`` and ``PI_VERSION``; ``image_build`` is ``--image-build``."""
 
     version: str
     installer: str = ""
     force_statusline: bool = False
     image_build: bool = False
-    impl: str = "bash"
     smoke: bool = False
     with_codex: bool = True
     with_pi: bool = True
@@ -166,18 +156,19 @@ def from_env(source: Path, env: Mapping[str, str]) -> tuple[Layout, Options]:
         home=home,
         shared=env.get("CLAUDE_SHARED_CONFIG") or SHARED_CONFIG,
     )
-    impl = env.get("CLAUDE_SANDBOX_IMPL") or "bash"
-    if impl not in ("bash", "python"):
+    # 5.0 is Python-only; install.sh refuses first, this is for any other
+    # caller of the installer.
+    impl = env.get("CLAUDE_SANDBOX_IMPL") or "python"
+    if impl != "python":
         raise InstallError(
-            "claude-sandbox: CLAUDE_SANDBOX_IMPL must be bash or python,"
-            f" got '{impl}'.",
+            "claude-sandbox: CLAUDE_SANDBOX_IMPL is no longer supported"
+            f" (5.0 is Python-only); unset it, got '{impl}'.",
             2,
         )
     options = Options(
         version=env.get("CLAUDE_SANDBOX_VERSION", ""),
         installer=env.get("CLAUDE_SANDBOX_INSTALLER", ""),
         force_statusline=env.get("STATUS", "0") == "1",
-        impl=impl,
         smoke=env.get("CLAUDE_SANDBOX_SMOKE", "0") == "1",
         with_codex=env.get("WITH_CODEX", "1") == "1",
         with_pi=env.get("WITH_PI", "1") == "1",
@@ -224,11 +215,10 @@ def _place_all(layout: Layout, files: tuple[tuple[str, str, int], ...]) -> list[
 
 
 def plan_shadow(layout: Layout, options: Options) -> list[Action]:
-    """main()'s ``install_file`` calls: the shadow (the bash one, or the shim
-    that runs the Python one), ``pi-run``, the Pi note and the helper CLI."""
-    src = SHADOW_SOURCE[options.impl]
-    shadow = tuple((src, name, 0o755) for name in SHADOW_NAMES)
-    cli = ((CLI_SOURCE[options.impl], "/usr/local/bin/claude-sandbox", 0o755),)
+    """main()'s ``install_file`` calls: the shadow shim, ``pi-run``, the Pi
+    note and the helper CLI's shim."""
+    shadow = tuple((SHADOW_SOURCE, name, 0o755) for name in SHADOW_NAMES)
+    cli = ((CLI_SOURCE, "/usr/local/bin/claude-sandbox", 0o755),)
     # The commands on PATH are replaced as install(1) replaces them, unlink
     # then create, not by rename. In GitHub's rootless podman, renaming over
     # an image-layer file in /usr/local/bin (a directory several layers
@@ -245,7 +235,7 @@ def plan_shadow(layout: Layout, options: Options) -> list[Action]:
 def check_shadow(layout: Layout, options: Options) -> None:
     """Refuse to go on unless every shadow name holds the shadow (Invariant
     1): a missing or different file would let a vendor binary run unwrapped."""
-    data = _source(layout, SHADOW_SOURCE[options.impl])
+    data = _source(layout, SHADOW_SOURCE)
     for name in SHADOW_NAMES:
         if _read(layout.system(name)) != data:
             raise InstallError(
@@ -276,11 +266,11 @@ SHELL_RCS = ("/etc/bash.bashrc", "/etc/zsh/zshrc")
 
 
 def plan_alerts_hook(layout: Layout, options: Options) -> list[Action]:
-    """``alerts_hook`` (ADR 27): with the Python shadow, every outer bash and
-    zsh warns at the prompt when the PATH watcher has quarantined something.
-    The hook goes in /etc/profile.d and is sourced from the system rc files
-    between markers; without it, the block and the hook are removed. An rc
-    file that is a symlink is left alone (the bash edits through it)."""
+    """``alerts_hook`` (ADR 27): every outer bash and zsh warns at the prompt
+    when the PATH watcher has quarantined something. The hook goes in
+    /etc/profile.d and is sourced from the system rc files between markers,
+    replacing any earlier block. An rc file that is a symlink is left
+    alone."""
     actions: list[Action] = []
     block = f"{ALERTS_BEGIN}\n[ -r {ALERTS_HOOK} ] && . {ALERTS_HOOK}\n{ALERTS_END}\n"
     for rc in SHELL_RCS:
@@ -303,17 +293,14 @@ def plan_alerts_hook(layout: Layout, options: Options) -> list[Action]:
                 else:
                     kept.append(line)
             lines = kept
-        text = "".join(lines) + (block if options.impl == "python" else "")
+        text = "".join(lines) + block
         new = text.encode(errors="surrogateescape")
         if new != data:
             st = path.stat()
             mode, owner = st.st_mode & 0o7777, (st.st_uid, st.st_gid)
             actions.append(Write(path, new, mode, owner))
-    hook = layout.system(ALERTS_HOOK)
-    if options.impl == "python":
-        source = _source(layout, f"{_SCRIPTS}/alerts-prompt.sh")
-        return actions + _place(hook, source, 0o644, layout.owner)
-    return actions + ([Remove(hook)] if os.path.lexists(hook) else [])
+    source = _source(layout, f"{_SCRIPTS}/alerts-prompt.sh")
+    return actions + _place(layout.system(ALERTS_HOOK), source, 0o644, layout.owner)
 
 
 def plan_conf(layout: Layout, options: Options) -> list[Action]:
@@ -398,7 +385,7 @@ def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
     """``wire_managed_settings``: disable Claude's updater in the managed
     policy (ADR 13), keeping every other key and the administrator's hooks.
     A file that is not a JSON object is left alone with a warning, never a
-    failed install. (The bash aborts on JSON that is not an object.) When
+    failed install. When
     this warns the updater is not disabled, and an install summary must
     not say it is."""
     path = layout.system(MANAGED_SETTINGS)

@@ -1,12 +1,12 @@
 """The host-global ``/etc/claude-sandbox.conf`` and the port checks.
 
-Ported from ``parse_config``, ``resolve_workspace_root`` and the local-model
-and callback-port helpers in ``.devcontainer/claude-sandbox/claude-shadow``.
-The conf lives at /etc (placed by install.sh), NOT inside the rw-bound
+Once ``parse_config``, ``resolve_workspace_root`` and the local-model and
+callback-port helpers in the bash shadow that 5.0 replaced (ADR 26).
+The conf lives at /etc (placed by the installer), NOT inside the rw-bound
 workspace, so a compromised session cannot rewrite it to widen the next
 launch's binds.
 
-The bash applies the conf by exporting ``CLAUDE_SANDBOX_*`` variables, with
+The bash applied the conf by exporting ``CLAUDE_SANDBOX_*`` variables, with
 any value already in the environment winning. ``parse_config`` keeps that
 model: it returns the merged environment, and ``Config.from_env`` reads the
 knobs out of it. The argv builder reads the rest of that same environment.
@@ -164,13 +164,12 @@ def lines(text: str) -> list[str]:
 def words(text: str) -> list[str]:
     """The words of a comma-, space-, tab- or newline-separated list.
 
-    Deliberately NOT what the bash does. The bash splits these lists by
-    leaving the expansion unquoted, which also runs pathname expansion on
+    Deliberately NOT what the bash did. The bash split these lists by
+    leaving the expansion unquoted, which also ran pathname expansion on
     each word against the current directory: the workspace, writable from
     inside the jail. A session could then plant files that steer the next
     launch's pass-env names or relay ports, which is the attack Invariant 4
-    keeps the conf out of the workspace to prevent. This splits only. The
-    harness lists it as a known divergence until the bash is fixed.
+    keeps the conf out of the workspace to prevent. This splits only.
     """
     return [word for word in re.split(r"[, \t\n]+", text) if word]
 
