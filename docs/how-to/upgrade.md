@@ -62,7 +62,13 @@ Release 5.0.0 replaces the Bash implementation with a Python one
 devcontainer the installer also places a pinned Python interpreter, about
 55 MB, under `/usr/libexec/claude-sandbox/`. One helper behaves
 differently: `gh-auth` and `glab-auth` now refuse inside an agent session,
-as `update` does. Run them from the host or a container terminal.
+as `update` does. Run them from the host or a container terminal. A conf
+`allow-write` line must be an absolute path: a relative one now refuses
+the launch instead of being skipped or resolved against the workspace.
+
+`CLAUDE_SANDBOX_IMPL`, which opted in to the Python implementation before
+5.0, is no longer used: unset or `python` installs as usual, and
+`bash` (or any other value) refuses. Remove it from your `postCreate`.
 
 The Python wrapper also adds the entry-point guard and the PATH watcher
 ({ref}`ADR 27 <adr-outer-path-guard>`): an executable a session leaves ahead
