@@ -254,6 +254,28 @@ def resolve_unredirected(path: str, roots: Sequence[str], probe: Probe) -> str |
     return resolved
 
 
+def _descents(rel: str) -> list[str]:
+    """``a``, ``a/b``, ``a/b/c`` for ``rel`` = ``a/b/c``."""
+    parts = rel.split("/")
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+# The argv operations that mount something, and where their destination is.
+_MOUNT_OPS = {
+    **dict.fromkeys(("--bind", "--ro-bind", "--dev-bind", "--bind-try"), 2),
+    **dict.fromkeys(("--tmpfs", "--dev"), 1),
+}
+
+
+def _mount_points(argv: Sequence[str]) -> list[str]:
+    """Where each mount in ``argv`` so far lands, in the jail."""
+    return [
+        argv[i + _MOUNT_OPS[op]]
+        for i, op in enumerate(argv)
+        if op in _MOUNT_OPS and i + _MOUNT_OPS[op] < len(argv)
+    ]
+
+
 class Built(NamedTuple):
     """The bwrap argv, and what it lets the jail write."""
 
@@ -469,13 +491,22 @@ def bwrap_build(
 
     # uv's Python store, read-only (ADR 27): a venv the session makes then
     # links to an interpreter it cannot write, which the PATH watcher leaves
-    # alone. Only a store that exists at launch, lies in a read-write bind
-    # and holds none: uv in the jail cannot install a Python there (EROFS),
-    # and an operator's allow-write of the store itself stands. Resolved
-    # here, outside the jail, from the launch environment; a link (or a
-    # store) a session could have planted on the way skips it, and the
-    # watcher judges its links as before. Bound wherever the jail sees it,
-    # through each read-write bind that holds it, after all of them.
+    # alone. Unless the conf says `uv-python-store = writable`. Only a store
+    # that exists at launch and lies in a read-write bind: uv in the jail
+    # cannot install a Python there (EROFS). Resolved here, outside the
+    # jail, from the launch environment; a link (or `.`, `..`) met in a
+    # directory the jail can write skips it, and the watcher then judges its
+    # links as before.
+    #
+    # Bound wherever the jail sees it, through each read-write bind that
+    # holds it, after all of them. Each directory between that bind and the
+    # store is first bound read-write over itself: a mount point cannot be
+    # renamed or removed (EBUSY), so the session cannot move the store's
+    # parent aside and put a store of its own at the path the watcher
+    # trusts. Skipped when any other mount lies at or under that chain in
+    # the jail (a mask, or an allow-write inside it), which binding the
+    # chain would cover, or when a read-write bind lies in the store: an
+    # operator's allow-write of the store stands.
     mounts: list[tuple[str, str]] = []  # (where the jail sees it, resolved)
     for root in writable:
         try:
@@ -484,24 +515,32 @@ def bwrap_build(
             continue
     roots = [real for _, real in mounts]
     readonly: list[str] = []
-    for path in uv_python_stores(env, home):
+    stores = [] if config.uv_python_store_writable else uv_python_stores(env, home)
+    for path in stores:
         store = resolve_unredirected(path, roots, probe)
+        if store is None or store in readonly or not probe.is_dir(store):
+            continue
+        # (source, where the jail sees it) for each directory of the chain
+        # from below a read-write bind down to the store, per bind.
+        chain = [
+            (os.path.join(real, sub), os.path.join(where, sub))
+            for where, real in mounts
+            if inside(store, [real]) and store != real
+            for sub in _descents(os.path.relpath(store, real))
+        ]
         if (
-            store is None
-            or store in readonly
-            or not probe.is_dir(store)
-            or not inside(store, roots)
+            not chain
+            or any(
+                inside(point, [jailed for _, jailed in chain])
+                for point in _mount_points(argv)
+            )
             or any(inside(root, [store]) for root in roots)
         ):
             continue
         readonly.append(store)
-        aliases = [
-            os.path.join(where, os.path.relpath(store, real))
-            for where, real in mounts
-            if inside(store, [real])
-        ]
-        for alias in dict.fromkeys(aliases):
-            argv += ["--ro-bind", store, alias]
+        for source, jailed in dict.fromkeys(chain):
+            flag = "--ro-bind" if source == store else "--bind"
+            argv += [flag, source, jailed]
     jail_writes = Writable(roots, readonly)
 
     # Entry-point guard. Protect the sandbox's entry-point names (Invariant

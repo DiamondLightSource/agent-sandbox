@@ -19,9 +19,12 @@ venv_bin="$(readlink -f "$(dirname "$(command -v python)")")"
 alerts=/run/claude-sandbox/alerts
 work="$(mktemp -d /work/watch.XXXXXX)"
 saved="$(mktemp -d)"
+py3_was="$(readlink "$venv_bin/python3" || true)"
+uv_made=()  # what the uv store check creates, removed on exit
 cleanup() {
     [ -e "$saved/real" ] && mv -f "$saved/real" "$real"
-    rm -rf "$saved" "$work" "$venv_bin/git"
+    rm -rf "$saved" "$work" "$venv_bin/git" "${uv_made[@]}"
+    if [ -n "$py3_was" ]; then ln -sfn "$py3_was" "$venv_bin/python3"; fi
 }
 trap cleanup EXIT
 
@@ -130,3 +133,79 @@ grep -qE "^  ok +entry points " <<< "$report" || fail "doctor: $report"
 "${cli[@]}" alerts --clear
 [ -z "$("${cli[@]}" alerts)" ] || fail "claude-sandbox alerts --clear left alerts"
 pass "claude-sandbox alerts lists them and --clear empties the list; doctor reports them"
+
+# uv's Python store (ADR 27), as a guest devcontainer has it: under the
+# read-write ~/.local/share. bwrap.py binds it read-only and pins the
+# directory between (~/.local/share/uv) as a mount point, so a session can
+# neither write the store nor move its parent aside and put its own store at
+# the path the watcher trusts. A venv link into the store stays; a link to
+# an interpreter the session wrote is quarantined. A system python3 later on
+# PATH makes the venv's python3 a shadow.
+share=/root/.local/share
+store="$share/uv/python"
+[ ! -e "$share/uv" ] || fail "$share/uv exists before the test"
+[ ! -e /usr/local/bin/python3 ] || fail "/usr/local/bin/python3 exists before the test"
+uv_made+=("$share/uv" /usr/local/bin/python3)
+mkdir -p "$store/cpython-3.13-test/bin"
+printf '#!/bin/sh\necho store python\n' > "$store/cpython-3.13-test/bin/python3.13"
+chmod 755 "$store/cpython-3.13-test/bin/python3.13"
+ln -s "$(readlink -f /usr/libexec/claude-sandbox/venv/bin/python)" /usr/local/bin/python3
+cat > "$real" <<EOF
+#!/bin/bash
+# Inside the jail. Each attempt must fail; one that works says ESCAPED.
+here="\$PWD"
+until_file() { for _ in \$(seq 400); do [ -e "\$1" ] && return 0; sleep 0.05; done; return 1; }
+{
+    mv $share/uv $share/uv.moved && echo "ESCAPED: moved the parent"
+    mv $store $share/python.moved && echo "ESCAPED: moved the store"
+    rm -rf $share/uv
+    [ -x $store/cpython-3.13-test/bin/python3.13 ] || echo "ESCAPED: removed the store"
+    touch $store/x && echo "ESCAPED: wrote the store"
+} > "\$here/uv-escapes" 2>&1
+ln -sfn $store/cpython-3.13-test/bin/python3.13 "$venv_bin/python3"
+touch "\$here/linked-store"
+until_file "\$here/go-evil"
+mkdir -p $share/evil/bin
+printf '#!/bin/sh\necho evil\n' > $share/evil/bin/python3.13
+chmod 755 $share/evil/bin/python3.13
+ln -sfn $share/evil/bin/python3.13 "$venv_bin/python3"
+touch "\$here/linked-evil"
+until_file "\$here/go-exit"
+rm -rf $share/evil
+EOF
+rm -f go-exit
+{ : > "$alerts"; } 2>/dev/null || true
+claude < /dev/null > session.out 2>&1 &
+pid=$!
+wait_for 30 exists linked-store > /dev/null || fail "uv store: the probe never linked: $(cat session.out)"
+! grep -q ESCAPED uv-escapes || fail "uv store: $(cat uv-escapes)"
+grep -q "cannot move '$share/uv'.*Device or resource busy" uv-escapes \
+    || fail "uv store: moving the parent did not fail with EBUSY: $(cat uv-escapes)"
+grep -q "cannot touch '$store/x': Read-only file system" uv-escapes \
+    || fail "uv store: writing it did not fail with EROFS: $(cat uv-escapes)"
+pass "uv store: inside the jail its parent cannot be moved (EBUSY), nor it written (EROFS), moved or removed"
+sleep 1.5  # more than a watcher tick
+[ "$(readlink "$venv_bin/python3")" = "$store/cpython-3.13-test/bin/python3.13" ] \
+    || fail "uv store: the venv's link into the store was removed: $(cat "$alerts")"
+pass "uv store: a venv python3 linked into the read-only store stays"
+touch go-evil
+wait_for 30 exists linked-evil > /dev/null || fail "uv store: the probe never linked the other python"
+wait_for 2 sh -c "[ ! -L '$venv_bin/python3' ]" > /dev/null \
+    || fail "uv store: a link to a python the session wrote stays"
+grep -qF "removed the link $venv_bin/python3 -> $share/evil/bin/python3.13" "$alerts" \
+    || fail "uv store: no alert: $(cat "$alerts")"
+pass "uv store: a venv python3 linked to a python the session wrote is quarantined"
+touch go-exit
+wait "$pid" || fail "uv store: the session failed: $(cat session.out)"
+[ -x "$store/cpython-3.13-test/bin/python3.13" ] && [ ! -e "$share/uv.moved" ] \
+    || fail "uv store: the store changed outside"
+
+# `uv-python-store = writable` (here through its variable): no bind.
+cat > "$real" <<EOF
+#!/bin/bash
+touch $store/x
+EOF
+CLAUDE_SANDBOX_UV_PYTHON_STORE=writable claude < /dev/null > session.out 2>&1 \
+    || fail "uv store: the writable session failed: $(cat session.out)"
+[ -e "$store/x" ] || fail "uv store: uv-python-store = writable left it read-only"
+pass "uv store: uv-python-store = writable leaves it writable"

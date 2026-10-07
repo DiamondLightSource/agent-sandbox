@@ -65,6 +65,8 @@ def knobs(conf: str | None, env: dict[str, str], tmp_path: Path) -> dict[str, st
         ("egress-jail = 0\n", {}, {"EGRESS_JAIL": "0"}),
         ("egress-jail\n", {f"{P}EGRESS_JAIL": "0"}, {"EGRESS_JAIL": "0"}),
         ("allow-ip = 172.23.1.2\n", {}, {"ALLOW_IP": "172.23.1.2"}),
+        ("uv-python-store = writable\n", {}, {"UV_PYTHON_STORE": "writable"}),
+        ("uv-python-store\n", {}, {}),  # a bare key changes nothing
         (
             "allow-ip = 172.23.1.2\nallow-ip = 10.0.5.6\n",
             {},

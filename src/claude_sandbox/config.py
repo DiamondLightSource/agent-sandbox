@@ -34,6 +34,7 @@ ALLOW_DEVICES = "CLAUDE_SANDBOX_ALLOW_DEVICES"
 ALLOW_WRITE = "CLAUDE_SANDBOX_ALLOW_WRITE"
 ALLOW_IP = "CLAUDE_SANDBOX_ALLOW_IP"
 PASS_ENV = "CLAUDE_SANDBOX_PASS_ENV"
+UV_PYTHON_STORE = "CLAUDE_SANDBOX_UV_PYTHON_STORE"
 
 # Keys whose value fills the variable only when it is unset or empty, and
 # the value a bare key (no `= value`) stands for. `no-forge` takes no value:
@@ -48,6 +49,9 @@ _DEFAULTS: Mapping[str, tuple[str, str | None]] = {
     # 0020). 0 drops it and Pi's discovery.
     "local-model-port": (LOCAL_MODEL_PORT, "1920"),
     "gpu": (GPU, "1"),
+    # uv's Python store is read-only in the jail (ADR 27); `writable` leaves
+    # it writable, for projects that install Pythons in a session.
+    "uv-python-store": (UV_PYTHON_STORE, None),
 }
 
 # Repeatable keys, accumulated newline-separated onto any value already in
@@ -121,6 +125,7 @@ class Config:
     allow_write: str = ""
     allow_ip: str = ""
     pass_env: str = ""
+    uv_python_store_writable: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "Config":
@@ -136,6 +141,7 @@ class Config:
             allow_write=env.get(ALLOW_WRITE, ""),
             allow_ip=env.get(ALLOW_IP, ""),
             pass_env=env.get(PASS_ENV, ""),
+            uv_python_store_writable=env.get(UV_PYTHON_STORE) == "writable",
         )
 
 

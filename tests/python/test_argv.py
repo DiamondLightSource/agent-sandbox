@@ -702,12 +702,15 @@ def test_entry_guard(tmp_path: Path, path: str, guarded: bool) -> None:
 # --- uv's Python store, read-only (ADR 27) --------------------------------------
 
 
-def store_binds(tmp_path: Path, env: Mapping[str, str]) -> tuple[list[str], Built]:
-    """The read-only binds of a store, and the build, for a layout with
-    ``home`` and an ``allow-write`` of ``data``."""
+def store_binds(
+    tmp_path: Path, env: Mapping[str, str], allow_write: str = "data"
+) -> tuple[list[str], Built]:
+    """The binds the store adds (``FLAG SRC DST``, with ``{t}`` for
+    ``tmp_path``), and the build, for a layout with ``home`` and an
+    ``allow-write`` of ``data``."""
     env = {
         "HOME": f"{tmp_path}/home",
-        "CLAUDE_SANDBOX_ALLOW_WRITE": f"{tmp_path}/data",
+        "CLAUDE_SANDBOX_ALLOW_WRITE": f"{tmp_path}/{allow_write}",
         **env,
     }
     built = bwrap_build(
@@ -715,12 +718,13 @@ def store_binds(tmp_path: Path, env: Mapping[str, str]) -> tuple[list[str], Buil
         shipped_skills_dir="/nonexistent", state_dir="/nonexistent",
     )  # fmt: skip
     argv = built.argv
-    pairs = [
-        f"{argv[i + 1]} {argv[i + 2]}"
-        for i in range(len(argv) - 2)
-        if argv[i] == "--ro-bind" and argv[i + 1] in built.writable.readonly
+    after = argv.index("--bind-try")  # the masks follow the read-write binds
+    found = [
+        " ".join(argv[i : i + 3]).replace(str(tmp_path), "{t}")
+        for i in range(after, len(argv) - 2)
+        if argv[i] in ("--bind", "--ro-bind") and argv[i + 1] != "/dev/null"
     ]
-    return pairs, built
+    return found, built
 
 
 def test_uv_store_bound_read_only(tmp_path: Path) -> None:
@@ -728,43 +732,70 @@ def test_uv_store_bound_read_only(tmp_path: Path) -> None:
         tmp_path, "home/.local/share/uv/python/bin/", "data/py/", "data/xdg/uv/python/"
     )
     store = f"{tmp_path}/home/.local/share/uv/python"
-    pairs, built = store_binds(tmp_path, {"PATH": f"{store}/bin:/usr/bin"})
-    assert pairs == [f"{store} {store}"]
+    found, built = store_binds(tmp_path, {"PATH": f"{store}/bin:/usr/bin"})
+    # The directory between the read-write bind and the store is pinned
+    # (a mount point cannot be renamed), then the store is bound read-only.
+    share = "{t}/home/.local/share"
+    assert found == [
+        f"--bind {share}/uv {share}/uv",
+        f"--ro-bind {share}/uv/python {share}/uv/python",
+    ]
     assert built.writable.readonly == [store]
     # A PATH directory in it is not the session's to write: no guard there.
     assert setenv(built.argv, ENTRY_GUARD_ENV) == []
-    # After the read-write bind it sits in.
-    argv = built.argv
-    assert argv.index(store) > argv.index(f"{tmp_path}/home/.local/share")
     # UV_PYTHON_INSTALL_DIR replaces the default; XDG_DATA_HOME adds uv's
     # outer default to the jail's, unless relative.
-    pairs, _ = store_binds(tmp_path, {"UV_PYTHON_INSTALL_DIR": f"{tmp_path}/data/py"})
-    assert pairs == [f"{tmp_path}/data/py {tmp_path}/data/py"]
-    xdg = f"{tmp_path}/data/xdg/uv/python"
-    pairs, _ = store_binds(tmp_path, {"XDG_DATA_HOME": f"{tmp_path}/data/xdg"})
-    assert pairs == [f"{xdg} {xdg}", f"{store} {store}"]
-    pairs, _ = store_binds(tmp_path, {"XDG_DATA_HOME": "data/xdg"})
-    assert pairs == [f"{store} {store}"]
+    found, _ = store_binds(tmp_path, {"UV_PYTHON_INSTALL_DIR": f"{tmp_path}/data/py"})
+    assert found == ["--ro-bind {t}/data/py {t}/data/py"]
+    found, _ = store_binds(tmp_path, {"XDG_DATA_HOME": f"{tmp_path}/data/xdg"})
+    assert found == [
+        "--bind {t}/data/xdg {t}/data/xdg",
+        "--bind {t}/data/xdg/uv {t}/data/xdg/uv",
+        "--ro-bind {t}/data/xdg/uv/python {t}/data/xdg/uv/python",
+        f"--bind {share}/uv {share}/uv",
+        f"--ro-bind {share}/uv/python {share}/uv/python",
+    ]
+    found, _ = store_binds(tmp_path, {"XDG_DATA_HOME": "data/xdg"})
+    assert len(found) == 2
+    # The conf's `uv-python-store = writable`: no binds, nothing read-only.
+    found, built = store_binds(tmp_path, {"CLAUDE_SANDBOX_UV_PYTHON_STORE": "writable"})
+    assert found == [] and built.writable.readonly == []
 
 
 def test_uv_store_through_a_link_outside_the_jail(tmp_path: Path) -> None:
-    """``~/.local/share`` a link into ``allow-write``: bound where it lies
-    and where the jail sees it through the ``~/.local/share`` bind."""
+    """``~/.local/share`` a link into ``allow-write``: the chain is pinned
+    and the store bound where the jail sees it through each read-write
+    bind."""
     tree(tmp_path, "home/.local/", "data/share/uv/python/")
     (tmp_path / "home/.local/share").symlink_to(tmp_path / "data/share")
-    real = f"{tmp_path}/data/share/uv/python"
-    pairs, built = store_binds(tmp_path, {})
-    assert pairs == [f"{real} {tmp_path}/home/.local/share/uv/python", f"{real} {real}"]
-    assert built.writable.readonly == [real]
+    found, built = store_binds(tmp_path, {})
+    real = "{t}/data/share"
+    assert found == [
+        f"--bind {real}/uv {{t}}/home/.local/share/uv",
+        f"--ro-bind {real}/uv/python {{t}}/home/.local/share/uv/python",
+        f"--bind {real} {real}",
+        f"--bind {real}/uv {real}/uv",
+        f"--ro-bind {real}/uv/python {real}/uv/python",
+    ]
+    assert built.writable.readonly == [f"{tmp_path}/data/share/uv/python"]
 
 
 @pytest.mark.parametrize(
     "case",
-    ["absent", "planted link", "not writable", "allow-write of it", "relative"],
+    [
+        "absent",
+        "planted link",
+        "not writable",
+        "allow-write of it",
+        "allow-write in the chain",
+        "under a mask",
+        "relative",
+    ],
 )
 def test_uv_store_skipped(tmp_path: Path, case: str) -> None:
     tree(tmp_path, "home/.local/share/", "data/elsewhere/", "ro/uv/python/")
     env: dict[str, str] = {}
+    allow_write = "data"
     if case == "planted link":  # a session could have made it
         (tmp_path / "home/.local/share/uv").symlink_to(tmp_path / "data/elsewhere")
         tree(tmp_path, "data/elsewhere/python/")
@@ -772,11 +803,17 @@ def test_uv_store_skipped(tmp_path: Path, case: str) -> None:
         env["UV_PYTHON_INSTALL_DIR"] = f"{tmp_path}/ro/uv/python"
     elif case == "allow-write of it":
         env["UV_PYTHON_INSTALL_DIR"] = f"{tmp_path}/data/elsewhere"
-        env["CLAUDE_SANDBOX_ALLOW_WRITE"] = f"{tmp_path}/data/elsewhere"
+        allow_write = "data/elsewhere"
+    elif case == "allow-write in the chain":  # binding the chain would cover it
+        tree(tmp_path, "home/.local/share/uv/python/", "home/.local/share/uv/x/")
+        allow_write = "home/.local/share/uv/x"
+    elif case == "under a mask":  # binding it would expose the masked dir
+        tree(tmp_path, "home/.local/share/claude/py/")
+        env["UV_PYTHON_INSTALL_DIR"] = f"{tmp_path}/home/.local/share/claude/py"
     elif case == "relative":
         env["UV_PYTHON_INSTALL_DIR"] = "data/elsewhere"
-    pairs, built = store_binds(tmp_path, env)
-    assert pairs == []
+    found, built = store_binds(tmp_path, env, allow_write)
+    assert found == []
     assert built.writable.readonly == []
 
 
