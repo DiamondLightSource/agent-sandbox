@@ -1113,9 +1113,11 @@ def test_real_ops(tmp_path: Path) -> None:
     assert ops.read(str(tmp_path / "gone")) == ""
     assert not jail.is_socket(str(log)) and not jail.is_socket(str(tmp_path / "x"))
 
-    relay = ops.spawn(["sh", "-c", "sleep 30 & wait"], env, relay=True)
+    relays = jail.Relays(env, ops, jail.Signals())
+    assert relays.start(["sh", "-c", "sleep 30 & wait"], lambda: True)
+    (relay,) = relays.procs
     assert os.getpgid(relay.pid) == relay.pid  # its own group
-    jail.stop_relays([relay], ops)
+    relays.stop()
     assert relay.wait() == -signal.SIGTERM
     ops.kill(relay.pid, signal.SIGTERM)  # already gone: ignored
     child = ops.spawn(["true"], env)

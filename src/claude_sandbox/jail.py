@@ -54,7 +54,7 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from types import FrameType
 from typing import NoReturn, Protocol
@@ -296,14 +296,6 @@ def wait_child(proc: Proc, ops: Ops, signals: Signals) -> int:
     return shell_status(rc)
 
 
-def stop_relays(relays: list[Proc], ops: Ops) -> None:
-    """TERM each relay's process group, then reap it."""
-    while relays:
-        proc = relays.pop()
-        ops.kill(proc.pid, signal.SIGTERM, group=True)
-        proc.wait()
-
-
 def stop_child(proc: Proc | None, ops: Ops) -> None:
     if proc is not None and proc.poll() is None:
         ops.kill(proc.pid, signal.SIGTERM)
@@ -341,36 +333,34 @@ def tcp_to_unix(socat: str, port: str, sock: str) -> list[str]:
     ]
 
 
-def start_relay(
-    argv: Sequence[str],
-    env: Mapping[str, str],
-    ops: Ops,
-    relays: list[Proc],
-    ready: Callable[[], bool],
-    signals: Signals,
-) -> bool:
-    """Start a socat relay, recorded for ``stop_relays``; True once
-    ``ready`` holds."""
-    try:
-        relays.append(ops.spawn(argv, env, relay=True))
-    except OSError:
-        return False
-    return wait_for(ready, ops, signals)
+class Relays:
+    """The socat relays one side of the jail starts, stopped together."""
 
+    def __init__(self, env: Mapping[str, str], ops: Ops, signals: Signals) -> None:
+        self.env, self.ops, self.signals = env, ops, signals
+        self.procs: list[Proc] = []
 
-def _ss(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> str:
-    return ops.run([ss, "-H", "-ltn", f"sport = :{port}"], env)[1]
+    def start(self, argv: Sequence[str], ready: Callable[[], bool]) -> bool:
+        """Start a relay; True once ``ready`` holds."""
+        try:
+            self.procs.append(self.ops.spawn(argv, self.env, relay=True))
+        except OSError:
+            return False
+        return wait_for(ready, self.ops, self.signals)
 
+    def listening(self, ss: str, port: str, *, loopback: bool = False) -> bool:
+        """Something listens on TCP ``port`` in this netns, on 127.0.0.1 with
+        ``loopback``. Reads the kernel's listener table: it never connects
+        to the service, which need not be running."""
+        found = self.ops.run([ss, "-H", "-ltn", f"sport = :{port}"], self.env)[1]
+        return "127.0.0.1:" in found if loopback else bool(found)
 
-def port_in_use(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> bool:
-    """Something listens on TCP ``port`` (in this netns)."""
-    return bool(_ss(ss, port, env, ops))
-
-
-def loopback_listening(ss: str, port: str, env: Mapping[str, str], ops: Ops) -> bool:
-    """A listener on 127.0.0.1:``port``. Reads the kernel's listener table:
-    it never connects to the service, which need not be running."""
-    return "127.0.0.1:" in _ss(ss, port, env, ops)
+    def stop(self) -> None:
+        """TERM each relay's process group, newest first, then reap it."""
+        while self.procs:
+            proc = self.procs.pop()
+            self.ops.kill(proc.pid, signal.SIGTERM, group=True)
+            proc.wait()
 
 
 # --- DNS ---------------------------------------------------------------------
@@ -445,7 +435,7 @@ def stage_dns(*, resolv_conf: str = RESOLV_CONF, tmpdir: str = JAIL_TMP) -> Stag
 class _Outer:
     """What ``launch`` must undo, in this order."""
 
-    relays: list[Proc] = field(default_factory=list[Proc])
+    relays: Relays
     holder: Proc | None = None
     jail_dir: str | None = None
 
@@ -467,7 +457,7 @@ def _launch(
     config: Config, env: Mapping[str, str], command: Sequence[str], ops: Ops
 ) -> int:
     signals = Signals()
-    state = _Outer()
+    state = _Outer(Relays(env, ops, signals))
     try:
         return _start(config, env, command, ops, signals, state)
     except JailError as e:
@@ -477,7 +467,7 @@ def _launch(
         return e.status
     finally:
         # Signals only set a flag now, so nothing interrupts this.
-        stop_relays(state.relays, ops)
+        state.relays.stop()
         stop_child(state.holder, ops)
         if state.jail_dir is not None:
             shutil.rmtree(state.jail_dir, ignore_errors=True)
@@ -529,20 +519,48 @@ def _start(
     if config.allow_ip:
         holder_env[ALLOW_IP] = config.allow_ip
 
+    relays = state.relays
     if outbound or inbound:
         socat = need("socat", "for loopback relays")
         relay_dir = f"{state.jail_dir}/relay"
         os.mkdir(relay_dir)
         os.chmod(relay_dir, 0o700)
         holder_env[JAIL_RELAY_DIR] = relay_dir
+        # Outer ends of the local-port relays (ADR 20): one private Unix
+        # socket per port, connected to the outer 127.0.0.1. No IP route, no
+        # mapping of the host's whole loopback. Fatal if one does not start.
+        for port in outbound:
+            sock = f"{relay_dir}/{port}.sock"
+            if not relays.start(
+                unix_to_tcp(socat, sock, port), partial(is_socket, sock)
+            ):
+                raise JailError(f"— loopback relay for port {port} failed to start")
         if outbound:
-            _outbound_relays(socat, relay_dir, outbound, env, ops, signals, state)
             holder_env[JAIL_LOCAL_PORTS] = "".join(f"{p} " for p in outbound)
+        # Outer ends of the callback relays (ADR 21), which LISTEN on the
+        # outer 127.0.0.1 and so can collide with a second session or an
+        # unwrapped agent. Fail soft: warn and carry on. The holder waits
+        # only on the ports that started.
         if inbound:
             ss = need("ss", "(iproute2) for loopback relays")
-            started = _callback_relays(
-                socat, ss, relay_dir, inbound, env, ops, signals, state
-            )
+            started: list[str] = []
+            for port in inbound:
+                in_use = partial(relays.listening, ss, port)
+                if in_use():
+                    _say(
+                        f"claude-sandbox: callback-port {port} is already in use on"
+                        " this host; browser logins on that port will not reach this"
+                        " session."
+                    )
+                    continue
+                argv = tcp_to_unix(socat, port, f"{relay_dir}/in-{port}.sock")
+                if relays.start(argv, in_use):
+                    started.append(port)
+                else:
+                    _say(
+                        f"claude-sandbox: callback-port {port} relay failed to start;"
+                        " browser logins on that port will not reach this session."
+                    )
             holder_env[JAIL_CALLBACK_PORTS] = "".join(f"{p} " for p in started)
 
     # The holder inherits stdin and the process group: it, and the script(1)
@@ -593,61 +611,6 @@ def _start(
     rc = wait_child(holder, ops, signals)
     state.holder = None
     return rc
-
-
-def _outbound_relays(
-    socat: str,
-    relay_dir: str,
-    ports: list[str],
-    env: Mapping[str, str],
-    ops: Ops,
-    signals: Signals,
-    state: _Outer,
-) -> None:
-    """Outer ends of the local-port relays (ADR 20): one private Unix socket
-    per port, connected to the outer 127.0.0.1. No IP route, no mapping of
-    the host's whole loopback. Fatal if one does not start."""
-    for port in ports:
-        sock = f"{relay_dir}/{port}.sock"
-        argv = unix_to_tcp(socat, sock, port)
-        if not start_relay(
-            argv, env, ops, state.relays, partial(is_socket, sock), signals
-        ):
-            raise JailError(f"— loopback relay for port {port} failed to start")
-
-
-def _callback_relays(
-    socat: str,
-    ss: str,
-    relay_dir: str,
-    ports: list[str],
-    env: Mapping[str, str],
-    ops: Ops,
-    signals: Signals,
-    state: _Outer,
-) -> list[str]:
-    """Outer ends of the callback relays (ADR 21), which LISTEN on the outer
-    127.0.0.1 and so can collide with a second session or an unwrapped
-    agent. Fail soft: warn and carry on. Returns the ports that started, the
-    only ones the holder should wait on."""
-    started: list[str] = []
-    for port in ports:
-        if port_in_use(ss, port, env, ops):
-            _say(
-                f"claude-sandbox: callback-port {port} is already in use on this"
-                " host; browser logins on that port will not reach this session."
-            )
-            continue
-        argv = tcp_to_unix(socat, port, f"{relay_dir}/in-{port}.sock")
-        ready = partial(port_in_use, ss, port, env, ops)
-        if start_relay(argv, env, ops, state.relays, ready, signals):
-            started.append(port)
-        else:
-            _say(
-                f"claude-sandbox: callback-port {port} relay failed to start;"
-                " browser logins on that port will not reach this session."
-            )
-    return started
 
 
 # --- inside the jail: the holder -------------------------------------------------
@@ -997,7 +960,7 @@ def _hold_with_relays(command: Sequence[str], env: Mapping[str, str], ops: Ops) 
     child, on the terminal, and its status is the holder's.
     """
     signals = Signals()
-    relays: list[Proc] = []
+    relays = Relays(env, ops, signals)
     child: Proc | None = None
     relay_dir = env.get(JAIL_RELAY_DIR, "")
     try:
@@ -1005,14 +968,13 @@ def _hold_with_relays(command: Sequence[str], env: Mapping[str, str], ops: Ops) 
         ss = need("ss", "(iproute2) for loopback relays")
         for port in env.get(JAIL_LOCAL_PORTS, "").split():
             argv = tcp_to_unix(socat, port, f"{relay_dir}/{port}.sock")
-            ready = partial(loopback_listening, ss, port, env, ops)
-            if not start_relay(argv, env, ops, relays, ready, signals):
+            on_loopback = partial(relays.listening, ss, port, loopback=True)
+            if not relays.start(argv, on_loopback):
                 raise JailError(f"— loopback listener for port {port} failed to start")
         for port in env.get(JAIL_CALLBACK_PORTS, "").split():
             sock = f"{relay_dir}/in-{port}.sock"
-            argv = unix_to_tcp(socat, sock, port)
-            if not start_relay(
-                argv, env, ops, relays, partial(is_socket, sock), signals
+            if not relays.start(
+                unix_to_tcp(socat, sock, port), partial(is_socket, sock)
             ):
                 raise JailError(f"— callback relay for port {port} failed to start")
         try:
@@ -1027,5 +989,5 @@ def _hold_with_relays(command: Sequence[str], env: Mapping[str, str], ops: Ops) 
     except Interrupted as e:
         return e.status
     finally:
-        stop_relays(relays, ops)
+        relays.stop()
         stop_child(child, ops)

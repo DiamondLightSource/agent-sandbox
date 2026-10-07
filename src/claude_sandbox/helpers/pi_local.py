@@ -29,33 +29,19 @@ def fetch(url: str) -> object:
         return None
 
 
+def _object(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
 def discover(port: str) -> tuple[str, int] | None:
     """The one loaded model and its context, or None."""
-    models = fetch(f"http://127.0.0.1:{port}/v1/models")
-    data = (
-        cast(dict[str, object], models).get("data")
-        if isinstance(models, dict)
-        else None
-    )
-    if not isinstance(data, list) or len(cast(list[object], data)) != 1:
-        return None
-    first = cast(list[object], data)[0]
-    model = (
-        cast(dict[str, object], first).get("id") if isinstance(first, dict) else None
-    )
+    data = _object(fetch(f"http://127.0.0.1:{port}/v1/models")).get("data")
+    listed = cast(list[object], data) if isinstance(data, list) else []
+    model = _object(listed[0]).get("id") if len(listed) == 1 else None
     if not isinstance(model, str) or not model:
         return None
-    props = fetch(f"http://127.0.0.1:{port}/props")
-    settings = (
-        cast(dict[str, object], props).get("default_generation_settings")
-        if isinstance(props, dict)
-        else None
-    )
-    n_ctx = (
-        cast(dict[str, object], settings).get("n_ctx")
-        if isinstance(settings, dict)
-        else None
-    )
+    props = _object(fetch(f"http://127.0.0.1:{port}/props"))
+    n_ctx = _object(props.get("default_generation_settings")).get("n_ctx")
     if isinstance(n_ctx, bool) or not isinstance(n_ctx, int | float):
         return None
     if n_ctx != int(n_ctx):
@@ -66,10 +52,6 @@ def discover(port: str) -> tuple[str, int] | None:
 def _fail(message: str, code: int) -> int:
     print(message, file=sys.stderr)
     return code
-
-
-def _object(value: object) -> dict[str, object]:
-    return cast(dict[str, object], value) if isinstance(value, dict) else {}
 
 
 def _alt(value: object, default: object) -> object:
