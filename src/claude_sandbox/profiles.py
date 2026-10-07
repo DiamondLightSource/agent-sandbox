@@ -1,7 +1,7 @@
 """Agent profiles: everything that differs between the wrapped agents.
 
-Ported from ``agent_profile``, ``detect_agent``, ``agent_exec_argv`` and
-``filter_chrome_args`` in ``.devcontainer/claude-sandbox/claude-shadow``.
+Once ``agent_profile``, ``detect_agent``, ``agent_exec_argv`` and
+``filter_chrome_args`` in the bash shadow that 5.0 replaced (ADR 26).
 One shadow wraps several agents (ADR 18, Invariant 0) and picks the profile
 from the name it was invoked as. All agents share the same filesystem,
 network and terminal isolation; a profile selects only the binary, the
@@ -18,7 +18,7 @@ from .errors import SandboxError
 
 LIBEXEC = "/usr/libexec/claude-sandbox"
 
-# Shipped skills: the repo's top-level skills/ tree, placed by install.sh
+# Shipped skills: the repo's top-level skills/ tree, placed by the installer
 # under /usr/libexec next to the runtime helpers (root-owned, ro in-session).
 # The argv builder binds each one read-only onto the agent's own skills
 # directory INSIDE the sandbox, so the user's host ~/.claude (or ~/.codex,
@@ -67,7 +67,7 @@ PROFILES: Mapping[str, AgentProfile] = {
         # Bound back to the conventional path inside the sandbox so Claude's
         # installMethod=native self-check sees what it expects (Invariant 1).
         # Read-only, so a session cannot rewrite the binary later sessions
-        # run (the bash shadow binds it read-write).
+        # run (the bash shadow bound it read-write).
         inner_rel=".local/bin/claude",
         bind_back=True,
         home_dirs=(".claude",),

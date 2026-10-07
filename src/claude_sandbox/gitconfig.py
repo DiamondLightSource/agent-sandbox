@@ -1,14 +1,14 @@
 """The sandbox's git config (``GIT_CONFIG_GLOBAL`` inside the jail).
 
-Ported from ``render_gitconfig`` in ``.devcontainer/claude-sandbox/
-claude-shadow``, as a pure function returning the file's text. The shadow
+Once ``render_gitconfig`` in the bash shadow that 5.0 replaced, as a pure
+function returning the file's text. The shadow
 re-renders it on every launch because VS Code's dev.containers.copyGitConfig
 fires AFTER postCreate, so an install-time render can have an empty
 user.name; by launch time copyGitConfig has run.
 
-The bash writes the fixed text, then lets ``git config --file`` append the
+The bash wrote the fixed text, then let ``git config --file`` append the
 ``[user]`` block; ``_value`` reproduces how git writes a value, so the bytes
-are identical. Standard library only: this module is on the launch path.
+are the same. Standard library only: this module is on the launch path.
 """
 
 _FORGE_CREDENTIALS = """\

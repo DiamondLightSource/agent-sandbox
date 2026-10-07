@@ -1,7 +1,7 @@
 """The egress jail (ADR 0015, Design D) and its loopback relays (ADRs 20, 21).
 
-Ported from ``netns_launch``, ``netns_holder``, ``jail_stage_dns`` and the
-relay helpers in ``.devcontainer/claude-sandbox/claude-shadow``. The launch
+Once ``netns_launch``, ``netns_holder``, ``jail_stage_dns`` and the relay
+helpers in the bash shadow that 5.0 replaced (ADR 26). The launch
 runs inside a user+net namespace that a *holder* process owns, bridged to the
 internet by pasta, with a routing allowlist the agent cannot change:
 
@@ -31,7 +31,7 @@ No executable is found through PATH (ADR 26). ``unshare``, ``pasta``,
 and a missing one is a fail-closed refusal; the command to run must already
 be absolute; the holder re-enters ``sys.executable``.
 
-Deliberate differences from the bash:
+Deliberate differences from the bash it replaced:
 
 - Readiness: the bash attaches pasta once ``/proc/<holder>/ns/net`` exists,
   which is already true before ``unshare`` has made the namespace. Here

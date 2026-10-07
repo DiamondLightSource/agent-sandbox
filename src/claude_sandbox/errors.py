@@ -1,7 +1,7 @@
 """The one exception the launch path raises for a refusal.
 
-Its message is the text the bash shadow prints to stderr for the same
-refusal, so the Python shadow can print ``str(error)`` unchanged.
+Its message is the text the shadow prints to stderr for the refusal, so it
+can print ``str(error)`` unchanged.
 """
 
 

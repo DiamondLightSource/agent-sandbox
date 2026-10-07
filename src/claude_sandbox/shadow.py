@@ -1,8 +1,9 @@
 """The shadow: what runs when a user types ``claude``, ``codex`` or ``pi``.
 
-Ported from the launch body of ``.devcontainer/claude-sandbox/claude-shadow``
-(everything after the function definitions, plus ``configure_launch``,
-``sandbox_launch`` and their helpers). The three-line bash shim at
+Once the launch body of the bash shadow that 5.0 replaced (ADR 26), with
+its ``configure_launch``, ``sandbox_launch`` and their helpers; comments
+that say "the bash" record where this keeps or departs from it. The
+three-line bash shim at
 ``/usr/local/bin/<agent>`` execs the root-owned interpreter with ``-I`` and
 lands in ``main`` below (ADR 26). Read top to bottom: ``run`` is the order a
 launch happens in, and each step is a function just below it.
@@ -62,7 +63,7 @@ from .profiles import (
 )
 from .tools import TOOL_PATH, find_tool
 
-# The shim, byte for byte as install.sh places it (ADR 26). The self-exec
+# The shim, byte for byte as the installer places it (ADR 26). The self-exec
 # check compares the real binary against it; a test pins it to the file.
 SHIM = (
     "#!/bin/bash\n"
