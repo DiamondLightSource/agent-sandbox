@@ -7,9 +7,10 @@ from the environment so the tests stay hermetic.
 Where the Python shadow is installed it also checks, from outside the jail,
 that the agents' names reach it on PATH (Invariant 1) and whether the PATH
 watcher has quarantined anything (ADR 27). Neither is for ``--fix``: what
-put a file there needs a person to look at it. Nor is the last check, that
-the container has the ``/dev/net/tun`` the egress jail needs (issue #71):
-the device is the container's to give.
+put a file there needs a person to look at it. Nor are the last two, that
+the container has the ``/dev/net/tun`` the egress jail needs (issue #71)
+and a passt new enough for it (issue #85): those are the
+container's to give.
 """
 
 import json
@@ -293,6 +294,33 @@ class Doctor:
         else:
             self.report("ok", "tun device", f"{tun} present")
 
+    def passt(self) -> None:
+        """Whether the installed passt is new enough for the egress jail
+        (issue #85). An unreadable version is a note, not an alarm."""
+        if context.current() is context.JAIL:
+            self.report("skip", "passt", "run doctor outside the agent")
+            return
+        if not config.egress_jail_configured(config.CONFIG_PATH, os.environ):
+            self.report("skip", "passt", "the egress jail is off")
+            return
+        version = config.passt_version()
+        if config.passt_date(version) is None:
+            self.report(
+                "info",
+                "passt",
+                f"cannot read its version; the egress jail needs"
+                f" {config.PASST_MIN} or later",
+            )
+        elif config.passt_too_old(config.CONFIG_PATH, os.environ, version):
+            self.warn(
+                "passt",
+                f"{version} is older than {config.PASST_MIN}, too old for the"
+                " egress jail; rebuild on a newer base image, such as"
+                " Ubuntu 24.04 or Debian 13",
+            )
+        else:
+            self.report("ok", "passt", version)
+
     def run(self) -> int:
         self.tag()
         self.file(
@@ -311,6 +339,7 @@ class Doctor:
         self.prompt("bash")
         self.guards()
         self.tun()
+        self.passt()
         if self.warned and not self.pending:
             return 1
         if self.pending:

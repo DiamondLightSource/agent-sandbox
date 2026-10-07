@@ -25,11 +25,19 @@ devcontainer, add this run argument and rebuild:
 Missing tun, pasta or namespace support makes agent launch fail closed.
 The install, the published image's start and `claude-sandbox doctor` warn
 about a missing `/dev/net/tun` earlier, while the jail is on.
-Use rootless Podman: rootful Docker cannot host the default jail. The
-devcontainer's base image must also have a recent enough `passt`:
-Debian 12's (2023-03, in `node:22-slim` and other bookworm images) cannot
-attach from inside a container, and the launch says so. Ubuntu 24.04 and
-Debian 13 images work.
+Use rootless Podman: rootful Docker cannot host the default jail.
+
+The devcontainer's base image must also have `passt` 0.0~git20230908 or
+later. Debian 12's (0.0~git20230309, in `node:22-slim` and other bookworm
+images) fails twice. It installs `pasta` as a symlink to `passt`, so on a
+host that enforces AppArmor, as Ubuntu hosts do, the profile for `passt`
+confines it, and it cannot attach to the agent's namespace. Where it does
+attach, it sets up a broadcast route that the jail's route check refuses.
+bookworm-backports has no newer `passt`. Ubuntu 24.04 (0.0~git20240220)
+and Debian 13 (0.0~git20250503) images work, for example
+`node:22-trixie-slim` in place of `node:22-slim`. The install and
+`claude-sandbox doctor` warn about an older `passt` while the jail is on,
+and the launch refuses and names the cause.
 
 ## Keep a lab device or internal forge reachable
 

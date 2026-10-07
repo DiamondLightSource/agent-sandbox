@@ -190,6 +190,22 @@ Two structural choices fix scope:
 - **Requires `/dev/net/tun` in the container** (`devcontainer.json` runArgs
   `--device=/dev/net/tun`); pasta and slirp4netns are both TAP-based and neither
   works without it. This is the one hard container-side requirement.
+- **Requires `passt` 0.0~git20230908 or later** (issue #85). Debian 12's
+  0.0~git20230309 fails in two ways, both verified in rootless podman on an
+  Ubuntu host. First, Debian's packages before 0.0~git20230908 install
+  `pasta` as a symlink to `passt`, so a host that enforces AppArmor (Ubuntu
+  loads profiles for both) confines `pasta` under the `passt` profile. That
+  profile denies the holder's `/proc/PID/ns/*` and pasta's own log file, so
+  the attach fails. From 0.0~git20230908 `pasta` is a hard link with its
+  own profile. Second, with that worked around (`pasta` hard-linked), the
+  attach succeeds but the old `--config-net` adds the address with a
+  `broadcast` route in table `local` that the route read-back refuses.
+  Upstream releases from 2023_06_03 pass; the change is cc9d167 ("With
+  --config-net, copy all addresses by default", 2023-05-14).
+  bookworm-backports has no passt. The install and `claude-sandbox doctor`
+  warn when the jail is on and dpkg reports an older passt. An unreadable
+  version gives no warning, only a doctor note. Not `pasta --version`,
+  which prints "unknown version" for Debian 12's and Ubuntu 24.04's builds.
 - **`HTTPS_PROXY`-style env proxy is explicitly not the mechanism** (issue #31
   Option D): a hostile process unsets the env var or opens a raw socket. The
   control is enforced by ancestor-owned netns + kernel routing, not by environment.

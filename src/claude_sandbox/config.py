@@ -17,6 +17,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .tools import find_tool, output
+
 CONFIG_PATH = "/etc/claude-sandbox.conf"
 # The device the egress jail (ADR 15) needs; the container must be given it.
 TUN = "/dev/net/tun"
@@ -183,6 +185,49 @@ def tun_missing(conf: str, env: Mapping[str, str], tun: str) -> bool:
     would refuse (``jail.py``). Issue #71: the installer and ``doctor`` say
     so first."""
     return not os.path.exists(tun) and egress_jail_configured(conf, env)
+
+
+# The oldest Debian passt package the egress jail works with (issue #85).
+# Debian 12's (0.0~git20230309) fails twice. Its pasta is a symlink to
+# passt, so a host enforcing AppArmor confines pasta under the profile for
+# passt, which denies the holder's /proc/PID/ns/* and pasta's log: the
+# attach fails. Unconfined, it attaches but sets the address up with a
+# broadcast route the jail's route check refuses (upstream changed that on
+# 2023-05-14, cc9d167). From this version pasta is a hard link with a
+# profile of its own, and the address handling is the newer one.
+PASST_MIN = "0.0~git20230908"
+
+
+def passt_version() -> str:
+    """The installed passt package's version, from dpkg; "" when there is
+    none, or only a removed one's conffiles. Not ``pasta --version``:
+    Debian 12's and Ubuntu 24.04's print "unknown version"."""
+    dpkg = find_tool("dpkg-query")
+    if dpkg is None:
+        return ""
+    form = "--showformat=${db:Status-Status} ${Version}"
+    rc, out = output([dpkg, "--show", form, "passt"])
+    status, _, version = out.partition(" ")
+    return version if rc == 0 and status == "installed" else ""
+
+
+def passt_date(version: str) -> str | None:
+    """The upstream snapshot date (YYYYMMDD) in a Debian passt version such
+    as ``0.0~git20240220.1e6f92b-1``; None when the version is not one."""
+    found = re.fullmatch(r"(?:[0-9]+:)?0\.0~git([0-9]{8})\..*", version)
+    return found[1] if found else None
+
+
+def passt_too_old(conf: str, env: Mapping[str, str], version: str) -> bool:
+    """The egress jail is on and ``version`` is older than ``PASST_MIN``:
+    the launch would refuse. An unparseable version is no alarm. Issue #85:
+    the installer and ``doctor`` say so before the launch does."""
+    date = passt_date(version)
+    return (
+        date is not None
+        and date < PASST_MIN.removeprefix("0.0~git")
+        and egress_jail_configured(conf, env)
+    )
 
 
 def valid_tcp_port(port: str) -> bool:

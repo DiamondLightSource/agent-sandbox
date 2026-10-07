@@ -119,6 +119,28 @@ def warn_if_no_tun(layout: Layout, options: Options, err: TextIO) -> None:
         print(TUN_WARNING, file=err)
 
 
+PASST_WARNING = f"""\
+claude-sandbox: WARNING — the installed passt is too old for the network
+egress jail: {{version}}, older than {config.PASST_MIN}.
+The jail is on by default, and with this passt claude, codex and pi
+refuse to launch. Debian 12 (bookworm, e.g. node:22-slim) ships it, and
+bookworm-backports has no newer one. Move to a system with a newer passt,
+such as Ubuntu 24.04 or Debian 13; in a container, rebuild on such a base
+image (e.g. node:22-trixie-slim).
+See {TUN_DOCS}"""
+
+
+def warn_if_old_passt(layout: Layout, options: Options, err: TextIO) -> None:
+    """Issue #85: the passt too old for the jail, said at install rather
+    than at the first launch, which stays fail-closed. An image build warns
+    too: passt is there to see, and the image's author can fix it."""
+    if options.smoke:
+        return
+    version = config.passt_version()
+    if config.passt_too_old(str(layout.system(CONF)), os.environ, version):
+        print(PASST_WARNING.format(version=version), file=err)
+
+
 def _fetch(url: str, run: Run, *extra: str) -> bytes | None:
     """``curl -fsSL URL``'s output, or None when it fails."""
     curl = find_tool("curl")

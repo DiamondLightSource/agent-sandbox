@@ -103,15 +103,20 @@ JAIL_TMP = "/tmp"
 PASTA_LOG = "/tmp/claude-pasta.log"
 
 # What an old pasta logs when it cannot attach from inside a container.
-# Debian 12's passt (2023-03) drops its capabilities before it opens the
-# holder's namespaces and its own log file, and both opens then fail with
-# EACCES; the passt in Ubuntu 24.04 and Debian 13 opens them first. The jail
-# stays closed either way; this only says why.
+# Debian's passt before 0.0~git20230908 (Debian 12 has 0.0~git20230309)
+# installs pasta as a symlink to passt, so a host enforcing AppArmor
+# confines it under the profile for passt, which denies the holder's
+# /proc/PID/ns/* and pasta's own log file: both opens fail with EACCES.
+# Later packages make pasta a hard link with its own profile (issue #85;
+# config.PASST_MIN, which the install and doctor check). Rootful docker
+# logs the same with a new passt: it denies the /proc/<holder>/ns/user open.
+# The jail stays closed either way; this only says why.
 PASTA_CANNOT_OPEN = "Couldn't open"
 PASTA_TOO_OLD = (
-    "\n  This passt is too old to attach to a namespace from inside a container"
-    "\n  (Debian 12's is); use a base image with a newer passt, such as"
-    "\n  Ubuntu 24.04 or Debian 13."
+    "\n  Either this passt is too old to attach from inside a container (Debian"
+    "\n  12's is; use a base image with passt 0.0~git20230908 or later, such as"
+    "\n  Ubuntu 24.04 or Debian 13), or rootful docker denied pasta the"
+    "\n  holder's user namespace (use rootless podman)."
 )
 
 # pasta flags. IPv4-only keeps all traffic within the routing policy (the
