@@ -2,7 +2,7 @@
 
 The container tag in the Claude status line, the Pi footer and the shell
 prompts. Every file ``--fix`` changes is backed up first. The paths come
-from the environment so the tests stay hermetic, as in the bash.
+from the environment so the tests stay hermetic.
 
 Where the Python shadow is installed it also checks, from outside the jail,
 that the agents' names reach it on PATH (Invariant 1) and whether the PATH

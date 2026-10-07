@@ -9,12 +9,9 @@ from pathlib import Path
 import pytest
 
 from claude_sandbox.config import (
-    KNOBS,
     Config,
-    callback_enabled,
     callback_ports,
     egress_jail_enabled,
-    local_model_enabled,
     local_ports,
     parse_config,
     resolve_workspace_root,
@@ -32,7 +29,7 @@ def knobs(conf: str | None, env: dict[str, str], tmp_path: Path) -> dict[str, st
     if conf is not None:
         path.write_bytes(conf.encode())
     merged = parse_config(str(path), env)
-    return {k.removeprefix(P): merged[k] for k in KNOBS if k in merged}
+    return {k.removeprefix(P): v for k, v in merged.items() if k.startswith(P)}
 
 
 @pytest.mark.parametrize(
@@ -152,8 +149,6 @@ Ports = tuple[list[str], list[str], list[str], list[str]]
 
 def ports(env: dict[str, str]) -> Ports:
     config = Config.from_env(env)
-    assert local_model_enabled(config) is bool(local_ports(config))
-    assert callback_enabled(config) is bool(callback_ports(config))
     return (
         local_ports(config),
         callback_ports(config),
@@ -232,10 +227,10 @@ PORT_CASES: list[tuple[dict[str, str], Ports]] = [
             ["claude-sandbox: callback-port entries must be 1–65535, got '[x]'."],
         ),
     ),
-    # Dedup is substring containment of " port ", as in the bash.
+    # Deduplicated by value; the bad model port is refused.
     (
-        {f"{P}LOCAL_MODEL_PORT": "1 2", f"{P}LOCAL_PORTS": "1 2"},
-        (["1 2"], [], [BAD_MODEL], []),
+        {f"{P}LOCAL_MODEL_PORT": "1 2", f"{P}LOCAL_PORTS": "1 2 1"},
+        (["1 2", "1", "2"], [], [BAD_MODEL], []),
     ),
 ]
 

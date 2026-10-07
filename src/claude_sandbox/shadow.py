@@ -36,11 +36,12 @@ from .bwrap import (
 )
 from .config import (
     CONFIG_PATH,
+    MODEL_PORT_ERROR,
     Config,
     egress_jail_enabled,
+    model_port_ok,
     parse_config,
     resolve_workspace_root,
-    valid_tcp_port,
 )
 from .errors import SandboxError
 from .gitconfig import render_gitconfig
@@ -101,11 +102,11 @@ INSTALLED = Host()
 
 
 def main(argv0: str, args: list[str], host: Host = INSTALLED) -> NoReturn:
-    """The shim's entry: launch, or exit with the bash shadow's status.
+    """The shim's entry: launch, or exit with the launch's status.
 
     INT, TERM and HUP unwind through ``finally`` (so nothing the shadow
-    created is left behind), then the process dies by that signal, as the
-    bash shadow's EXIT trap does. A signal ignored on entry stays ignored.
+    created is left behind), then the process dies by that signal. A signal
+    ignored on entry stays ignored.
     """
     for signum in (signal.SIGTERM, signal.SIGHUP):
         if signal.getsignal(signum) == signal.SIG_DFL:
@@ -123,7 +124,7 @@ def main(argv0: str, args: list[str], host: Host = INSTALLED) -> NoReturn:
 def run(
     argv0: str, args: Sequence[str], env: Mapping[str, str], host: Host = INSTALLED
 ) -> NoReturn:
-    """One launch, in the bash shadow's order. Ends in an exec or an exit."""
+    """One launch, in order. Ends in an exec or an exit."""
     env = dict(env)
     profile = host.profiles[detect_agent(argv0, env.get("CLAUDE_SANDBOX_AGENT", ""))]
     args, verify = _sandbox_verify(args)
@@ -159,8 +160,7 @@ def run(
     # Stage the jail's resolver before the argv is built: bwrap.py binds the
     # file CLAUDE_SANDBOX_JAIL_RESOLV names over /etc/resolv.conf. jail.launch
     # removes it on exit; the finally removes it if the launch never starts
-    # (a refusal, or Ctrl-C at the pause), which the bash leaves behind (a
-    # known divergence).
+    # (a refusal, or Ctrl-C at the pause).
     jailed = egress_jail_enabled(config)
     resolv = None
     session = None
@@ -220,8 +220,8 @@ def original_environ(path: str = "/proc/self/environ") -> dict[str, str]:
 
     Python coerces a C or POSIX locale (PEP 538) by setting LC_CTYPE in its
     own environment, even under ``-I``; the bwrap argv forwards LC_CTYPE, so
-    ``os.environ`` would put a value in the jail that the bash shadow never
-    did. ``/proc/self/environ`` holds the block the kernel was given.
+    ``os.environ`` would put a value in the jail that the user never set.
+    ``/proc/self/environ`` holds the block the kernel was given.
     """
     try:
         with open(path, "rb") as f:
@@ -483,15 +483,10 @@ def _has_entries(path: str) -> bool:
 
 
 def _check_local_model_port(config: Config) -> None:
-    """Refuse a bad local-model-port before it reaches the argv.
-
-    The argv forwards it into the jail with --setenv. The bash validates it
-    only on the jailed path (netns_launch), so a jail-off launch forwarded
-    any value; here it is checked on every launch (a known divergence).
-    """
-    port = config.local_model_port
-    if port != "0" and not valid_tcp_port(port):
-        _refuse("claude-sandbox: local-model-port must be 1–65535 (or 0 to disable).")
+    """Refuse a bad local-model-port before it reaches the argv, which
+    forwards it into the jail with --setenv, jailed or not."""
+    if not model_port_ok(config.local_model_port):
+        _refuse(MODEL_PORT_ERROR)
 
 
 def build_argv(
@@ -531,12 +526,11 @@ def terminal_command(
     the sandbox lands in script's pty, which script reads and writes back as
     bytes, not keystrokes, to the host terminal. --return keeps the agent's
     exit status. script runs ``$SHELL -c COMMAND``, so SHELL is bash and the
-    argv is quoted for it (shlex quoting, which bash reads back to the same
-    words as the bash shadow's ``printf %q``).
+    argv is quoted for it with shlex.
 
     Both script and bwrap come from the fixed tool path as absolute paths,
     so neither this process nor the inner shell looks anything up in PATH
-    (ADR 26). The bash shadow uses PATH for both.
+    (ADR 26).
     """
     script, bwrap = _tool(host, "script"), _tool(host, "bwrap")
     command = shlex.join([bwrap, *argv[1:]])
@@ -567,7 +561,7 @@ def _exec(host: Host, path: str, argv: list[str], env: Mapping[str, str]) -> NoR
     try:
         host.execve(path, argv, env)
     except OSError as e:
-        # bash's statuses for a command it cannot run.
+        # A shell's statuses for a command it cannot run.
         _refuse(
             f"claude-sandbox: {path}: {e.strerror}", 127 if e.errno == ENOENT else 126
         )
@@ -583,7 +577,7 @@ class Terminal:
         self.warned = False
 
     def warn(self, message: str) -> None:
-        """A warning that does not stop the launch (bash: launch_warn)."""
+        """A warning that does not stop the launch."""
         self.warn_raw(f"claude-sandbox: {message}\n")
 
     def warn_raw(self, text: str) -> None:

@@ -1,7 +1,5 @@
 """Agent profiles: everything that differs between the wrapped agents.
 
-Once ``agent_profile``, ``detect_agent``, ``agent_exec_argv`` and
-``filter_chrome_args`` in the bash shadow that 5.0 replaced (ADR 26).
 One shadow wraps several agents (ADR 18, Invariant 0) and picks the profile
 from the name it was invoked as. All agents share the same filesystem,
 network and terminal isolation; a profile selects only the binary, the
@@ -151,14 +149,6 @@ def detect_agent(argv0: str, override: str = "") -> str:
         )
     base = argv0.rpartition("/")[2]
     return base if base in ("codex", "pi") else "claude"
-
-
-def agent_profile(name: str) -> AgentProfile:
-    """The profile for ``name``; refuses anything outside the closed set."""
-    try:
-        return PROFILES[name]
-    except KeyError:
-        raise SandboxError(f"claude-sandbox: unknown agent '{name}'.") from None
 
 
 def filter_chrome_args(args: Iterable[str]) -> list[str]:

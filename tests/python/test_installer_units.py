@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_sandbox.installer import actions, jsonfile, steps
+from claude_sandbox.installer import actions, steps
 from claude_sandbox.installer.actions import (
     Entry,
     Move,
@@ -78,12 +78,6 @@ def test_a_failed_write_leaves_no_temporary_file(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         actions.apply([ReplaceTree(tmp_path / "dir", 0o755, twice)])
     assert os.listdir(tmp_path) == ["dir"]
-
-
-@pytest.mark.parametrize("data", [b'{"s":"\\ud800"}', b"[" * 100_000 + b"]" * 100_000])
-def test_json_that_cannot_be_written_back_is_refused(data: bytes) -> None:
-    with pytest.raises(jsonfile.NotJson):
-        jsonfile.loads(data)
 
 
 def test_moves_across_filesystems_and_touch_without_following(

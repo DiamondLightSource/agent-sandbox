@@ -398,8 +398,8 @@ def test_no_skills_in_the_tree_removes_them(tmp_path: Path) -> None:
 
 # --- managed settings (ADR 13) -------------------------------------------------
 
-# Everything jq would have kept, as jq would have written it: the numbers'
-# spelling, the escapes and the key order.
+# Every value and the key order are kept; numbers are written as Python
+# reads them.
 ADMIN = """{"permissions":{"defaultMode":"plan"},"env":{"FOO":"bar"},
 "hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"org.sh"}]}]},
 "n":[1.0,0.10,1e2,-0,100000000000000000001,1E-7],"s":"é\\u007f\\u0001\\t/",
@@ -426,13 +426,13 @@ ADMIN_MERGED = """{
   },
   "n": [
     1.0,
-    0.10,
-    1E+2,
-    -0,
+    0.1,
+    100.0,
+    0,
     100000000000000000001,
-    1E-7
+    1e-07
   ],
-  "s": "é\\u007f\\u0001\\t/",
+  "s": "é\x7f\\u0001\\t/",
   "e": {},
   "a": [],
   "x": null,
@@ -468,7 +468,18 @@ def test_the_updater_is_disabled_in_the_managed_policy(
     assert mode(tmp_path / MANAGED) == 0o644
 
 
-BAD_JSON = ("{not json", "", "null", "false", "{} {}", '{"a":NaN}')
+# Not one JSON value, a value that is no settings, and what could not be
+# written back: a lone surrogate, nesting too deep.
+BAD_JSON = (
+    "{not json",
+    "",
+    "null",
+    "false",
+    "{} {}",
+    '{"a":NaN}',
+    '{"s":"\\ud800"}',
+    '{"a":' * 100_000 + "1" + "}" * 100_000,
+)
 
 
 @pytest.mark.parametrize(
@@ -548,7 +559,7 @@ STATUSLINE = REPO / ".claude/statusline-command.sh"
         (
             {USER_SETTINGS: '{"statusLine":null,"n":1.50}'},
             {},
-            "{\n  " + OURS + ',\n  "n": 1.50\n}\n',
+            "{\n  " + OURS + ',\n  "n": 1.5\n}\n',
             None,
         ),
         # STATUS=1 replaces the script, not the setting.

@@ -9,16 +9,17 @@ probes, apt and the three agent downloads) are in ``system``; ``install``
 in ``__init__`` runs both in main()'s order.
 """
 
+import json
 import os
 import stat
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 from ..profiles import LIBEXEC
 from ..tools import output
-from . import jsonfile
 from .actions import (
     Action,
     Entry,
@@ -346,25 +347,37 @@ def plan_skills(layout: Layout, options: Options) -> list[Action]:
     return [ReplaceTree(dst, 0o755, tuple(entries), layout.owner)]
 
 
-def _settings(path: Path, warning: str) -> tuple[jsonfile.Json, list[Action]]:
+def _no_constant(name: str) -> object:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _object(value: object) -> dict[str, object] | None:
+    return cast(dict[str, object], value) if isinstance(value, dict) else None
+
+
+def _dump(value: object) -> bytes:
+    return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
+
+
+def _settings(path: Path, warning: str) -> tuple[object, list[Action]]:
     """The settings file's value (``{}`` when absent), or a warning. A
-    symlink is not followed: it is left alone, with a warning."""
+    symlink is not followed: it is left alone, with a warning. So is a
+    file that is not one JSON value, or is ``null`` or ``false``, or holds
+    what cannot be written back (NaN, a lone surrogate, nesting too deep)."""
     if path.is_symlink():
         return None, [Warn(f"claude-sandbox: WARNING — {path} is a symlink; skipped.")]
     data = _read(path)
     if data is None:
         return {}, []
     try:
-        return jsonfile.loads(data), []
-    except jsonfile.NotJson:
+        text = data.decode("utf-8-sig", errors="replace")
+        value: object = json.loads(text, parse_constant=_no_constant)
+        _dump(value)
+    except (ValueError, UnicodeEncodeError, RecursionError):
         return None, [Warn(warning)]
-
-
-def _rewrite(path: Path, value: jsonfile.Json, owner: Owner) -> list[Action]:
-    data = (jsonfile.dumps(value) + "\n").encode()
-    if _read(path) == data:
-        return []
-    return [Write(path, data, 0o644, owner)]
+    if value is None or value is False:
+        return None, [Warn(warning)]
+    return value, []
 
 
 def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
@@ -388,16 +401,17 @@ def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
     value, warned = _settings(path, warning)
     if warned:
         return actions + warned
-    if not isinstance(value, dict):
+    policy = _object(value)
+    if policy is None:
         return actions + [skipping(" is not a JSON object")]
-    env = value.get("env")
+    if policy.get("env") is None:
+        policy["env"] = {}
+    env = _object(policy["env"])
     if env is None:
-        env = value["env"] = {}
-    if not isinstance(env, dict):
         return actions + [skipping(": env is not an object")]
     env["DISABLE_AUTOUPDATER"] = "1"
-    value["autoUpdates"] = False
-    return actions + _rewrite(path, value, layout.owner)
+    policy["autoUpdates"] = False
+    return actions + _place(path, _dump(policy), 0o644, layout.owner)
 
 
 def plan_codex_managed(layout: Layout, options: Options) -> list[Action]:
@@ -448,21 +462,19 @@ def plan_statusline(layout: Layout, options: Options) -> list[Action]:
     if warned:
         return actions + warned
     if present:
-        if not isinstance(value, dict):
+        user = _object(value)
+        if user is None:
             return actions + [
                 Warn(
                     f"claude-sandbox: WARNING — {settings} is not a JSON object;"
                     " skipping statusline wiring."
                 )
             ]
-        if value.get("statusLine") is None:
-            value["statusLine"] = {
-                "type": "command",
-                "command": USER_STATUSLINE_COMMAND,
-            }
+        if user.get("statusLine") is None:
+            user["statusLine"] = {"type": "command", "command": USER_STATUSLINE_COMMAND}
     if not had_file and value == {}:
         return actions
-    return actions + _rewrite(settings, value, None)
+    return actions + _place(settings, _dump(value), 0o644, None)
 
 
 def is_mount(path: str) -> bool:

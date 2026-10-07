@@ -21,7 +21,7 @@ from typing import NoReturn
 import pytest
 
 from claude_sandbox import cli, jail, shadow, watch
-from claude_sandbox.bwrap import bwrap_argv
+from claude_sandbox.bwrap import bwrap_build
 from claude_sandbox.config import Config, parse_config
 from claude_sandbox.errors import SandboxError
 from claude_sandbox.profiles import PROFILES, VERIFY_BATTERY
@@ -129,7 +129,7 @@ def test_launch_wraps_the_bwrap_argv_in_script(
     assert ex.argv[:6] == [script, "--return", "-q", "-E", "never", "-c"]
     assert ex.argv[7:] == ["/dev/null"]
     env = parse_config(fx.host.config_path, fx.env)
-    expected = bwrap_argv(
+    expected = bwrap_build(
         fx.host.profiles["claude"],
         Config.from_env(env),
         env,
@@ -139,7 +139,7 @@ def test_launch_wraps_the_bwrap_argv_in_script(
         shipped_skills_dir=fx.host.shipped_skills_dir,
         gitconfig_path=fx.host.gitconfig_path,
         state_dir=fx.host.state_dir,
-    )
+    ).argv
     i = expected.index(fx.host.state_dir)  # created, then masked
     assert expected[i - 1] == "--tmpfs"
     # The jail is off: a child watches while script(1) runs.
