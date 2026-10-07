@@ -186,6 +186,12 @@ ADMIN = """{"permissions":{"defaultMode":"plan"},"env":{"FOO":"bar"},
 "hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"org.sh"}]}]},
 "n":[1.0,0.10,1e2,-0,100000000000000000001,1E-7],"s":"é\\u007f\\u0001\\t/",
 "e":{},"a":[],"x":null,"t":[true,false],"autoUpdates":true}"""
+ALERTS = (
+    "# >>> claude-sandbox alerts >>>\n"
+    "[ -r /etc/profile.d/claude-sandbox-alerts.sh ]"
+    " && . /etc/profile.d/claude-sandbox-alerts.sh\n"
+    "# <<< claude-sandbox alerts <<<\n"
+)
 OURS = "# Managed by claude-sandbox — do not edit by hand.\n"
 
 SCENARIOS = [
@@ -251,6 +257,35 @@ SCENARIOS = [
                 "shared@0555": None,
             }
         ),
+    ),
+    Scenario("alerts-no-rc-files", "alerts_hook"),
+    Scenario(
+        "alerts-bash-removes",
+        "alerts_hook",
+        files(
+            {
+                "prefix/etc/bash.bashrc@0640": "a\n" + ALERTS + "b\n",
+                "prefix/etc/zsh/zshrc": "z\n" + ALERTS,
+                "prefix/etc/profile.d/claude-sandbox-alerts.sh": "old\n",
+            }
+        ),
+    ),
+    Scenario(
+        "alerts-python-adds",
+        "alerts_hook",
+        files({"prefix/etc/bash.bashrc": "a\n", "prefix/etc/zsh/zshrc": "z"}),
+        env={"CLAUDE_SANDBOX_IMPL": "python"},
+    ),
+    Scenario(
+        "alerts-python-in-place",
+        "alerts_hook",
+        files(
+            {
+                "prefix/etc/bash.bashrc": "a\n" + ALERTS + "b\n" + ALERTS,
+                "prefix/etc/zsh/zshrc": "z\n" + ALERTS,
+            }
+        ),
+        env={"CLAUDE_SANDBOX_IMPL": "python"},
     ),
     Scenario("cred-dirs-fresh", "ensure_cred_dirs"),
     Scenario(
