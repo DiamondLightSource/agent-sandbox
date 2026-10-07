@@ -140,7 +140,9 @@ pass "claude-sandbox alerts lists them and --clear empties the list; doctor repo
 # neither write the store nor move its parent aside and put its own store at
 # the path the watcher trusts. A venv link into the store stays; a link to
 # an interpreter the session wrote is quarantined. A system python3 later on
-# PATH makes the venv's python3 a shadow.
+# PATH makes the venv's python3 a shadow. The image points
+# UV_PYTHON_INSTALL_DIR at its own root-owned store; these launches unset
+# it, as a guest devcontainer has it.
 share=/root/.local/share
 store="$share/uv/python"
 [ ! -e "$share/uv" ] || fail "$share/uv exists before the test"
@@ -175,7 +177,7 @@ rm -rf $share/evil
 EOF
 rm -f go-exit
 { : > "$alerts"; } 2>/dev/null || true
-claude < /dev/null > session.out 2>&1 &
+env -u UV_PYTHON_INSTALL_DIR claude < /dev/null > session.out 2>&1 &
 pid=$!
 wait_for 30 exists linked-store > /dev/null || fail "uv store: the probe never linked: $(cat session.out)"
 ! grep -q ESCAPED uv-escapes || fail "uv store: $(cat uv-escapes)"
@@ -205,7 +207,7 @@ cat > "$real" <<EOF
 #!/bin/bash
 touch $store/x
 EOF
-CLAUDE_SANDBOX_UV_PYTHON_STORE=writable claude < /dev/null > session.out 2>&1 \
+env -u UV_PYTHON_INSTALL_DIR CLAUDE_SANDBOX_UV_PYTHON_STORE=writable claude < /dev/null > session.out 2>&1 \
     || fail "uv store: the writable session failed: $(cat session.out)"
 [ -e "$store/x" ] || fail "uv store: uv-python-store = writable left it read-only"
 pass "uv store: uv-python-store = writable leaves it writable"
