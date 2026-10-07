@@ -1,7 +1,7 @@
 """The bwrap argv: a pure function of (profile, config, environment).
 
-Ported line for line from ``bwrap_argv_build`` in
-``.devcontainer/claude-sandbox/claude-shadow``, and kept in the same order:
+Ported line for line from ``bwrap_argv_build`` in the bash shadow that 5.0
+replaced (ADR 26), and kept in the same order:
 bwrap applies its operations in argv sequence, so the order of the sections
 below is part of the security model (a mask must follow the bind it covers;
 an allow-write bind must follow the masks it re-exposes a path through).
@@ -313,7 +313,8 @@ def bwrap_build(
     read from the environment (in the bash, the shadow exports its constant
     before the builder runs). ``env["PATH"]`` is the launching PATH, read
     only for the entry-point guard. Raises SandboxError for an allow-device
-    entry that is not a device node under /dev.
+    entry that is not a device node under /dev, and for an allow-write entry
+    that is not an absolute path.
     """
     home = env.get("HOME") or "/root"
 
@@ -444,7 +445,7 @@ def bwrap_build(
     # they expect. Unconditional — the shadow's loud-fail upstream catches a
     # missing real binary.
     #
-    # Read-only. The bash binds it read-write, which lets a session rewrite
+    # Read-only. The bash bound it read-write, which let a session rewrite
     # the binary every later session (and every other agent's session) runs:
     # persistence across sessions. Nothing the agent does needs to write it;
     # its updater is off by managed settings.
@@ -465,7 +466,15 @@ def bwrap_build(
     # podman.sock` reaches the engine while ssh-agent, gpg-agent, dbus and
     # keyring sockets stay masked). Hoisting it above the masks would let a
     # mask clobber the operator's bind silently.
+    #
+    # A relative entry is refused rather than skipped: bwrap would resolve it
+    # against the launch directory, the workspace, which a session can write,
+    # so a conf line that meant one path could bind another.
     for path in lines(config.allow_write):
+        if not path.startswith("/"):
+            raise SandboxError(
+                f"claude-sandbox: allow-write needs an absolute path: {path}"
+            )
         if probe.exists(path):
             argv += ["--bind", path, path]
             writable.append(path)

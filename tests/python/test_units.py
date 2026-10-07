@@ -280,3 +280,11 @@ def test_the_real_binary_is_bound_back_read_only() -> None:
     assert argv[i - 2 : i + 1] == ["--ro-bind", "/real", "/h/.local/bin/claude"]
     for name in ("codex", "pi"):
         assert not agent_profile(name).bind_back  # exec'd in place, under /usr
+
+
+@pytest.mark.parametrize("entry", ["cache", "./cache", "~/cache", "../x"])
+def test_a_relative_allow_write_is_refused(entry: str) -> None:
+    # Not skipped: bwrap would resolve it against the workspace, which a
+    # session can write, so the conf line could bind a path it never named.
+    with pytest.raises(SandboxError, match=f"absolute path: {entry}"):
+        guard_argv("/usr/local/bin", allow_write=f"/c\n{entry}")
