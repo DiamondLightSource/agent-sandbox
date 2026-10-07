@@ -93,7 +93,7 @@ class FakeOps(Ops):
     def __init__(self) -> None:
         self.log: list[tuple[object, ...]] = []
         self.missing: set[str] = set()
-        self.files: set[str] = {"/dev/net/tun", READY}
+        self.files: set[str] = {"/dev/net/tun", READY, jail.IPV6_SYSCTLS}
         self.fail: set[str] = set()  # joined argv that exit 1
         self.listening: set[str] = set()  # ports ss reports
         self.procs: dict[int, FakeProc] = {}
@@ -1167,3 +1167,15 @@ def test_an_old_kernels_network_broadcast_route_is_its_own() -> None:
 def test_a_multipath_route_is_refused(line: str) -> None:
     with pytest.raises(jail.JailError, match="multipath route"):
         jail.check_routes(line + "\n", RULES, ADDRS, set())
+
+
+def test_a_kernel_without_ipv6_has_nothing_to_check() -> None:
+    """Booted with ipv6.disable=1: no /proc/sys/net/ipv6, and `ip -6` fails.
+    That is IPv6 off, not a refusal."""
+    ops = FakeOps()
+    ops.env = {"CLAUDE_JAIL_READY": READY}
+    ops.files.discard(jail.IPV6_SYSCTLS)
+    ops.fail |= {"ip -6 -o addr show", "ip -6 -o route show table all"}
+    with pytest.raises(Exec):
+        jail.holder_main(["--", *COMMAND], ops=ops)
+    assert ops.written == {}

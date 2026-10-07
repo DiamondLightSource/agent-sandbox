@@ -144,7 +144,8 @@ The routes block private, CGNAT, connected and link-local networks and
 Azure's WireServer, with exceptions for the gateway, DNS and `allow-ip`
 destinations. pasta copies every outer route into the namespace, so the
 holder flushes the main table and builds the allowlist from nothing, each
-route leaving from the interface's own address, switches IPv6 off, then
+route leaving from the interface's own address, checks that IPv6 holds
+nothing beyond link-local (switching it off where it can), then
 reads back the main, local and other tables and the policy rules and
 refuses the launch if anything differs. The ordering is
 essential: create namespace, attach pasta, restrict routes, then launch agent.

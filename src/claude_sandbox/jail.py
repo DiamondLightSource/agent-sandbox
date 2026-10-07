@@ -765,6 +765,7 @@ DEFAULT_RULES = (
     "32766: from all lookup main",
     "32767: from all lookup default",
 )
+IPV6_SYSCTLS = "/proc/sys/net/ipv6"
 IPV6_OFF = (
     "/proc/sys/net/ipv6/conf/all/disable_ipv6",
     "/proc/sys/net/ipv6/conf/default/disable_ipv6",
@@ -893,7 +894,14 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
     then punch back only the gateway, the DNS forwarder and the allow-ip
     devices, each with the interface's address as the source. Then every
     table and the policy rules are read back, and anything else refuses the
-    launch. IPv6 is switched off in the namespace.
+    launch. IPv6 is read back too: it may hold only link-local, multicast
+    and the kernel's own routes, with no global address. That check is
+    what holds in a container, where /proc/sys is read-only; writing the
+    namespace's disable_ipv6 sysctls, where it can, is a bonus, and a
+    kernel booted without IPv6 has nothing to check.
+
+    The allowlist compares one gateway and one device per route, so a
+    multipath route, or a second default, is refused rather than compared.
 
     The gateway's /32 is pinned on-link before the default route through it
     (which needs it): with the kernel's connected route flushed, that /32 is
@@ -986,8 +994,13 @@ def lock_routes(env: Mapping[str, str], ops: Ops) -> None:
         else:
             allowed.add(("unicast", f"{host}/32", gw, nic))
 
-    # IPv6 off. pasta runs IPv4-only; this makes sure nothing else is left.
-    v6_off = all([ops.write(path, "1\n") for path in IPV6_OFF])
+    # IPv6: pasta runs IPv4-only. Switch it off where /proc/sys can be
+    # written (not in a container, usually); else the read-back below must
+    # find nothing. No /proc/sys/net/ipv6 at all: a kernel booted with
+    # ipv6.disable=1, where `ip -6` fails and there is nothing to check.
+    v6_off = not ops.exists(IPV6_SYSCTLS) or all(
+        [ops.write(path, "1\n") for path in IPV6_OFF]
+    )
 
     reads = [
         ip("-4", "-o", "route", "show", "table", "all", quiet=True),

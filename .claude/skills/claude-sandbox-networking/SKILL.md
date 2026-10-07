@@ -172,8 +172,11 @@ the same flaw. `lock_routes` now `ip -4 route flush table main` (NEVER the
 local table: loopback and the namespace's own addresses, which the relays
 and forwarder use) and builds exactly the allowlist (gateway /32 pinned
 before the default through it, `src` the interface's address on each punch,
-Azure's WireServer blackholed beside link-local), switches IPv6 off through
-its sysctls, then reads back every table and `ip rule` and refuses the launch
+Azure's WireServer blackholed beside link-local), then reads back every table
+and `ip rule`, and IPv6 (only link-local, multicast and the kernel's own may be
+left: in a container /proc/sys is read-only, so the read-back is what holds and
+writing `disable_ipv6` is opportunistic; no /proc/sys/net/ipv6 means a kernel
+without IPv6), and refuses the launch
 on any difference. **Refuse:** going back to adding routes on top of what
 pasta left; flushing the local table; dropping the read-back. Guards:
 `test_jail.py` (Azure-shaped table, leftovers, rules, IPv6) and
