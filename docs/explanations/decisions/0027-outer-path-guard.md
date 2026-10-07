@@ -97,9 +97,10 @@ new git hooks, while the session runs; warn in outer shells.
     session from choosing what is bound. It does not stop an earlier
     session from choosing what the store holds (see Consequences).
   - The store is left writable, and judged as before, when another mount
-    lies at or under that chain in the jail (a mask such as
-    `~/.local/share/claude`, or an `allow-write` inside it), which the chain
-    binds would cover, and when an `allow-write` lies in the store itself.
+    lies at or under that chain in the jail (for example an `allow-write`
+    of `~/.local/share/uv/cache`), which the chain binds would cover, and
+    when an `allow-write` lies in the store itself. Sibling masks such as
+    `~/.local/share/claude` are not under the chain and do not matter.
   - `uv-python-store = writable` in `/etc/claude-sandbox.conf` (or
     `CLAUDE_SANDBOX_UV_PYTHON_STORE=writable`) turns the bind off, for
     projects that install Pythons in a session (nox or tox across several
