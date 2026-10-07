@@ -4,16 +4,15 @@
 #                    `target: developer`). Intentionally a bare FROM: the
 #                    DLS ubuntu-devcontainer image already ships the
 #                    dev-tooling baseline (git, curl, ca-certificates, jq,
-#                    sudo) the bash installer needs; everything else
-#                    (bubblewrap, nodejs, gh) is apt-installed by
-#                    `.devcontainer/claude-sandbox/install.sh` at
-#                    postCreate.
+#                    sudo) the installer's bootstrap needs; everything else
+#                    (bubblewrap, nodejs, gh) is apt-installed by the
+#                    installer (`./install --here`) at postCreate.
 #   claude-sandbox — the PUBLISHED image (ghcr.io/diamondlightsource/claude-sandbox,
 #                    built by .github/workflows/container.yml): sandboxed
 #                    Claude Code for hosts WITHOUT a devcontainer workflow;
-#                    rootless podman/docker + the container/claude-container
-#                    launcher is all a host needs. It builds FROM the
-#                    developer stage and is installed by the same install.sh
+#                    rootless podman/docker + `uvx claude-sandbox` (the
+#                    launcher) is all a host needs. It builds FROM the
+#                    developer stage and is installed by the same installer
 #                    the devcontainer runs — dogfood ≈ guest ≈ image, one
 #                    installer, one audit surface.
 # Global-scope ARG: `COPY --from` cannot expand a stage-scoped one, so the
@@ -25,22 +24,22 @@ FROM ghcr.io/diamondlightsource/ubuntu-devcontainer:noble AS developer
 
 FROM developer AS claude-sandbox
 
-# The version of container/claude-container this image was built and
-# tested with. CI derives it from the release tag, else the script's VERSION line (single
-# source of truth) and passes it in; the launcher reads the label from
-# the pulled image to warn when the user's copy is out of date.
+# The launcher version (the `uvx claude-sandbox` wheel) this image was built
+# and tested with. CI passes the release tag, or the version hatch-vcs
+# derives between tags; the launcher reads the label from the pulled image
+# to warn when the user's copy is out of date.
 ARG LAUNCHER_VERSION=""
 LABEL io.diamondlightsource.claude-sandbox.launcher-version="${LAUNCHER_VERSION}"
 
 # What `claude-sandbox version` reports inside the image. .dockerignore
-# excludes .git, so stamp_version can't run `git describe` at build —
+# excludes .git, so the installer can't run `git describe` at build —
 # CI passes the ref name (tag on releases, `main` otherwise) instead.
 ARG CLAUDE_SANDBOX_VERSION=""
 
-# Whether to fetch OpenAI's Codex CLI at build time (install.sh's own
+# Whether to fetch OpenAI's Codex CLI at build time (the installer's own
 # WITH_CODEX knob, exposed here). The codex SHADOW is installed either way — Invariant 1 says the shadow must own the name
 # on $PATH regardless — this only controls the best-effort curl fetch of
-# the real binary. Default on, matching install.sh; set to 0 to build an
+# the real binary. Default on, matching the installer; set to 0 to build an
 # image that never reaches chatgpt.com (e.g. an offline/air-gapped build,
 # or to keep the published image's Codex support pinned to a build done
 # with known network access rather than whichever runner happened to build
@@ -48,18 +47,14 @@ ARG CLAUDE_SANDBOX_VERSION=""
 ARG WITH_CODEX=1
 ARG WITH_PI=1
 ARG PI_VERSION=latest
-# Which installer and shadow the image gets: empty (the default) for the
-# bash ones, `python` for the Python installer and shadow (issue #72, opt-in;
-# install.sh then fetches a pinned uv and provisions the root-owned
-# interpreter under /usr/libexec/claude-sandbox). The entrypoint follows
-# whichever was installed.
-ARG CLAUDE_SANDBOX_IMPL=""
-
 COPY . /opt/claude-sandbox
 WORKDIR /opt/claude-sandbox
 
-# Install the same files as a devcontainer. Runtime mounts and the namespace
-# probe are handled by the entrypoint when the image starts on its host.
+# Install the same files as a devcontainer: install.sh fetches a pinned uv,
+# provisions the root-owned interpreter and venv under
+# /usr/libexec/claude-sandbox and hands over to the Python installer.
+# Runtime mounts and the namespace probe are handled by the entrypoint when
+# the image starts on its host.
 RUN bash .devcontainer/claude-sandbox/install.sh --image-build \
     && apt-get install -y --no-install-recommends vim \
     && rm -rf /var/lib/apt/lists/*
