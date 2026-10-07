@@ -56,7 +56,9 @@ see the [XDG split rationale](https://diamondlightsource.github.io/claude-sandbo
 two sub-dirs stay tmpfs-masked: `applications/` (Claude Code's
 `.desktop` URL handler, which we don't want registered on the host
 desktop environment) and `claude/` (Claude Code's versioned binary
-cache, ephemeral by design). Claude Code also writes `.local/bin/
+cache, ephemeral by design), and uv's Python store, `uv/python`, is
+bound read-only over it when it exists at launch (ADR 27), so a session
+cannot rewrite an interpreter a venv links to. Claude Code also writes `.local/bin/
 claude` (the real-binary bind) and tmpfs-only entries under
 `.local/state/claude`, so `.local` is expected as a top-level entry.
 The defence-in-depth file masks (checks 14–15) also bind `/dev/null`

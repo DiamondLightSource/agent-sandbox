@@ -51,9 +51,10 @@ in the workspace run on your next `git commit` or `git push` and never show
 in a diff. The wrapper quarantines both while the session runs and
 warns at your shell prompt; `claude-sandbox alerts` lists what it did. A
 venv's `python` links to an interpreter the session cannot write are left
-alone; where uv keeps its Pythons in a writable place (its default,
-`~/.local/share/uv/python`), recreate the venv outside the sandbox. See
-{ref}`ADR 27 <adr-outer-path-guard>`.
+alone. uv's Python store (its default is `~/.local/share/uv/python`) is
+read-only inside the sandbox when it exists at launch, so a venv recreated
+in a session keeps its links; install new Pythons from an ordinary
+terminal. See {ref}`ADR 27 <adr-outer-path-guard>`.
 
 Review the rest like any contribution before you run it outside the
 sandbox: build scripts, test fixtures, `.git/config` and the venv's

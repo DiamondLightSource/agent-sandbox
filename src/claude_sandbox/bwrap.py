@@ -396,7 +396,8 @@ def bwrap_build(
         name = skill_dir.rpartition("/")[2]
         argv += ["--ro-bind", skill_dir, f"{home}/{profile.skills_rel}/{name}"]
     # $HOME/.local/share bulk-bound for host XDG data dirs (helm plugins,
-    # krew, uv Python, etc.). Two sub-dirs stay ephemeral via tmpfs:
+    # krew, uv Python, etc.; uv's Python store is made read-only after the
+    # read-write binds, below). Two sub-dirs stay ephemeral via tmpfs:
     #   applications/  Claude Code writes a .desktop URL handler here;
     #                  binding the host's dir would register the in-sandbox
     #                  claude as a host URL handler.

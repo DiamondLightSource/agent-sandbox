@@ -6,7 +6,8 @@ Date: 2026-10-06
 
 ## Status
 
-Accepted. Implemented in 5.0.0 (2026-10-07).
+Accepted. Implemented in 5.0.0 (2026-10-07). uv's Python store bound
+read-only, so the interpreter allowance covers it (#85, 2026-10-07).
 
 Builds on {ref}`ADR 9 <adr-shadow-on-path>` (the shadow on PATH, Invariant 1)
 and {ref}`ADR 26 <adr-python-implementation>` (the Python shadow). Applies to
@@ -71,12 +72,24 @@ new git hooks, while the session runs; warn in outer shells.
   - What was present and unchanged when the session started is left alone,
     so the venv's own `python3` stays. A changed file is judged again.
   - One allowance: a link named `python`, `python3` or `python3.N` whose
-    final target is an executable named `python*` outside every read-write
-    root of the jail is not a shadow. That is what `uv venv` makes against
-    `/usr/bin/python3` or a root-owned uv-managed Python, so a session can
-    recreate the venv. A regular file of that name, a link into anything the
-    session can write, and every other name (`pip`, console scripts) are
-    judged as usual.
+    final target is an executable named `python*` that the jail cannot
+    write (outside every read-write root, or under uv's Python store, below)
+    is not a shadow. That is what `uv venv` makes against `/usr/bin/python3`
+    or a uv-managed Python, so a session can recreate the venv. A regular
+    file of that name, a link into anything the session can write, and
+    every other name (`pip`, console scripts) are judged as usual.
+- **uv's Python store read-only.** uv keeps the Pythons it installs in
+  `$UV_PYTHON_INSTALL_DIR`, else `uv/python` under `$XDG_DATA_HOME` or
+  `~/.local/share`; in a guest devcontainer that lies in the read-write
+  `~/.local/share` bind. When the store exists at launch, lies inside a
+  read-write bind and holds none, `bwrap.py` read-only binds it after every
+  read-write bind, at each path the jail sees it through one, and the
+  watcher counts it as not writable. It is resolved outside the jail, from
+  the launch environment, one component at a time; a link (or `.`, `..`)
+  met in a directory the jail can write skips the store, so a session
+  cannot choose what is bound or trusted. An `allow-write` of the store
+  itself, or of a path inside it, stands: the store is then left
+  writable.
 - **A scan at launch.** Before the agent starts, each watched directory is
   compared with a baseline the previous launch kept under
   `/run/claude-sandbox` (root-owned); a shadow that is not in it is
@@ -120,15 +133,24 @@ Options rejected:
 - The interpreter allowance holds only where the interpreter is out of the
   session's reach. In the published image uv's Pythons are under
   `/usr/libexec/claude-sandbox/python` (the sandbox's own, root-owned and
-  not bound read-write), and in a DLS
-  python-copier devcontainer `uv venv` links to the system `/usr/bin/python3`.
-  But a copier project whose `requires-python` the system Python does not
-  meet gets a uv-managed Python in uv's default `~/.local/share/uv/python`,
-  which the jail can write (`~/.local/share` is bound read-write). There a
-  venv the session recreates loses its `python` links to quarantine.
-  Recreate such a venv outside the jail. Trusting that directory would trust
-  an interpreter the session can rewrite, so it is not done; binding it
-  read-only into the jail would let the allowance apply.
+  not bound read-write), and in a DLS python-copier devcontainer `uv venv`
+  links to the system `/usr/bin/python3`. A copier project whose
+  `requires-python` the system Python does not meet gets a uv-managed
+  Python in `~/.local/share/uv/python`, which the read-only store bind puts
+  out of the session's reach, so a venv the session recreates keeps its
+  `python` links.
+- Inside the jail `uv python install` (and `uninstall`) into the store fails
+  with a read-only file system error. Install Pythons from an ordinary
+  container terminal; `uv venv`, `uv sync` and `uv run` against an
+  installed one work in the jail. A store that does not exist at launch is
+  not bound, so a session can create it and install into it; links into it
+  are then judged as usual (quarantined) until the next launch binds it.
+- The allowance trusts what the store holds at launch. A session that ran
+  while the store was writable (before this binding, or when it did not
+  exist at launch) could have left an interpreter there. Such a session
+  could equally have changed what uv runs outside the sandbox, which reads
+  the same store; review the store as you would `/cache` after such a
+  session.
 - The entry-point binds leave empty, non-executable files named `claude`,
   `codex`, `pi` and `claude-sandbox` in the guarded directories, and a
   session cannot remove the venv's `bin` while they are mounted.

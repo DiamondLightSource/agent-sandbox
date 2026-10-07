@@ -43,6 +43,23 @@ to install on the first shell in each container. Each container still needs
 recipe above.
 :::
 
+## Python versions from uv
+
+Where the project needs a Python the container does not have, uv installs
+one into its store, `~/.local/share/uv/python` by default. The sandbox binds
+that store read-only, so install Pythons from an ordinary container
+terminal, not from an agent session:
+
+```bash
+uv python install 3.12
+```
+
+Agents can then create and sync venvs against it (`uv venv`, `uv sync`). If
+the store did not exist when the session started, uv in that session can
+create it, but the PATH watcher may remove the `python` links of a venv made
+against it; recreate the venv from a terminal, or start a new session. See
+{ref}`ADR 27 <adr-outer-path-guard>`.
+
 ## Team configuration
 
 Apply settings **after** the installer, which restores the shipped defaults.

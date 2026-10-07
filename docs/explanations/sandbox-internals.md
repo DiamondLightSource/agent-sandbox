@@ -53,6 +53,13 @@ stored there are exposed. Two `.local/share` directories are masked again:
 - `applications`: keeps Claude's desktop URL-handler registration temporary.
 - `claude`: keeps its versioned binary cache separate from the outer install.
 
+uv's Python store (`$UV_PYTHON_INSTALL_DIR`, else `uv/python` under
+`$XDG_DATA_HOME` or `.local/share`) is bound read-only when it exists at
+launch inside a writable bind, so a session cannot change an interpreter
+that a venv, or uv outside the sandbox, runs. `uv venv` and `uv sync` work
+against the Pythons there; `uv python install` fails inside the sandbox and
+belongs in an ordinary terminal.
+
 Other top-level credential directories, such as `.ssh`, `.aws`, `.kube` and
 `.gnupg`, remain behind the home mask. See the
 [exposure table](../reference/deliberately-exposed.md) for agent state and skills.
@@ -91,7 +98,8 @@ design; it has two parts.
   bits, or removes it if it is a link. Any new or changed hook other than
   `*.sample` is treated the same way. Files present and unchanged when the
   session started are left alone, as are a venv's `python` links to an
-  interpreter outside the session's reach. A scan at launch also catches
+  interpreter outside the session's reach (a system Python, or one in uv's
+  read-only store). A scan at launch also catches
   shadows left since the previous launch.
 
 Each action is recorded under `/run/claude-sandbox/`, which the jail cannot
