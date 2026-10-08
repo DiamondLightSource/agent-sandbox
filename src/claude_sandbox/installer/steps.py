@@ -252,50 +252,6 @@ def plan_cred_dirs(layout: Layout, options: Options) -> list[Action]:
     return actions + _makedirs(home / ".codex") + _makedirs(home / ".pi/agent")
 
 
-ALERTS_HOOK = "/etc/profile.d/claude-sandbox-alerts.sh"
-ALERTS_BEGIN = "# >>> claude-sandbox alerts >>>"
-ALERTS_END = "# <<< claude-sandbox alerts <<<"
-SHELL_RCS = ("/etc/bash.bashrc", "/etc/zsh/zshrc")
-
-
-def plan_alerts_hook(layout: Layout, options: Options) -> list[Action]:
-    """``alerts_hook`` (ADR 27): every outer bash and zsh warns at the prompt
-    when the PATH watcher has quarantined something. The hook goes in
-    /etc/profile.d and is sourced from the system rc files between markers,
-    replacing any earlier block. An rc file that is a symlink is left
-    alone."""
-    actions: list[Action] = []
-    block = f"{ALERTS_BEGIN}\n[ -r {ALERTS_HOOK} ] && . {ALERTS_HOOK}\n{ALERTS_END}\n"
-    for rc in SHELL_RCS:
-        path = layout.system(rc)
-        data = _read(path)
-        if data is None:
-            continue
-        lines = data.decode(errors="surrogateescape").splitlines(keepends=True)
-        if any(line.rstrip("\n") == ALERTS_BEGIN for line in lines):
-            # sed's /BEGIN/,/END/d: from the first marker through the next
-            # end marker (or the end of the file), and again after it.
-            kept: list[str] = []
-            inside = False
-            for line in lines:
-                bare = line.rstrip("\n")
-                if not inside and bare == ALERTS_BEGIN:
-                    inside = True
-                elif inside:
-                    inside = bare != ALERTS_END
-                else:
-                    kept.append(line)
-            lines = kept
-        text = "".join(lines) + block
-        new = text.encode(errors="surrogateescape")
-        if new != data:
-            st = path.stat()
-            mode, owner = st.st_mode & 0o7777, (st.st_uid, st.st_gid)
-            actions.append(Write(path, new, mode, owner))
-    source = _source(layout, f"{_SCRIPTS}/alerts-prompt.sh")
-    return actions + _place(layout.system(ALERTS_HOOK), source, 0o644, layout.owner)
-
-
 def plan_conf(layout: Layout, options: Options) -> list[Action]:
     """``install_conf``: skipped when the tree carries no conf."""
     src = layout.source / ".devcontainer/claude-sandbox.conf"
@@ -578,7 +534,6 @@ Step = Callable[[Layout, Options], list[Action]]
 # The file steps in main()'s order. ``install`` runs apt_install and the
 # userns probe before the links, and the agent downloads after them.
 STEPS: tuple[tuple[str, Step], ...] = (
-    ("alerts_hook", plan_alerts_hook),
     ("shadow", plan_shadow),
     ("link_terminal_config", plan_shared_links),
     ("ensure_cred_dirs", plan_cred_dirs),

@@ -214,8 +214,8 @@ protection. Even with a full *effective* cap set gained via a child `unshare
 
 **Structure:** the jail is `src/claude_sandbox/jail.py` (`launch` outside,
 `holder_main`/`lock_routes` inside the holder, `stage_dns`, the relays), one of
-the four audit-core modules of ADR 26 (with `bwrap.py`, `shadow.py`,
-`watch.py`), readable top to bottom; the `egress_jail_enabled` predicate and
+the three audit-core modules of ADR 26 (with `bwrap.py` and `shadow.py`),
+readable top to bottom; the `egress_jail_enabled` predicate and
 the `egress-jail`/`allow-ip` keys are in `config.py`. The processes it
 starts and the `/proc` it reads go through an `Ops` object so the unit tests
 replace them; its files are real, under a test's temporary directory. Don't

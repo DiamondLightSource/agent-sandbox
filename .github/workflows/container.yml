@@ -142,10 +142,9 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # With the egress jail on (the default): a launch, the battery for each
-      # agent, the entry-point guard and the PATH watcher end to end
-      # (tests/entry_guard.sh, tests/watch_e2e.sh), then the jail in real
-      # namespaces (tests/jail_python.sh, which fetches pytest), in a
-      # container of its own.
+      # agent, the entry-point guard end to end (tests/entry_guard.sh), then
+      # the jail in real namespaces (tests/jail_python.sh, which fetches
+      # pytest), in a container of its own.
       - name: "Test: end-to-end sandboxed launch (entrypoint -> shadow -> jail -> bwrap)"
         run: |
           # Rootless podman is the sandbox's supported runtime, and the one
@@ -178,8 +177,7 @@ jobs:
               for agent in claude codex pi; do
                 claude-sandbox verify --agent "$agent" || exit "$?"
               done
-              bash /opt/claude-sandbox/tests/entry_guard.sh || exit "$?"
-              bash /opt/claude-sandbox/tests/watch_e2e.sh'
+              bash /opt/claude-sandbox/tests/entry_guard.sh'
           # The jail in real namespaces. NET_ADMIN on the outer container
           # only, so the test can add host routes (a metadata /32, a VPN
           # subnet) for pasta to mirror and prove the jail drops them.

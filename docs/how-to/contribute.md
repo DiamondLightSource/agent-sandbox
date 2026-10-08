@@ -60,7 +60,7 @@ bash tests/codex_launch.sh
 
 `tests/launcher.sh` and `tests/doctor.sh` drive the `claude-sandbox`
 command as a black box; `pytest` runs them (`tests/python/test_bash_suites.py`).
-`tests/entry_guard.sh`, `tests/watch_e2e.sh`, `tests/jail_python.sh` and
+`tests/entry_guard.sh`, `tests/jail_python.sh` and
 `tests/pi_e2e.sh` run inside this repository's image, as
 `.github/workflows/container.yml` starts it; each file's header gives the
 command.
@@ -85,7 +85,7 @@ run as root share the package with the launch path.
 
 ### The audit core
 
-Four modules hold the security-critical code. Each is meant to be read top
+Three modules hold the security-critical code. Each is meant to be read top
 to bottom; don't spread them across more modules.
 
 | Module | What it holds |
@@ -93,7 +93,6 @@ to bottom; don't spread them across more modules.
 | `bwrap.py` | A pure function from agent profile, configuration and environment to the bwrap argv. The only place that adds a mount or an environment variable to it |
 | `jail.py` | The egress jail: the namespace holder, `pasta`, DNS forwarding and the loopback relays |
 | `shadow.py` | One launch, top to bottom: the recursion guard, the refusals, the configuration and Git config, the directories the binds need, the warnings, and the `script(1)` wrap around the bwrap argv |
-| `watch.py` | The PATH watcher ({ref}`ADR 27 <adr-outer-path-guard>`) |
 
 Around them:
 
@@ -106,7 +105,7 @@ Around them:
 | `tools.py` | The fixed system directories the launch path runs its tools from |
 | `context.py`, `cli.py` | Where the CLI runs, and the command table |
 | `host/` | The host launcher: options, engine calls, `clean` |
-| `helpers/` | The in-container helpers: `gh-auth`, `glab-auth`, `verify`, `pi-local`, `doctor`, `alerts`, `version`, `update` |
+| `helpers/` | The in-container helpers: `gh-auth`, `glab-auth`, `verify`, `pi-local`, `doctor`, `version`, `update` |
 | `installer/` | The installer's steps and the interpreter provisioning |
 
 `bwrap.py` reads the environment only from the mapping it is given. It
@@ -268,37 +267,13 @@ A smoke run downloads nothing, so it starts the Python installer from the
 tree with the interpreter named in `CLAUDE_SANDBOX_SMOKE_PYTHON` (the tests
 default it to `python3`).
 
-### The entry-point guard and the PATH watcher
+### The entry-point guard
 
-{ref}`ADR 27 <adr-outer-path-guard>` guards the outer `PATH` against
-executables a session leaves behind. Two parts, both in the package:
-
-- `bwrap.py` adds the entry-point mount guard: read-only binds of
-  `/dev/null` over `claude`, `codex`, `pi` and `claude-sandbox` in each
-  writable directory ahead of `/usr/local/bin`, after the read-write binds,
-  and it masks the watcher's state directory, `/run/claude-sandbox`. It
-  also works out which directories the watcher watches
-  (`watched_path_dirs`), so the two agree on what is writable. `shadow.py`
-  refuses to launch when an entry-point name there is anything but the
-  empty file the guard leaves.
-- `watch.py` is the watcher. `shadow.py` runs it in a thread around the
-  jailed launch, and forks it as a child when the jail is off (the shadow
-  then execs `script(1)`), except as PID 1, where `script` runs as a child
-  and the watcher stays a thread. It uses inotify through `ctypes` with a pass
-  every second as a fallback, quarantines by clearing execute bits through
-  a descriptor opened without following links, and records each action
-  under the state directory. Interpreter pruning must keep `_ctypes`.
-
-`claude-sandbox alerts` (`helpers/commands.py`) lists and clears the
-alerts, and refuses inside the jail; `claude-sandbox doctor` warns about
-them and about entry points ahead of the shadow. The installer places the
-prompt hook `/etc/profile.d/claude-sandbox-alerts.sh` and sources it from
-the system bash and zsh rc files.
-
-`tests/python/test_watch.py` runs the watcher against real directories.
-In this repository's image, `tests/entry_guard.sh` and `tests/watch_e2e.sh`
-test the mount guard and the watcher end to end, and battery check 22
-asserts the binds from inside the jail.
+The guard's binds go after the read-write binds in `bwrap.py`
+([Sandbox internals](../explanations/sandbox-internals.md#the-outer-path-and-the-entry-point-guard)).
+In this repository's image, `tests/entry_guard.sh` tests it end to end (it
+puts the venv first on `PATH` itself), and battery check 22 asserts the binds
+from inside the jail.
 
 ## Build the docs locally
 

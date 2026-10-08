@@ -97,9 +97,8 @@ shell prompt change. Older untagged containers need recreation.
 
 `doctor` also reports a `warn` line when a command
 named `claude`, `codex`, `pi` or `claude-sandbox` comes before the sandbox on
-`PATH`, or when `claude-sandbox alerts` lists anything the PATH watcher
-quarantined ({ref}`ADR 27 <adr-outer-path-guard>`). `--fix` does not touch
-either. `doctor` exits 1 when anything is to do or any warning is shown, so
+`PATH` ({ref}`ADR 28 <adr-review-what-a-session-leaves>`). `--fix` does not
+touch it. `doctor` exits 1 when anything is to do or any warning is shown, so
 scripts can rely on its status.
 
 ## Configure the sandbox
@@ -176,6 +175,8 @@ Choose only the devices needed. See the [threat model](../explanations/threat-mo
 The image includes Python, uv, Node.js and npm. The launcher selects a
 per-project venv at `/cache/venv-for<project path>`, available through
 `/opt/venv`. The mounted project's `.venv` is not used by default.
+`/opt/venv/bin` comes last on `PATH`, after the system directories
+([why](../explanations/threat-model.md#what-a-session-leaves-behind)).
 
 The `claude-sandbox-cache` volume holds venvs, uv downloads and pre-commit
 caches across projects. Recreation makes a fresh venv but retains downloads.

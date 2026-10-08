@@ -235,47 +235,6 @@ def test_a_read_only_store_shares_claude_only(tmp_path: Path) -> None:
     assert "is not writable; ~/.codex stays container-scoped" in err
 
 
-# --- the prompt hook (ADR 27) ------------------------------------------------
-
-ALERTS = (
-    "# >>> claude-sandbox alerts >>>\n"
-    "[ -r /etc/profile.d/claude-sandbox-alerts.sh ]"
-    " && . /etc/profile.d/claude-sandbox-alerts.sh\n"
-    "# <<< claude-sandbox alerts <<<\n"
-)
-
-
-@pytest.mark.parametrize(
-    ("bashrc", "zshrc", "bash_after", "zsh_after"),
-    [
-        # Added at the end of each rc file, a newline-less last line kept.
-        ("a\n", "z", "a\n" + ALERTS, "z" + ALERTS),
-        # Every earlier block goes; one goes back at the end.
-        ("a\n" + ALERTS + "b\n" + ALERTS, "z\n" + ALERTS, "a\nb\n" + ALERTS, None),
-    ],
-)
-def test_the_prompt_hook_is_sourced_once(
-    tmp_path: Path, bashrc: str, zshrc: str, bash_after: str, zsh_after: str | None
-) -> None:
-    files = {
-        "prefix/etc/bash.bashrc@0640": bashrc,
-        "prefix/etc/zsh/zshrc": zshrc,
-        "prefix/etc/profile.d/claude-sandbox-alerts.sh": "old\n",
-    }
-    step(tmp_path, "alerts_hook", files)
-    assert (tmp_path / "prefix/etc/bash.bashrc").read_text() == bash_after
-    assert mode(tmp_path / "prefix/etc/bash.bashrc") == 0o640
-    assert (tmp_path / "prefix/etc/zsh/zshrc").read_text() == (zsh_after or zshrc)
-    hook = tmp_path / "prefix/etc/profile.d/claude-sandbox-alerts.sh"
-    assert hook.read_bytes() == (SCRIPTS / "alerts-prompt.sh").read_bytes()
-    assert mode(hook) == 0o644
-
-
-def test_the_prompt_hook_without_rc_files(tmp_path: Path) -> None:
-    step(tmp_path, "alerts_hook")
-    assert os.listdir(tmp_path / "prefix/etc") == ["profile.d"]
-
-
 # --- credential directories, conf, stamps --------------------------------------
 
 

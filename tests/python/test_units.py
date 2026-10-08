@@ -148,16 +148,13 @@ def test_host_only_branches() -> None:
     config = Config(gpu=True, allow_devices="/dev/sda")
     env = {"HOME": "/h", "CLAUDE_SANDBOX_JAIL_RESOLV": "/r"}
     claude = PROFILES["claude"]
-    argv = bwrap_build(
-        claude, config, env, "", "/real", [], probe=HostWithEverything()
-    ).argv
+    argv = bwrap_build(claude, config, env, "", "/real", [], probe=HostWithEverything())
     i = argv.index("--dev-bind")
-    assert argv[i : i + 14] == [
+    assert argv[i : i + 12] == [
         "--dev-bind", "/dev/sda", "/dev/sda",
         "--dev-bind", "/dev/nvidia0", "/dev/nvidia0",
         "--tmpfs", "/run/user",
         "--tmpfs", "/run/secrets",
-        "--tmpfs", "/run/claude-sandbox",  # the PATH watcher's state
         "--tmpfs", "/h",
     ]  # fmt: skip
     # A GPU glob can list a dangling link; the real probe says "no".
@@ -221,7 +218,7 @@ def guard_argv(path: str, allow_write: str = "/c\n/gone") -> list[str]:
     config = Config(allow_write=allow_write)
     env = {"HOME": "/h", "PATH": path}
     claude = PROFILES["claude"]
-    return bwrap_build(claude, config, env, "/w", "/real", [], probe=GuardProbe()).argv
+    return bwrap_build(claude, config, env, "/w", "/real", [], probe=GuardProbe())
 
 
 def guard_binds(argv: list[str]) -> list[str]:
@@ -258,7 +255,7 @@ def test_entry_guard_under_an_allow_write_of_root() -> None:
 def test_the_real_binary_is_bound_back_read_only() -> None:
     """A session cannot rewrite the binary later sessions run."""
     claude = PROFILES["claude"]
-    argv = bwrap_build(claude, Config(), {"HOME": "/h"}, "", "/real", []).argv
+    argv = bwrap_build(claude, Config(), {"HOME": "/h"}, "", "/real", [])
     i = argv.index("/h/.local/bin/claude")
     assert argv[i - 2 : i + 1] == ["--ro-bind", "/real", "/h/.local/bin/claude"]
     for name in ("codex", "pi"):

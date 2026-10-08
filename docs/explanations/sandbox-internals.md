@@ -14,8 +14,8 @@ The sandbox closes each route:
   claude_sandbox _shadow NAME -- ARGS`. The `--` keeps the agent's own
   arguments, such as `claude --resume`, from being read as the wrapper's.
 - The interpreter is named by absolute path, never found through `PATH`.
-  In the published image `PATH` starts with `/opt/venv/bin`, which lives
-  on the `/cache` volume that agents can write.
+  In the published image `PATH` holds `/opt/venv/bin`, which lives on the
+  `/cache` volume that agents can write.
 - `-I` (isolated mode) ignores `PYTHON*` variables, the user's
   site-packages and the current directory.
 - The interpreter and venv are installed root-owned under
@@ -66,40 +66,18 @@ stays temporary. The real Claude binary is also bound at
 `~/.local/bin` is appended to PATH, after system directories. A binary planted
 there cannot take precedence over a system command or the agent wrapper.
 
-## The entry-point guard and the PATH watcher
+## The outer PATH and the entry-point guard
 
-Inside the jail, `PATH` puts system directories first. Outer shells are
-different: in the published image and in DLS copier devcontainers `PATH`
-starts with the project venv's `bin`, under the writable `/cache`. An
-executable a session leaves there, such as a `git` or a `claude`, would run
-the next time you type that command in an ordinary container terminal,
-outside the sandbox. A Git hook in the workspace would run on your next
-commit in the same way. {ref}`ADR 27 <adr-outer-path-guard>` records the
-design; it has two parts.
+The published image appends the venv to `PATH` for outer shells too
+(`PATH=$PATH:/opt/venv/bin`), so an executable a session leaves in it cannot
+shadow a system command ({ref}`ADR 28 <adr-review-what-a-session-leaves>`).
 
-- **Entry-point mount guard.** For each writable directory ahead of
-  `/usr/local/bin` on the launching `PATH` that exists at launch, `bwrap.py`
-  read-only binds `/dev/null` over `claude`, `codex`, `pi` and
-  `claude-sandbox`, so the session cannot create those names there. The
-  wrapper refuses to launch when one of them is anything else, and
-  verification check 22 asserts the binds.
-- **PATH watcher** (`watch.py`). Outside the jail, for as long as the
-  session runs, it watches the writable directories that come before the
-  system command directories on `PATH`, and the workspace's Git hooks
-  directory (and the one `core.hooksPath` names). An executable whose name a
-  later `PATH` directory also has is a shadow: the watcher clears its execute
-  bits, or removes it if it is a link. Any new or changed hook other than
-  `*.sample` is treated the same way. Files present and unchanged when the
-  session started are left alone, as are a venv's `python` links to an
-  interpreter outside the session's reach. A scan at launch also catches
-  shadows left since the previous launch.
-
-Each action is recorded under `/run/claude-sandbox/`, which the jail cannot
-see. Outer shells print new alerts at the prompt, the wrapper prints a
-summary when the session ends, and `claude-sandbox doctor` warns about them.
-`claude-sandbox alerts` lists them; after reviewing and restoring a file,
-`claude-sandbox alerts --clear` empties the list and accepts what the
-directories now hold.
+Where a writable directory does come before `/usr/local/bin`, the
+**entry-point mount guard** protects the sandbox's own names: for each such
+directory that exists at launch, `bwrap.py` read-only binds `/dev/null` over
+`claude`, `codex`, `pi` and `claude-sandbox`. The wrapper refuses to launch
+when one of them is anything else, `claude-sandbox doctor` warns about it,
+and verification check 22 asserts the binds.
 
 ## gitconfig defence-in-depth
 

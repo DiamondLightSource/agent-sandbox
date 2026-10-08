@@ -86,7 +86,6 @@ def launch(
         "gitconfig": str(root / "etc/claude-gitconfig"),
         "skills": str(root / "skills"),
         "tools": str(root / "bin"),
-        "state": str(root / "state"),
         "signal": sig,
     }
     argv = [sys.executable, "-I", str(DRIVER), json.dumps(spec), agent, *args]

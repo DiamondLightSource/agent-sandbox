@@ -99,7 +99,8 @@ RUN bash .devcontainer/claude-sandbox/install.sh --image-build \
 # never touched, and the container's interpreter path never leaks into
 # it. The shadow passes VIRTUAL_ENV and the UV_* vars through --clearenv
 # and appends $VIRTUAL_ENV/bin to the jail PATH (never prepends —
-# Invariant 1). Home stays ephemeral on purpose.
+# Invariant 1), and so does the outer PATH (ADR 28): the jail can write the
+# venv. Home stays ephemeral on purpose.
 # Keep requires-python in the root pyproject.toml <= the installer's
 # PYTHON_VERSION (installer/provision.py).
 ENV UV_PYTHON_INSTALL_DIR=/usr/libexec/claude-sandbox/python \
@@ -108,7 +109,7 @@ ENV UV_PYTHON_INSTALL_DIR=/usr/libexec/claude-sandbox/python \
     VIRTUAL_ENV=/cache/venv \
     UV_CACHE_DIR=/cache/uv \
     UV_TOOL_DIR=/cache/uv-tools \
-    PATH=/opt/venv/bin:$PATH
+    PATH=$PATH:/opt/venv/bin
 RUN uv venv --no-python-downloads --managed-python /cache/venv \
     && grep -q '^home = /usr/libexec/claude-sandbox/python/cpython-' /cache/venv/pyvenv.cfg \
     && ln -s /cache/venv /opt/venv \

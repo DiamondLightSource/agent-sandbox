@@ -5,11 +5,10 @@ prompts. Every file ``--fix`` changes is backed up first. The paths come
 from the environment so the tests stay hermetic.
 
 Where the Python shadow is installed it also checks, from outside the jail,
-that the agents' names reach it on PATH (Invariant 1) and whether the PATH
-watcher has quarantined anything (ADR 27). Neither is for ``--fix``: what
-put a file there needs a person to look at it. Nor are the last two, that
-the container has the ``/dev/net/tun`` the egress jail needs (issue #71)
-and a passt new enough for it (issue #85): those are the
+that the agents' names reach it on PATH (Invariant 1). That is not for
+``--fix``: what put a file there needs a person to look at it. Nor are the
+last two, that the container has the ``/dev/net/tun`` the egress jail needs
+(issue #71) and a passt new enough for it (issue #85): those are the
 container's to give.
 """
 
@@ -19,7 +18,7 @@ import shutil
 import time
 from typing import cast
 
-from .. import config, context, watch
+from .. import config, context
 from ..bwrap import SHADOW_DIR
 from ..profiles import LIBEXEC
 from ..shadow import SHIM, entry_point_problems
@@ -251,7 +250,7 @@ class Doctor:
         self.warned = True
 
     def guards(self) -> None:
-        """The entry points reach the shadow; nothing is quarantined."""
+        """The entry points reach the shadow."""
         try:
             python_shadow = _read(SHADOW) == SHIM
         except OSError:
@@ -268,14 +267,6 @@ class Doctor:
             )
         if not problems:
             self.report("ok", "entry points", "claude, codex, pi reach the shadow")
-        alerts = watch.read_alerts()
-        if alerts:
-            self.warn(
-                "quarantined",
-                f"{len(alerts)} alert(s); see `claude-sandbox alerts`",
-            )
-        else:
-            self.report("ok", "quarantined", "nothing")
 
     def tun(self) -> None:
         """The egress jail's device, judged from the container: an agent

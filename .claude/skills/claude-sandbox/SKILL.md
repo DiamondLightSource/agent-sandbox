@@ -123,12 +123,10 @@ to continue unless every name holds it.
   `test_units.py` (`test_the_real_binary_is_bound_back_read_only`) guard
   the bind pair; update them if you change the bind.
 - Making the bind-back read-write again.
-- Weakening the PATH watcher (ADR 27, `watch.py`): it quarantines
-  executables a session adds ahead of system commands on PATH, and new git
-  hooks, while the session runs, and warns in outer shells. Refuse
-  following links when quarantining, judging only a list of names, dropping
-  the jail-off watcher, or showing the alerts inside the jail
-  (`bwrap.py` masks `/run/claude-sandbox`).
+- Putting a jail-writable venv ahead of the system directories on the
+  outer PATH, or bringing back a watcher, quarantine or alerts for what a
+  session leaves (ADR 28 dropped ADR 27's: one narrow slice of code that
+  runs only when something outside the jail runs it).
 - Dropping the shadow's entry-point guard, or moving its binds
   above the read-write binds they sit inside. It protects the sandbox's
   entry-point names: a session cannot create a command named claude,
@@ -265,15 +263,14 @@ suites. Don't port those to Python, and don't grow sandbox logic in them.
   (`#!/usr/bin/env python3`, bare `python3`), running without `-I`, or
   running from uv's cache (`~/.cache` is jail-writable). Always the
   absolute root-owned interpreter under `/usr/libexec/claude-sandbox/` —
-  in the image `PATH` starts with `/opt/venv/bin` → `/cache`, which the
-  jail can write. The host-side `uvx claude-sandbox` launcher/installer
+  the image's `PATH` holds `/opt/venv/bin` → `/cache`, which the jail
+  can write. The host-side `uvx claude-sandbox` launcher/installer
   (ADR 23) is a console script run from uv's cache without `-I` by
   construction and is outside this rule: don't "fix" it, and don't refuse
   uvx on its account.
 - A bind or environment variable added to the bwrap argv anywhere but
   `bwrap.py`.
-- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`, and
-  `watch.py` from ADR 27) across
+- Spreading the audit core (`bwrap.py`, `jail.py`, `shadow.py`) across
   more modules or helpers — the `bf65407` failure mode. Profiles, config,
   host launcher, installer and helper CLI live around the core, not in it.
 
@@ -640,14 +637,13 @@ that skill first.
 | Agent profiles                | `src/claude_sandbox/profiles.py`                    |
 | One launch, top to bottom     | `src/claude_sandbox/shadow.py`, entered from `__main__.py` (`_shadow`) |
 | Egress jail and relays        | `src/claude_sandbox/jail.py` (`claude-sandbox-networking` skill) |
-| PATH watcher (ADR 27)         | `src/claude_sandbox/watch.py`                       |
 | Conf parsing, port checks     | `src/claude_sandbox/config.py`                      |
 | The shims on PATH             | `.devcontainer/claude-sandbox/claude-shim` (installed as `claude`, `codex`, `pi`), `claude-sandbox-shim` |
 | Installer bootstrap           | `.devcontainer/claude-sandbox/install.sh` (uv + interpreter, then hands over) |
 | Installer                     | `src/claude_sandbox/installer/` (`steps.py` files, `system.py` apt/probes/downloads, `provision.py` interpreter) |
 | Codex managed config (`/etc/codex/managed_config.toml`) | `installer/steps.py` `plan_codex_managed` |
 | Root-shim installer entry (revision selection) | `install`                          |
-| Helper CLI (gh-auth, glab-auth, update, verify, doctor, alerts, version) | `src/claude_sandbox/cli.py`, `helpers/` |
+| Helper CLI (gh-auth, glab-auth, update, verify, doctor, version) | `src/claude_sandbox/cli.py`, `helpers/` |
 | Host launcher                 | `src/claude_sandbox/host/` (`claude-sandbox-container` skill) |
 | Unit tests                    | `tests/python/` (`test_argv.py` for the argv)       |
 | End-to-end install smoke test | `tests/smoke.sh`                                    |
