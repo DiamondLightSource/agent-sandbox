@@ -14,8 +14,8 @@ The sandbox closes each route:
   claude_sandbox _shadow NAME -- ARGS`. The `--` keeps the agent's own
   arguments, such as `claude --resume`, from being read as the wrapper's.
 - The interpreter is named by absolute path, never found through `PATH`.
-  `PATH` holds `/opt/venv/bin`, which lives on the `/cache` volume that
-  agents can write.
+  In the published image `PATH` holds `/opt/venv/bin`, which lives on the
+  `/cache` volume that agents can write.
 - `-I` (isolated mode) ignores `PYTHON*` variables, the user's
   site-packages and the current directory.
 - The interpreter and venv are installed root-owned under

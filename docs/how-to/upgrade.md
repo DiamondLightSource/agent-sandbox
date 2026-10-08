@@ -93,7 +93,9 @@ to your forges again.
 
 If your devcontainer puts its venv first on PATH, append it instead
 (`PATH=$PATH:/path/to/venv/bin`), so nothing a session leaves there shadows a
-system command ({ref}`ADR 28 <adr-review-what-a-session-leaves>`).
+system command ({ref}`ADR 28 <adr-review-what-a-session-leaves>`). If you
+ran a 5.0.0 beta, recreate the container to drop the old PATH watcher's
+prompt hook.
 
 The `container/claude-container` script is gone. If you ran it from a
 clone, install the launcher from PyPI instead, with uv or
