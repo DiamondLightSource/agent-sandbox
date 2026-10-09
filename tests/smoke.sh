@@ -160,6 +160,9 @@ fi
 MANAGED="$PREFIX/etc/claude-code/managed-settings.json"
 jq_check "managed updater defaults" \
     '.env.DISABLE_AUTOUPDATER == "1" and .autoUpdates == false and (has("hooks") | not)' "$MANAGED"
+# ...and make this repo's plugin marketplace known, without installing a plugin.
+jq_check "managed policy lacks the claude-sandbox marketplace" \
+    '.extraKnownMarketplaces["claude-sandbox"].source == {source: "github", repo: "DiamondLightSource/claude-sandbox"} and (has("enabledPlugins") | not)' "$MANAGED"
 
 # Seed a user statusline preference.
 SETTINGS="$USER_HOME_DIR/.claude/settings.json"

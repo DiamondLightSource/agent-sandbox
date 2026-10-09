@@ -8,6 +8,12 @@ Date: 2026-09-15
 
 Accepted
 
+Amended 2026-10-08: opt-in Claude Code plugins under `plugins/`, offered
+through a plugin marketplace in this repository that the installer makes
+known in the managed settings. The skill bind below stays the mechanism for
+shipped skills; see the amendment at the end for why the marketplace's
+costs, rejected here for shipped skills, are accepted for plugins.
+
 Rests on {ref}`ADR 13 <adr-managed-settings-guard>`'s placement rule (trust
 anchors under `/etc` and `/usr/libexec`, read-only inside the session) and
 on the XDG home rebinds of {ref}`ADR 11 <adr-xdg-split>`.
@@ -79,3 +85,43 @@ function list.
   skills path to its profile, nothing else.
 - Repo-development skills remain opt-in: a user who wants one copies it
   into their own `~/.claude/skills`.
+
+## Amendment (2026-10-08): opt-in plugins from a managed marketplace
+
+Some things a user may want are not skills: the `orchestrate` plugin
+carries hooks and a mod, which a skill bind cannot deliver. They are also
+ways of working a user chooses, not part of the isolation, so they should
+not load for everyone.
+
+These live as Claude Code plugins under `plugins/<name>/`, listed in a
+marketplace at `.claude-plugin/marketplace.json` (name `claude-sandbox`).
+The installer's managed-settings step adds that marketplace to
+`extraKnownMarketplaces` in `/etc/claude-code/managed-settings.json`, so
+Claude registers it at session start and the user only runs
+`/plugin install <name>@claude-sandbox`. It never sets `enabledPlugins`:
+installing a plugin stays the user's decision. An administrator's own
+entry of the same name is kept.
+
+The objections in the Context above still hold, and are accepted here
+because they do not bite on an opt-in plugin:
+
+- *Installs into the user's plugin cache.* A plugin the user chose lives
+  where every other plugin they install lives. Nothing the isolation relies
+  on is in it; its hooks run inside the jail with the session's privileges,
+  like hooks in the user's own settings. A plugin script the user would run
+  outside the jail is the exception: it would be writable from inside the
+  session, so such a script must stay root-owned under `/usr/libexec`.
+- *Needs the network on first use.* Claude Code itself needs it.
+- *Claude only.* Hooks and mods are Claude-only anyway.
+
+Rejected: loading plugins for every user with `--plugin-dir` in the claude
+profile. It puts a workflow feature on the launch path, and charges every
+session its skill descriptions and hook processes. Also rejected: having
+the installer run `claude plugin marketplace add`. The installer runs as
+root and execs nothing found through `PATH` (ADR 26), and the command writes
+the invoking user's `~/.claude`; the managed key gets the same result from
+a file the installer already owns.
+
+Shipped skills are unchanged: `browser-testing`, `claude-sandbox-user`,
+`verify-sandbox` and `vscode-headless` stay in `skills/` and are bound
+read-only.

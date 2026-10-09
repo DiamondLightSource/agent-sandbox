@@ -74,6 +74,11 @@ jobs:
       - name: Run container Git configuration tests
         run: bash tests/container_git.sh
 
+      # The opt-in orchestrate plugin's hooks (plugins/orchestrate): hermetic,
+      # bash + git + jq, no claude binary.
+      - name: Run orchestrate plugin hook tests
+        run: bash tests/orchestrate_plugin.sh
+
   python:
     # The Python package (ADR 26): lint, type-check and test against the
     # committed dev lockfile. pytest collects tests/python only, and runs

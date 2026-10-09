@@ -1,0 +1,32 @@
+# State file template
+
+`goal.sh start` writes `<goal>/state.md` from the block below, filling the
+marker and the goal line. The rules for keeping it are in `SKILL.md`.
+
+```markdown
+<!-- state: updated=<ISO UTC> status=active -->
+# Goal: <one sentence; rewrite it when it sharpens, and say so>
+
+## Now
+- (nothing running)
+
+## Next
+- <the exact next step: a command, an edit, or what you were about to say>
+
+## Invariants
+- <only rules whose breach does damage before you would think to look>
+<!-- end head -->
+
+## Awaiting user
+## Queue
+## Release gates
+## Decided
+- <ruling> - <why> (<who>, <date>)
+## Open
+- (user) <question>
+- (me) <question>
+## Map
+- <repo or system>: <goal>/maps/<area>.md; branch:<name>, <repo>#<n>, worktree <path>
+## Done
+- <one line each, with the report pointer>
+```

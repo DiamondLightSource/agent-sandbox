@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox-shipped-skills
-description: How agent skills ship to claude-sandbox users (ADR 24). The top-level `skills/` tree is installed root-owned under /usr/libexec and ro-bound per skill into each agent's own skills dir INSIDE the jail; `.claude/skills/` is for developing this repo and never ships. Surface before adding, moving or removing a skill, before touching `installer/steps.py` `plan_skills`, `profiles.py` `SHIPPED_SKILLS_DIR` or a profile's `skills_rel`, the skill binds in `bwrap.py`, or before any proposal to copy skills into the user's ~/.claude, install them via a marketplace, or make the bind writable.
+description: How agent skills ship to claude-sandbox users (ADR 24). The top-level `skills/` tree is installed root-owned under /usr/libexec and ro-bound per skill into each agent's own skills dir INSIDE the jail; `.claude/skills/` is for developing this repo and never ships. Surface before adding, moving or removing a skill, before touching `installer/steps.py` `plan_skills`, `profiles.py` `SHIPPED_SKILLS_DIR` or a profile's `skills_rel`, the skill binds in `bwrap.py`, or before any proposal to copy skills into the user's ~/.claude, install them via a marketplace, or make the bind writable, and before adding or changing an opt-in plugin under `plugins/`.
 ---
 
 # claude-sandbox-shipped-skills
@@ -18,6 +18,7 @@ sandbox-rw path).
 |---|---|---|
 | `skills/<name>/` | Skills every sandboxed agent gets | **Yes** |
 | `.claude/skills/<name>/` | Skills for developing this repo (invariants, container, networking, triage...) | No |
+| `plugins/<name>/` | Opt-in Claude Code plugins (skills + hooks + mods), installed by the user from this repo's marketplace | Only on request; see below |
 
 The path alone tells a reviewer whether a skill reaches users. There is no
 manifest or opt-in list to keep in step. A repo-dev skill that a user wants
@@ -28,6 +29,29 @@ sandbox never does that for them.
 **symlinks** to their `../../skills/` copies so the skills still load while
 developing here. Add the same symlink for any
 new shipped skill only if it is useful for repo work; most will not need it.
+
+## Opt-in plugins: a third tree
+
+`plugins/<name>/` holds Claude Code plugins that users install
+themselves from this repo's marketplace (`.claude-plugin/marketplace.json`,
+name `claude-sandbox`): `/plugin install <name>@claude-sandbox`. Currently
+`orchestrate`. The installer's `wire_managed_settings` step makes the
+marketplace known by adding it to `extraKnownMarketplaces` in
+`/etc/claude-code/managed-settings.json` (kept if an administrator already
+set an entry of that name), so users never run `marketplace add`. It never
+sets `enabledPlugins`: installing stays the user's opt-in. The shadow does
+not touch plugins, and the wheel does not carry them; Claude Code clones the
+marketplace from GitHub at session start.
+
+This is not the shipped-skill mechanism and does not weaken it. A plugin is
+for what a skill bind cannot carry - hooks and mods - and for ways of
+working a user chooses, not for anything the isolation relies on. Its hooks
+run inside the jail with the session's privileges, exactly like hooks in the
+user's own `settings.json`, so it lives in the user's plugin cache
+(`~/.claude/plugins/`) like any other plugin. Loading it for everyone
+instead (`--plugin-dir` in the claude profile's `inject`) would put a
+workflow feature on the launch path and charge every session its skill
+descriptions and hook processes; refuse that.
 
 ## How a shipped skill reaches the session
 
@@ -62,11 +86,15 @@ there contaminates a folder the user owns, drifts from the installed
 version, and hands a compromised session a writable copy of the skill's
 scripts. Under `/usr/libexec` the scripts are exactly what `install` placed.
 
-Why not a managed setting or plugin marketplace: Claude Code has no
-system-wide skills directory and no managed key that adds a skills path
-(checked 2026-09-15 against the skills and managed-settings docs). Managed
-`extraKnownMarketplaces` still installs into the user's plugin cache, needs
-network at first use, and is Claude-only. The bind is harness-agnostic.
+Why not a managed setting or plugin marketplace for shipped skills: Claude
+Code has no system-wide skills directory and no managed key that adds a
+skills path (checked 2026-09-15 against the skills and managed-settings
+docs). Managed `extraKnownMarketplaces` still installs into the user's
+plugin cache, needs network at first use, and is Claude-only. The bind is
+harness-agnostic. Those costs are acceptable for the opt-in plugins above
+(Claude-only by nature, chosen by the user, nothing the isolation relies
+on), which is why ADR 24 was amended for them on 2026-10-08 and not for
+shipped skills.
 
 Shipped 2026-09-15 as 4.2.0 (PR #49). Verified live in all three agents,
 check 03 of the battery, and the wheel path from a branch. The full
@@ -114,3 +142,9 @@ repository-only `.claude/commands/verify-sandbox.md` has been removed.
   Move the skill to `skills/` instead, deliberately.
 - A skill whose scripts run unsandboxed on the user's behalf beyond a
   documented package install.
+- Setting `enabledPlugins` for this marketplace in the managed policy, or
+  any other way of installing a plugin for the user: plugins are opt-in.
+- Moving a skill whose scripts the user runs **outside** the jail (as
+  `browser-testing`'s `install-browser-deps.sh`) into a plugin without
+  keeping those scripts root-owned: the plugin cache is in `~/.claude`,
+  writable from inside the session.
