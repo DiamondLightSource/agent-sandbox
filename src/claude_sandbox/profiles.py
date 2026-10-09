@@ -56,6 +56,7 @@ class AgentProfile:
     setenv: tuple[tuple[str, str], ...]  # env the sandbox sets for itself
     label: str  # human name for messages
     exec_via: str = ""  # launcher exec'd with ``real`` as its argument
+    tmpdir: str = ""  # container-local temp root bound rw, or empty
 
 
 PROFILES: Mapping[str, AgentProfile] = {
@@ -78,6 +79,14 @@ PROFILES: Mapping[str, AgentProfile] = {
         # (env.DISABLE_AUTOUPDATER), so there is nothing to add here.
         setenv=(),
         label="Claude",
+        # Claude keeps its scratchpad and temp files under CLAUDE_CODE_TMPDIR
+        # (default /tmp), and the jail's /tmp is a private tmpfs: files the
+        # agent hands the user there are invisible from the outer shell and
+        # gone when the session ends. A container-local dir keeps them per
+        # project (not the /cache volume every project container shares) and
+        # visible outside. Short on purpose: Claude puts AF_UNIX sockets
+        # beneath it.
+        tmpdir="/var/tmp/claude-agent",
     ),
     "codex": AgentProfile(
         name="codex",

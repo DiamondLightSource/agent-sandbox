@@ -82,7 +82,9 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     libexec = tmp_path / "libexec"
     profiles = {
         "claude": replace(
-            PROFILES["claude"], real=executable(libexec / "claude", "real claude")
+            PROFILES["claude"],
+            real=executable(libexec / "claude", "real claude"),
+            tmpdir=str(tmp_path / "var/tmp/claude-agent"),
         ),
         "codex": replace(
             PROFILES["codex"],
@@ -495,6 +497,21 @@ def test_unshareable_skills_dir_warns_and_launches(
     (fx.home / ".agents").symlink_to(fx.root / "gone")
     fx.run()
     assert "cannot create ~/.agents/skills" in capsys.readouterr().err
+
+
+def test_agent_tmpdir_is_created_private(fx: Fixture) -> None:
+    """Claude refuses a temp root that is not a private directory it owns."""
+    fx.run()
+    tmpdir = fx.root / "var/tmp/claude-agent"
+    assert tmpdir.is_dir() and tmpdir.stat().st_mode & 0o777 == 0o700
+
+
+def test_uncreatable_agent_tmpdir_warns_and_launches(
+    fx: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (fx.root / "var").write_text("a file, not a dir")
+    fx.run()
+    assert "temp files stay in the session's private /tmp" in capsys.readouterr().err
 
 
 def test_persistent_config_does_not_warn(

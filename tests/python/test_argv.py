@@ -11,6 +11,7 @@ host.
 import os
 import socket
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -41,9 +42,12 @@ def build(
     skills: str = "/nonexistent/skills",
     verify: bool = False,
     gitconfig: str = GITCONFIG_PATH,
+    tmpdir: str = "",
 ) -> list[str]:
+    # The profile's real temp root is a host path; whether it exists must not
+    # change what these tests see.
     return bwrap_build(
-        PROFILES[agent],
+        replace(PROFILES[agent], tmpdir=tmpdir),
         Config.from_env(env),
         env,
         workspace,
@@ -520,6 +524,35 @@ def test_a_staged_resolver_is_bound_over_resolv_conf(tmp_path: Path) -> None:
     assert argv[i - 1 : i + 2] == ["--ro-bind", str(resolv), "/etc/resolv.conf"]
     argv = build({**ROOT, "CLAUDE_SANDBOX_JAIL_RESOLV": "/nonexistent/resolv.conf"})
     assert "/etc/resolv.conf" not in argv
+
+
+# --- Claude's temp root ------------------------------------------------------
+
+
+def test_tmpdir_is_bound_and_exported(tmp_path: Path) -> None:
+    """Files Claude hands the user live outside the private /tmp, in a
+    container-local dir the outer shell can see."""
+    tmpdir = str(tree(tmp_path, "claude-agent/") / "claude-agent")
+    argv = build(ROOT, tmpdir=tmpdir)
+    assert pair(argv, "--bind", tmpdir)
+    assert setenv(argv, "CLAUDE_CODE_TMPDIR") == [tmpdir]
+    # /tmp itself stays a private tmpfs.
+    assert pair(argv, "--tmpfs", "/tmp")
+
+
+def test_missing_tmpdir_is_neither_bound_nor_exported(tmp_path: Path) -> None:
+    """Pointed at the read-only /var/tmp, Claude could not create its temp dir
+    at all: without the bind it keeps the private /tmp."""
+    argv = build(ROOT, tmpdir=str(tmp_path / "missing"))
+    assert str(tmp_path / "missing") not in argv
+    assert setenv(argv, "CLAUDE_CODE_TMPDIR") == []
+
+
+def test_tmpdir_defaults() -> None:
+    """Short (Claude puts AF_UNIX sockets beneath it), container-local (not
+    the /cache volume every project container shares), and Claude only."""
+    assert PROFILES["claude"].tmpdir == "/var/tmp/claude-agent"
+    assert PROFILES["codex"].tmpdir == PROFILES["pi"].tmpdir == ""
 
 
 # --- 14: one builder, three agents ---------------------------------------------

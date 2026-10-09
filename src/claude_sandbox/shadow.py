@@ -400,6 +400,15 @@ def prepare_home(
         prepare_shipped_skills(profile, home, term, shipped_skills_dir)
     except OSError as e:
         _refuse(f"claude-sandbox: cannot create {e.filename}: {e.strerror}")
+    # Claude requires its temp root to be a private directory it owns.
+    if profile.tmpdir:
+        try:
+            os.makedirs(profile.tmpdir, mode=0o700, exist_ok=True)
+        except OSError:
+            term.warn(
+                f"cannot create {profile.tmpdir}; temp files stay in the"
+                " session's private /tmp."
+            )
     # A dangling symlink (a shared store that has gone away) makes this
     # fail; launch without the share rather than abort.
     try:
