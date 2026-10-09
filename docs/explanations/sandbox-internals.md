@@ -57,6 +57,19 @@ Other top-level credential directories, such as `.ssh`, `.aws`, `.kube` and
 `.gnupg`, remain behind the home mask. See the
 [exposure table](../reference/deliberately-exposed.md) for agent state and skills.
 
+## Claude's temp root
+
+The jail's `/tmp` is a private tmpfs, which masks the outer container's VS Code
+IPC sockets. Claude Code keeps its scratchpad and temporary files under
+`CLAUDE_CODE_TMPDIR`, so the Claude profile points that at
+`/var/tmp/claude-agent`, created 0700 in the container and bound read-write.
+Files Claude produces for the user, such as screenshots or scripts to run, are
+then visible from the outer shell and survive the session. The directory is
+container-local rather than on the shared `/cache` volume, so one project's
+sessions cannot read or plant files in another's. The path is short because
+Claude creates AF_UNIX sockets beneath it. Child processes still default to the
+private `/tmp`.
+
 ## uv bind discipline
 
 Only `uv` and `uvx` are bound back from `~/.local/bin`; the directory itself

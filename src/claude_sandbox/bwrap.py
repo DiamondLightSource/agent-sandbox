@@ -339,6 +339,12 @@ def bwrap_build(
     if workspace and probe.is_dir(workspace):
         argv += ["--bind", workspace, workspace]
         writable.append(workspace)
+    # The agent's temp root (profile.tmpdir). Skipped when prepare_home could
+    # not create it; the agent then falls back to the private /tmp.
+    tmpdir = profile.tmpdir if profile.tmpdir and probe.is_dir(profile.tmpdir) else ""
+    if tmpdir:
+        argv += ["--bind", tmpdir, tmpdir]
+        writable.append(tmpdir)
     # -e, not -d/-f: a unix socket is neither, so a -f test would silently
     # drop it, and rootless podman/docker expose their engine as a socket
     # under $XDG_RUNTIME_DIR. Dangling symlinks stay skipped: bwrap aborts on
@@ -452,6 +458,10 @@ def bwrap_build(
     # Per-agent env the sandbox sets for itself. Empty for claude.
     for name, value in profile.setenv:
         argv += ["--setenv", name, value]
+    # Only with the bind: pointed at the read-only /var/tmp, Claude could not
+    # create its temp dir at all.
+    if tmpdir:
+        argv += ["--setenv", "CLAUDE_CODE_TMPDIR", tmpdir]
     for name in PASS_THROUGH:
         if value := _lookup(env, name):
             argv += ["--setenv", name, value]
