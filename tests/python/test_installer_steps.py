@@ -399,12 +399,52 @@ ADMIN_MERGED = """{
     true,
     false
   ],
+  "autoUpdates": false,
+  "extraKnownMarketplaces": {
+    "claude-sandbox": {
+      "source": {
+        "source": "github",
+        "repo": "DiamondLightSource/claude-sandbox"
+      }
+    }
+  }
+}
+"""
+MARKETPLACE_JSON = """  "extraKnownMarketplaces": {
+    "claude-sandbox": {
+      "source": {
+        "source": "github",
+        "repo": "DiamondLightSource/claude-sandbox"
+      }
+    }
+  }
+"""
+UPDATER_OFF = (
+    '{\n  "env": {\n    "DISABLE_AUTOUPDATER": "1"\n  },\n  "autoUpdates": false,\n'
+    + MARKETPLACE_JSON
+    + "}\n"
+)
+# An administrator's own entry of the same name is kept, and an
+# extraKnownMarketplaces that is not an object is left as it is.
+ADMIN_MARKET = (
+    '{"extraKnownMarketplaces":'
+    '{"claude-sandbox":{"source":{"source":"git","url":"u"}}}}'
+)
+ADMIN_MARKET_MERGED = """{
+  "extraKnownMarketplaces": {
+    "claude-sandbox": {
+      "source": {
+        "source": "git",
+        "url": "u"
+      }
+    }
+  },
+  "env": {
+    "DISABLE_AUTOUPDATER": "1"
+  },
   "autoUpdates": false
 }
 """
-UPDATER_OFF = (
-    '{\n  "env": {\n    "DISABLE_AUTOUPDATER": "1"\n  },\n  "autoUpdates": false\n}\n'
-)
 
 
 @pytest.mark.parametrize(
@@ -415,7 +455,13 @@ UPDATER_OFF = (
         (
             '{"env":null,"z":1}',
             '{\n  "env": {\n    "DISABLE_AUTOUPDATER": "1"\n  },\n  "z": 1,\n'
-            '  "autoUpdates": false\n}\n',
+            '  "autoUpdates": false,\n' + MARKETPLACE_JSON + "}\n",
+        ),
+        (ADMIN_MARKET, ADMIN_MARKET_MERGED),
+        (
+            '{"extraKnownMarketplaces":[]}',
+            '{\n  "extraKnownMarketplaces": [],\n  "env": {\n'
+            '    "DISABLE_AUTOUPDATER": "1"\n  },\n  "autoUpdates": false\n}\n',
         ),
     ],
 )
@@ -579,7 +625,10 @@ def test_a_fresh_install_and_its_summary(tmp_path: Path) -> None:
     assert (
         "  cli:         {root}/prefix/usr/local/bin/claude-sandbox (4.2.0)\n" in summary
     )
-    assert "(updater disabled)" in summary and "(updater settings)" in summary
+    assert (
+        "(updater disabled; claude-sandbox plugin marketplace known)" in summary
+        and "(updater settings)" in summary
+    )
     assert "NOT installed — pi will refuse to launch" in summary
     assert (tmp_path / MANAGED).read_text() == UPDATER_OFF
     assert link(tmp_path, "home/.claude") == "{root}/shared/.claude"

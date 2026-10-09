@@ -1,0 +1,12 @@
+{
+  "name": "claude-sandbox",
+  "owner": { "name": "Diamond Light Source" },
+  "metadata": { "description": "Opt-in Claude Code plugins for claude-sandbox users." },
+  "plugins": [
+    {
+      "name": "orchestrate",
+      "source": "./plugins/orchestrate",
+      "description": "Orchestrate mode: delegate detailed work to subagents while the main session keeps the goal, state and map; state survives /clear."
+    }
+  ]
+}

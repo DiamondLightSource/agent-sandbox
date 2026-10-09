@@ -395,7 +395,7 @@ def summary(layout: Layout, options: Options, skipped: Sequence[str], venv: str)
         + (
             "(NOT changed — see the warning above; the updater is NOT disabled)"
             if "wire_managed_settings" in skipped
-            else "(updater disabled)"
+            else "(updater disabled; claude-sandbox plugin marketplace known)"
         ),
         f"  codex conf:  {p(codex_conf)} "
         + (

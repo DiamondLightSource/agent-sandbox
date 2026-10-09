@@ -248,8 +248,9 @@ any vendor installer runs, and everything else:
   the three agent downloads, each by absolute path through
   `tools.find_tool`.
 - The managed-settings step merges into
-  `/etc/claude-code/managed-settings.json`, keeping existing administrator
-  policy, and warns and skips a file it cannot parse or write back.
+  `/etc/claude-code/managed-settings.json` (the updater off, and this
+  repository's plugin marketplace in `extraKnownMarketplaces`), keeping
+  existing administrator policy, and warns and skips a file it cannot parse or write back.
 - The published image's entrypoint runs the same installer's
   `--container-start` and `--probe-userns` from the root-owned venv.
 

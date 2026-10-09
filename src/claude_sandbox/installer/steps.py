@@ -41,6 +41,11 @@ SKILLS_DIR = f"{LIBEXEC}/skills"
 CONF = "/etc/claude-sandbox.conf"
 MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
 CODEX_MANAGED_CONFIG = "/etc/codex/managed_config.toml"
+# This repository's plugin marketplace (.claude-plugin/marketplace.json),
+# made known to Claude through the managed policy so users need no
+# `marketplace add`; installing a plugin from it stays their choice (ADR 24).
+MARKETPLACE = "claude-sandbox"
+MARKETPLACE_REPO = "DiamondLightSource/claude-sandbox"
 CODEX_MARKER = "# Managed by claude-sandbox — do not edit by hand."
 USER_STATUSLINE_COMMAND = "bash $HOME/.claude/statusline-command.sh"
 SHARED_CONFIG = "/user-terminal-config"
@@ -343,7 +348,8 @@ def _settings(path: Path, warning: str) -> tuple[object, list[Action]]:
 
 def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
     """``wire_managed_settings``: disable Claude's updater in the managed
-    policy (ADR 13), keeping every other key and the administrator's hooks.
+    policy (ADR 13) and make this repository's plugin marketplace known
+    (ADR 24, amended), keeping every other key and the administrator's hooks.
     A file that is not a JSON object is left alone with a warning, never a
     failed install. When
     this warns the updater is not disabled, and an install summary must
@@ -372,6 +378,17 @@ def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
         return actions + [skipping(": env is not an object")]
     env["DISABLE_AUTOUPDATER"] = "1"
     policy["autoUpdates"] = False
+    if policy.get("extraKnownMarketplaces") is None:
+        policy["extraKnownMarketplaces"] = {}
+    markets = _object(policy["extraKnownMarketplaces"])
+    # An administrator's entry of the same name (a fork, a pinned ref) is
+    # kept. A value that is not an object is theirs to fix and is left as it
+    # is: Claude Code reports the invalid key, and a Warn here would mark the
+    # updater settings as skipped in the summary.
+    if markets is not None:
+        markets.setdefault(
+            MARKETPLACE, {"source": {"source": "github", "repo": MARKETPLACE_REPO}}
+        )
     return actions + _place(path, _dump(policy), 0o644, layout.owner)
 
 

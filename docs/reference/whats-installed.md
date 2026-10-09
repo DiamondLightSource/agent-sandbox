@@ -26,7 +26,7 @@ into your own devcontainer.
 | `/usr/libexec/claude-sandbox/version` | Installed release or checkout revision |
 | `/usr/libexec/claude-sandbox/installer` | Records a wheel installation for update instructions |
 | `/etc/claude-gitconfig` | Curated Git config, refreshed from your identity at agent launch |
-| `/etc/claude-code/managed-settings.json` | Disables Claude's updater; preserves existing administrator settings and hooks |
+| `/etc/claude-code/managed-settings.json` | Disables Claude's updater and makes the `claude-sandbox` plugin marketplace known (installs no plugin); preserves existing administrator settings and hooks |
 | `/etc/codex/managed_config.toml` | Disables Codex startup update checks; an administrator-owned file is left unchanged with a warning |
 | `/etc/claude-sandbox.conf` | [Sandbox configuration](configuration.md) |
 

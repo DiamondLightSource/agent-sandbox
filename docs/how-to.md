@@ -34,6 +34,7 @@ how-to/verify-the-sandbox
 how-to/use-pi
 how-to/pi-with-a-local-model
 how-to/share-skills-between-agents
+how-to/use-orchestrate-mode
 ```
 
 ## Testing and development
