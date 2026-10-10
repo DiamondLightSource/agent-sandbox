@@ -69,7 +69,9 @@ The only reliable signal is attempting the write.
   entry it probes and caches exactly as the git helper does, so the upstream
   of a fork gets its token on the first `gh pr create`. When a named token is
   chosen it sets `GH_TOKEN` in gh's own environment only, then execs the
-  real gh. `gh auth ...`, a caller's own `GH_TOKEN` or
+  real gh, so `gh auth status` reports that token. `gh auth login`,
+  `logout`, `refresh` and `switch` (which gh refuses while `GH_TOKEN` is
+  set), a caller's own `GH_TOKEN` or
   `GITHUB_TOKEN`, and another `GH_HOST` are left alone. The session's
   environment never holds a GitHub token, so battery check 04 still holds.
 - `no-forge` leaves the shim off `PATH` and, as before, omits the gh

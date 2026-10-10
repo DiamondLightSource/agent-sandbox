@@ -530,8 +530,13 @@ def test_gh_env_from_origin(home: Path, checkout: Callable[..., None]) -> None:
     child = tokens.gh_env(["pr", "create"], env, store)
     assert child == {**env, "GH_TOKEN": "tok-acme"}
     assert "GH_TOKEN" not in env
-    # gh auth sees gh's own login; a token or host the caller set stands.
-    assert "GH_TOKEN" not in tokens.gh_env(["auth", "status"], env, store)
+    # gh auth status and token report the token gh would use here; the
+    # verbs that change gh's own login (which refuse GH_TOKEN) see none.
+    assert tokens.gh_env(["auth", "status"], env, store) == child
+    assert tokens.gh_env(["auth", "token"], env, store) == child
+    for verb in ("login", "logout", "refresh", "switch"):
+        assert "GH_TOKEN" not in tokens.gh_env(["auth", verb], env, store)
+    # A token or host the caller set stands.
     assert (
         tokens.gh_env(["pr"], {**env, "GH_TOKEN": "mine"}, store)["GH_TOKEN"] == "mine"
     )

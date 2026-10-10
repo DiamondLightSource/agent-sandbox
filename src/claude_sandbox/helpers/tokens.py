@@ -54,6 +54,10 @@ _STATE = "state.json"
 _REMOTE = re.compile(
     r"(?:https://(?:[^@/]+@)?|ssh://git@|git@)github\.com[:/](.+)", re.IGNORECASE
 )
+# The ``gh auth`` verbs that change gh's own login, which gh refuses while
+# GH_TOKEN is set. The rest (``status``, ``token``) report the token gh
+# would use here, so they get it.
+_OWN_LOGIN = ("login", "logout", "refresh", "switch")
 
 
 def valid_name(name: str) -> bool:
@@ -367,14 +371,17 @@ def gh_env(
     base: str = GITHUB,
 ) -> dict[str, str]:
     """gh's environment: ``env``, plus ``GH_TOKEN`` for the repository in
-    hand when a named token is chosen for it. Never for ``gh auth``, nor
-    over a token or host the caller set.
+    hand when a named token is chosen for it. Never for the ``gh auth``
+    verbs that change gh's own login, nor over a token or host the caller
+    set.
 
     With named tokens stored and ``gh`` given, a repository git has not
     pushed to (the upstream of a fork, say) is probed and cached as git's
     helper does; the probe measures push rights, not pull-request rights."""
     child = dict(env)
-    if args[:1] == ["auth"] or env.get("GH_TOKEN") or env.get("GITHUB_TOKEN"):
+    if len(args) > 1 and args[0] == "auth" and args[1] in _OWN_LOGIN:
+        return child
+    if env.get("GH_TOKEN") or env.get("GITHUB_TOKEN"):
         return child
     if env.get("GH_HOST", HOST).lower() != HOST:
         return child
