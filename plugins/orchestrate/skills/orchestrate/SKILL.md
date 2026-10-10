@@ -13,8 +13,10 @@ material. `<plugin>` is `${CLAUDE_PLUGIN_ROOT}`; `<goal>` is
 or a command reads them.
 
 One goal is active at a time: the pointer `~/.claude/orchestrate/active`
-names it and its launch directory, and the hooks act only there and below.
-Only `goal.sh` writes the pointer. A tangled module whose every change
+names it, its launch directory and the session that owns it. The hooks
+act only in that session, there and below; the session that runs
+`goal.sh start` or `resume` becomes the owner at the end of the turn, and
+a `/clear` passes it on. Only `goal.sh` and the hooks write the pointer. A tangled module whose every change
 turns on invariants held in several places delegates badly: say so and
 work in the foreground.
 
@@ -28,9 +30,11 @@ launch directory.
 - `start <goal>`: agree a one-sentence goal and a slug (`[a-z0-9-]`) with
   the user, then `goal.sh start <slug> '<sentence>'`.
 - `resume [slug]`: with no slug it prints the active goal, or lists goals
-  and exits 3 (ask which, then `resume <slug>`). A `note:` line means this
+  and exits 3 (ask which, then `resume <slug>`). Either way this session
+  takes the goal over from any other session. A `note:` line means this
   session is outside the launch directory: tell the user. Then read the
-  state body; the SessionStart block names any `Now` entry with no report:
+  state body; the SessionStart block (or, on a takeover, the Stop hook's
+  block at the end of that turn) names any `Now` entry with no report:
   check it is not live before relaunching it from its brief.
 - `pause`: mode off, goal kept. Nothing needs flushing; say that
   `resume <slug>` brings it back.

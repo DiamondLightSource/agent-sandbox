@@ -1,6 +1,6 @@
 {
   "name": "orchestrate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Orchestrate mode: the main session holds the goal, a state file and a map of the work, and delegates detailed work to subagents. One goal folder per goal under ~/.claude/orchestrate/, spanning any number of repositories; hooks keep it current across /clear and do nothing until a goal is started.",
   "author": {
     "name": "Diamond Light Source"

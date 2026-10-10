@@ -33,15 +33,29 @@ first, or reinstall claude-sandbox.
 |---|---|
 | `/orchestrate start <goal>` | Claude agrees a one-sentence goal and a slug with you, creates the goal folder and makes it the active goal for this directory. If another goal was active, it is paused. |
 | `/orchestrate` | Carries on the active goal; with none, lists the goals and offers to resume one or start a new one. |
-| `/clear` | The next session is handed the state file's head and a crash check, and carries on. Nothing needs flushing first. |
+| `/clear` | The session the clear starts takes the goal over and is handed the state file's head and a crash check, and carries on. Nothing needs flushing first. |
 | `/orchestrate pause` | Switches the mode off and keeps the goal, marked `paused`. The state is always current, so clear or quit whenever you like. |
-| `/orchestrate resume [slug]` | Carries on the active goal. With no active goal, Claude lists the goals and asks which. Resuming a goal pauses any other active one. |
+| `/orchestrate resume [slug]` | Carries on the active goal in this session, taking it over from any other session. With no active goal, Claude lists the goals and asks which. Resuming a goal pauses any other active one. |
 | `/orchestrate list` | Shows every goal and its status (`*` marks the active one). `list --all` includes stopped goals. |
 | `/orchestrate stop` | Lists the worktrees of every repository in the goal's map, scratch dirs with their sizes and open PRs in merge order, then closes and archives the goal. Scratch is deleted only when you name it. |
 
-One goal is active at a time, and only in the directory you started it in
-(and below it). Sessions elsewhere are untouched. Start and resume a goal
-from that launch directory.
+One goal is active at a time, in one session: the session that ran
+`/orchestrate start` or `/orchestrate resume`, in the directory it ran in
+(and below it). Other sessions are untouched, including other sessions in
+the same directory: they get no injected state and no reminders to update
+it. A `/clear` in the orchestrating session passes the goal to the session
+it starts; `/compact` and `claude --resume` keep it. `/fork` (or
+`--fork-session`) leaves the goal with the original session, not the fork.
+Switching to another conversation with `/resume` leaves the goal with the
+conversation you left; it acts again when you resume that one. To carry on
+in a new session (after quitting Claude, or a crash), run
+`/orchestrate resume` there; it becomes the orchestrator, the old session
+goes quiet, and it is told about a crash or a lost agent as a new session
+would be. Start and resume a goal from that launch directory.
+
+After upgrading from plugin version 0.2.0, run `/orchestrate resume` once in
+the orchestrating session: a goal started under 0.2.0 has no owning session
+recorded, so the hooks stay silent until it is resumed.
 
 Follow the work in `.claude/status.md` in that directory, ordered as the
 orchestrator's recommendation of what you do next. It is a real file there,
@@ -64,15 +78,16 @@ foreground, what you want specified for someone else rather than done, when
 an agent should see the conversation, whether a big job may use Fable - from
 your corrections and answers, and keeps it in Claude's auto-memory.
 
-When a new session starts and an agent listed under `Now` has no report yet,
-the orchestrator is told, so an agent lost to a crash is noticed rather than
+When a session takes the goal over (a `/clear`, or `/orchestrate resume` in a
+new session) and an agent listed under `Now` has no report yet, the
+orchestrator is told, so an agent lost to a crash is noticed rather than
 assumed to be running.
 
 ## Where things are
 
 | Path | Holds |
 |---|---|
-| `~/.claude/orchestrate/active` | The active goal's slug and launch directory. |
+| `~/.claude/orchestrate/active` | The active goal's slug, launch directory and owning session. |
 | `~/.claude/orchestrate/<slug>/state.md` | The state file: an injected head and a body read on demand. |
 | `~/.claude/orchestrate/<slug>/log.md` | Append-only history, one dated bullet per entry. Never injected; agents append to it directly. |
 | `~/.claude/orchestrate/<slug>/briefs/`, `reports/`, `maps/` | Agent briefs, their long reports, and maps of the code. |
@@ -86,6 +101,6 @@ once scratch passes 1 GiB in total the orchestrator offers you a cleanup.
 
 ## Cost when off
 
-With no active goal the hooks exit at once, reading nothing. The skill's
+With no active goal the hooks exit at once, reading nothing; in a session that does not own the active goal they print nothing. The skill's
 description adds roughly 60 tokens to every session. Uninstall with
 `/plugin uninstall orchestrate@claude-sandbox`.
