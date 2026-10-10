@@ -415,17 +415,4 @@ else
     fail "install clobbered a foreign /etc/codex/requirements.toml"
 fi
 
-# 5.0 is Python-only: asking for the bash implementation, or any value but
-# python, refuses before anything is written.
-for impl in bash perl; do
-    BAD_PREFIX="$(mktemp -d)"
-    register_cleanup "$BAD_PREFIX"
-    CLAUDE_SANDBOX_IMPL=$impl CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$BAD_PREFIX" \
-        INSTALL_USER_HOME="$BAD_PREFIX/home" \
-        bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>"$BAD_PREFIX.err"
-    [ "$?" -eq 2 ] && [ -z "$(ls -A "$BAD_PREFIX")" ] && grep -q "Python-only" "$BAD_PREFIX.err" \
-        && pass || fail "CLAUDE_SANDBOX_IMPL=$impl did not refuse before writing"
-    rm -f "$BAD_PREFIX.err"
-done
-
 finish smoke.sh

@@ -47,14 +47,13 @@ SHELL_SCRIPT = (
 )
 SHELLS = frozenset({"zsh", "bash", "fish", "ksh", "tcsh", "dash", "sh"})
 # CLAUDE_SANDBOX_* variables that are the launcher's own, not the sandbox's.
-# IMPL, CONTEXT and NESTED are never passed: IMPL is retired (5.0 refuses
-# any value but python), and nothing the host sets may tell the container
-# that it is a host.
+# CONTEXT and NESTED are never passed: nothing the host sets may tell the
+# container that it is a host.
 NOT_PASSED = frozenset(
     "CLAUDE_SANDBOX_" + v
     for v in (
         "IMAGE ENGINE SHARED_CONFIG CONF ALLOW_WRITE SHELL CACHE TAG GPU"
-        " ALLOW_DEVICES IMPL CONTEXT NESTED"
+        " ALLOW_DEVICES CONTEXT NESTED"
     ).split()
 )
 DIGITS = "0123456789"
