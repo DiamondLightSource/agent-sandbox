@@ -84,7 +84,9 @@ The only reliable signal is attempting the write.
 - The first push to a repository costs one request per token tried, then
   none. A wrong entry is visible in `--status` and cleared with `--forget`.
 - That `info/refs?service=git-receive-pack` answers 200 exactly when a
-  fine-grained token may push is believed, not yet tested with real tokens.
+  fine-grained token may push is observed GitHub behaviour, not a documented
+  contract: tested with real tokens (2026-10-10), a Contents read/write token
+  got 200 and a Contents read-only token on the same repository got 403.
 - The probe measures push rights, not pull-request or issue rights: gh uses
   the first token that may push, and a gh write needing a permission that
   token lacks is not retried with another. Repositories git has
