@@ -158,6 +158,12 @@ not repo-scoped credentials. Don't conflate the two.
   which the launcher mounts on every create and every project container
   shares). It holds caches and venvs only; never tokens.
 
+Named GitHub tokens (`gh-auth --add NAME`, ADR 29) live in the same
+container-scoped dir, `~/.config/gh/scoped/`, with the repo -> token cache
+(`state.json`). Keep them there. The jail gets the per-repo token only through
+the root-owned gh shim (`LIBEXEC/bin/gh`, `_gh`) setting `GH_TOKEN` in gh's
+own child env; never `--setenv GH_TOKEN` in the argv (battery check 04).
+
 If a future request says "stop re-pasting the PAT" — surface this
 tradeoff before implementing the shortcut.
 
@@ -597,6 +603,14 @@ Verified against glab 1.36 / gh 2.45 while fixing #11-adjacent breakage:
   Always pass `--global` or `-h <host>`.
 - **`glab auth login` wires the git credential helper itself**; `gh` needs an
   explicit `gh auth setup-git`. Don't add a setup-git equivalent for glab.
+- **Git credential helpers cannot fall back, and a fine-grained PAT cannot be
+  interrogated** (issue #47, ADR 29). Git takes the first helper's answer and
+  never retries a 403, so per-org `[credential "https://github.com/ORG"]`
+  sections can't express "whichever token works". `GET /repos/{o}/{r}`
+  `permissions` reflects the account, identical for every token. Hence
+  `helpers/tokens.py`: probe `info/refs?service=git-receive-pack` per token,
+  cache the first 200. Don't "simplify" to prefix routing or to the
+  permissions API.
 - Testing recipe: `GLAB_CONFIG_DIR=$(mktemp -d)` isolates a real login from the
   user's credentials — but say so loudly, because a user who keeps that prefix
   for the *real* login writes their token to a throwaway dir and the sandbox
@@ -644,6 +658,7 @@ that skill first.
 | Codex managed config (`/etc/codex/managed_config.toml`) | `installer/steps.py` `plan_codex_managed` |
 | Root-shim installer entry (revision selection) | `install`                          |
 | Helper CLI (gh-auth, glab-auth, update, verify, doctor, version) | `src/claude_sandbox/cli.py`, `helpers/` |
+| Named GitHub tokens: git credential helper, jail gh shim (ADR 29) | `helpers/tokens.py`, `.devcontainer/claude-sandbox/gh-shim` |
 | Host launcher                 | `src/claude_sandbox/host/` (`claude-sandbox-container` skill) |
 | Unit tests                    | `tests/python/` (`test_argv.py` for the argv)       |
 | End-to-end install smoke test | `tests/smoke.sh`                                    |

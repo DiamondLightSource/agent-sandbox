@@ -134,6 +134,12 @@ else
     fail "battery missing or not executable"
 fi
 
+# The jail's gh shim (ADR 29), first on the jail's PATH.
+GH_SHIM_DEST="$PREFIX/usr/libexec/claude-sandbox/bin/gh"
+cmp -s "$REPO_ROOT/.devcontainer/claude-sandbox/gh-shim" "$GH_SHIM_DEST" \
+    && [ "$(stat -c '%a' "$GH_SHIM_DEST")" = 755 ] \
+    && pass || fail "gh shim missing or not executable"
+
 # `claude-sandbox doctor --fix` copies these, so they outlive the install clone.
 cmp -s "$REPO_ROOT/.claude/statusline-command.sh" "$PREFIX/usr/libexec/claude-sandbox/statusline-command.sh" \
     && pass || fail "recommended status line not placed for doctor"

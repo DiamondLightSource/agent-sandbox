@@ -1,0 +1,5 @@
+#!/bin/bash
+# /usr/libexec/claude-sandbox/bin/gh, first on the jail's PATH: the real gh,
+# with GH_TOKEN set in its own environment only from the token cached for
+# this repository (ADR 29). With none cached, gh runs unchanged.
+exec /usr/libexec/claude-sandbox/venv/bin/python -I -m claude_sandbox _gh -- "$@"

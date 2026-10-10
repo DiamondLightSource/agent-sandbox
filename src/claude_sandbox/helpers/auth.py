@@ -3,6 +3,8 @@
 The token is read unechoed, handed to the forge CLI on stdin (never on a
 command line), and kept nowhere else: it lives as long as the container's
 own gh or glab config does (Invariant 2: PATs are container-scoped).
+``gh-auth --add NAME`` keeps a further GitHub token beside gh's, in the same
+directory (``tokens``, ADR 29).
 """
 
 import os
@@ -10,11 +12,12 @@ import subprocess
 import sys
 import termios
 
-from ..tools import TOOL_PATH, find_tool
+from ..tools import find_tool
+from . import tokens
 
 GITLAB = "gitlab.diamond.ac.uk"
 # Where gh and glab are looked for (ADR 26: no executable found through PATH).
-FORGE_PATH = (*TOOL_PATH, "/usr/local/bin")
+FORGE_PATH = tokens.FORGE_PATH
 
 
 def _link(url: str) -> str:
@@ -104,6 +107,69 @@ def gh_auth() -> int:
         ([gh, "auth", "setup-git"], None),
         ([gh, "auth", "status"], None),
     )
+
+
+ADD_TEXT = """\
+Storing GitHub token "{name}" beside gh's own login. git tries the tokens
+on a repository's first push (gh's own first) and keeps the first that
+GitHub lets push; `claude-sandbox gh-auth --status` lists what it learnt.
+
+"""
+
+
+def gh_add(name: str, home: str, *, api: str | None = None) -> int:
+    """Store a further GitHub token as ``name``."""
+    if not tokens.valid_name(name):
+        print(
+            f"claude-sandbox: bad token name {name!r}: use letters, digits, '_',"
+            f" '.' and '-', not starting with '.' or '-', and not"
+            f" '{tokens.DEFAULT}'",
+            file=sys.stderr,
+        )
+        return 2
+    sys.stdout.write(
+        GH_TEXT.format(url=_link("https://github.com/settings/personal-access-tokens"))
+    )
+    sys.stdout.write(ADD_TEXT.format(name=name))
+    token = read_secret(f"GitHub PAT for {name}: ")
+    if not token:
+        print("claude-sandbox: no token given; nothing stored", file=sys.stderr)
+        return 1
+    accepted, expires = tokens.check(token, base=api or tokens.API)
+    if accepted is False:
+        print(
+            "claude-sandbox: GitHub rejected that token; nothing stored",
+            file=sys.stderr,
+        )
+        return 1
+    if accepted is None:
+        print("claude-sandbox: GitHub did not answer; storing the token unchecked")
+    store = tokens.Store(home)
+    try:
+        store.add(name, token, expires)
+    except tokens.UnsafeStore as error:
+        print(f"claude-sandbox: {error}; nothing stored", file=sys.stderr)
+        return 1
+    print(f"Stored {store.dir}/{name}.token (mode 0600).")
+    return 0
+
+
+def gh_status(home: str) -> int:
+    """``gh-auth --status``."""
+    for line in tokens.status_lines(tokens.Store(home)):
+        print(line)
+    return 0
+
+
+def gh_forget(home: str, repo: str | None) -> int:
+    """``gh-auth --forget [OWNER/REPO]``: drop cached choices."""
+    key = None if repo is None else tokens.repo_of(repo)
+    if repo is not None and key is None:
+        print(f"claude-sandbox: not a GitHub OWNER/REPO: {repo}", file=sys.stderr)
+        return 2
+    gone = tokens.Store(home).forget(key)
+    print(f"Forgot {gone} cached repositor{'y' if gone == 1 else 'ies'}.")
+    return 0
 
 
 def glab_auth(hostname: str = GITLAB) -> int:

@@ -22,7 +22,7 @@ home and runtime masks described in [Architecture](../explanations/architecture.
 | `~/.agents/skills/` | rw | Shared across agents and projects using the same terminal config; any agent can alter skills another later loads |
 | `/var/tmp/<agent>-agent/` | rw | The agent's temp root (`TMPDIR`; for Claude also `CLAUDE_CODE_TMPDIR`, including its scratchpad): `claude-agent`, `codex-agent` or `pi-agent`, only the running agent's. Container-local, so per project and visible from the outer shell. `/tmp` itself stays a private tmpfs |
 | `~/.cache/` | rw | Tool caches, if present |
-| `~/.config/{gh,glab-cli}/` | rw | Forge tokens; omitted with `no-forge`. Other `.config` directories remain hidden |
+| `~/.config/{gh,glab-cli}/` | rw | Forge tokens, including named GitHub tokens and their repository cache under `gh/scoped/`; omitted with `no-forge`. Other `.config` directories remain hidden |
 | `~/.local/share/` | rw | Tool data and plugins. `applications/` and `claude/` are masked to keep Claude's runtime writes temporary |
 | `~/.local/bin/{uv,uvx}` | rw | Individual tool binaries; the rest of the directory stays temporary |
 | `/usr/libexec/claude-sandbox/` | r | Agent binaries, the sandbox's Python interpreter and venv, and shipped skills. Claude is also bound at `~/.local/bin/claude` |

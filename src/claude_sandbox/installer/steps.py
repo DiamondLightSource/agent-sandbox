@@ -84,6 +84,8 @@ RUNTIME_FILES = (
     ),
     (_STATUSLINE, f"{LIBEXEC}/statusline-command.sh", 0o755),
     (f"{_SCRIPTS}/pi-sandbox-tag.ts", f"{LIBEXEC}/pi-sandbox-tag.ts", 0o644),
+    # The jail's gh, first on its PATH (bwrap.GH_SHIM_DIR; ADR 29).
+    (f"{_SCRIPTS}/gh-shim", f"{LIBEXEC}/bin/gh", 0o755),
 )
 
 

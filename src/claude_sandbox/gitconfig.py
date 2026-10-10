@@ -8,11 +8,21 @@ launch time copyGitConfig has run.
 ``_value`` writes a value as git itself would, so git reads back exactly
 the identity it was given. Standard library only: this module is on the
 launch path.
+
+GitHub's helper is the sandbox's own (``helpers.tokens``, ADR 29): with
+``useHttpPath`` git tells it the repository, so it can pick among several
+stored tokens; with only gh's login it hands every request to
+``gh auth git-credential``, as the helper here once was.
 """
 
-_FORGE_CREDENTIALS = """\
+from .profiles import LIBEXEC
+
+GITHUB_HELPER = f"{LIBEXEC}/venv/bin/python -I -m claude_sandbox _git_credential"
+
+_FORGE_CREDENTIALS = f"""\
 [credential "https://github.com"]
-    helper = !gh auth git-credential
+    helper = !{GITHUB_HELPER}
+    useHttpPath = true
 [credential "https://gitlab.diamond.ac.uk"]
     helper = !glab auth git-credential
 """

@@ -19,6 +19,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from .config import Config, lines, words
 from .errors import SandboxError
 from .profiles import (
+    LIBEXEC,
     SHARED_SKILLS_REL,
     SHIPPED_SKILLS_DIR,
     AgentProfile,
@@ -27,6 +28,10 @@ from .profiles import (
 )
 
 GITCONFIG_PATH = "/etc/claude-gitconfig"
+# The jail's gh shim, first on its PATH unless no-forge (ADR 29): it gives gh
+# the token cached for the repository in gh's own environment, so the
+# session's environment never holds GH_TOKEN (battery check 04).
+GH_SHIM_DIR = f"{LIBEXEC}/bin"
 
 # Where the installer puts the shadow, and the names the sandbox owns there
 # (Invariant 1: a plain `claude` must reach the shadow).
@@ -434,6 +439,8 @@ def bwrap_build(
     # $HOME/.local/bin is APPENDED so system tools take precedence.
     argv += ["--clearenv"]
     path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    if not config.no_forge:
+        path = f"{GH_SHIM_DIR}:{path}"
     path += f":{home}/.local/bin"
     # Outer devcontainers point $VIRTUAL_ENV at a /cache-backed venv, visible
     # via --ro-bind / /. APPENDED so the /usr/local/bin/claude shadow still

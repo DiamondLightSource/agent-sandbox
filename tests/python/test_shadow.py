@@ -152,7 +152,7 @@ def test_launch_wraps_the_bwrap_argv_in_script(
     gitconfig = Path(fx.host.gitconfig_path)
     assert stat.S_IMODE(gitconfig.stat().st_mode) == 0o644
     assert "\tname = A U Thor\n" in gitconfig.read_text()
-    assert "gh auth git-credential" in gitconfig.read_text()
+    assert "claude_sandbox _git_credential" in gitconfig.read_text()
     assert [p.name for p in gitconfig.parent.iterdir()] != []  # no temp left
     assert sorted(p.name for p in gitconfig.parent.iterdir()) == [
         "claude-gitconfig",
