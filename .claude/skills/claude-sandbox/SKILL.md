@@ -636,6 +636,7 @@ that skill first.
 | bwrap argv construction (the only place binds/env are added) | `src/claude_sandbox/bwrap.py` |
 | Agent profiles                | `src/claude_sandbox/profiles.py`                    |
 | One launch, top to bottom     | `src/claude_sandbox/shadow.py`, entered from `__main__.py` (`_shadow`) |
+| What a session's jail shows of a path (for the VS Code extension; ADR 29) | `src/claude_sandbox/scope.py`, entered from `__main__.py` (`_scope`); add any new bwrap option to its tables |
 | Egress jail and relays        | `src/claude_sandbox/jail.py` (`claude-sandbox-networking` skill) |
 | Conf parsing, port checks     | `src/claude_sandbox/config.py`                      |
 | The shims on PATH             | `.devcontainer/claude-sandbox/claude-shim` (installed as `claude`, `codex`, `pi`), `claude-sandbox-shim` |
