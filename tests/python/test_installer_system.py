@@ -292,7 +292,6 @@ def test_summary_does_not_claim_a_skipped_step(tmp_path: Path) -> None:
 def test_module_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for key, value in {
         "CLAUDE_SANDBOX_SMOKE": "1",
-        "CLAUDE_SANDBOX_IMPL": "python",
         "CLAUDE_SANDBOX_VERSION": "1.0",
         "INSTALL_PREFIX": str(tmp_path / "prefix"),
         "INSTALL_USER_HOME": str(tmp_path / "user"),
@@ -310,8 +309,8 @@ def test_module_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert (tmp_path / "home/.claude").is_symlink()
     assert (tmp_path / "prefix/etc/claude-sandbox.conf").is_file()
     assert cli.main(["--source", str(REPO), "--probe-userns"]) == 0
-    monkeypatch.setenv("CLAUDE_SANDBOX_IMPL", "perl")
-    assert cli.main(["--source", str(REPO)]) == 2
+    # A step that cannot go ahead exits with its code.
+    assert cli.main(["--source", str(tmp_path / "nowhere")]) == 1
 
 
 # --- issue #71: the egress jail's device, reported at install -----------------

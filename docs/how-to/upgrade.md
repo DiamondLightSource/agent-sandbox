@@ -87,10 +87,6 @@ warns each time that it still runs the 4.x bash sandbox without these
 fixes. Run `claude-sandbox --recreate` in each such project, then sign in
 to your forges again.
 
-`CLAUDE_SANDBOX_IMPL`, which opted in to the Python implementation before
-5.0, is no longer used: unset or `python` installs as usual, and
-`bash` (or any other value) refuses. Remove it from your `postCreate`.
-
 If your devcontainer puts its venv first on PATH, append it instead
 (`PATH=$PATH:/path/to/venv/bin`), so nothing a session leaves there shadows a
 system command ({ref}`ADR 28 <adr-review-what-a-session-leaves>`). If you

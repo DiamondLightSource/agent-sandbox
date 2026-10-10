@@ -44,20 +44,6 @@ prefixed() {
     fi
 }
 
-# 5.0 has one implementation. A postCreate that still says `python` keeps
-# working; one that asks for the retired bash one is told why it can't.
-check_impl() {
-    case "${CLAUDE_SANDBOX_IMPL:-python}" in
-        python) ;;
-        bash)
-            echo "claude-sandbox: CLAUDE_SANDBOX_IMPL=bash is no longer supported — 5.0 is Python-only. Unset it, or install a 4.x release for the bash implementation." >&2
-            exit 2 ;;
-        *)
-            echo "claude-sandbox: CLAUDE_SANDBOX_IMPL is no longer used (5.0 is Python-only); unset it, got '$CLAUDE_SANDBOX_IMPL'." >&2
-            exit 2 ;;
-    esac
-}
-
 # python_package: the claude_sandbox package being installed — a clone's
 # src/, or the installed wheel this tree is bundled in (claude_sandbox/tree).
 python_package() {
@@ -122,7 +108,6 @@ main() {
         ''|--image-build) ;;
         *) echo 'Usage: install.sh [--image-build]' >&2; exit 2 ;;
     esac
-    check_impl
     # ADR 26: nothing found through the caller's PATH; the Python installer
     # exec'd below inherits it. The same directories as tools.TOOL_PATH.
     export PATH=/usr/bin:/bin:/usr/sbin:/sbin

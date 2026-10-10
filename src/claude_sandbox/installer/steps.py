@@ -154,15 +154,6 @@ def from_env(source: Path, env: Mapping[str, str]) -> tuple[Layout, Options]:
         home=home,
         shared=env.get("CLAUDE_SHARED_CONFIG") or SHARED_CONFIG,
     )
-    # 5.0 is Python-only; install.sh refuses first, this is for any other
-    # caller of the installer.
-    impl = env.get("CLAUDE_SANDBOX_IMPL") or "python"
-    if impl != "python":
-        raise InstallError(
-            "claude-sandbox: CLAUDE_SANDBOX_IMPL is no longer supported"
-            f" (5.0 is Python-only); unset it, got '{impl}'.",
-            2,
-        )
     options = Options(
         version=env.get("CLAUDE_SANDBOX_VERSION", ""),
         installer=env.get("CLAUDE_SANDBOX_INSTALLER", ""),

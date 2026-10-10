@@ -21,7 +21,6 @@ from claude_sandbox.installer.steps import (
     CODEX_MANAGED_BODY,
     RUNTIME_FILES,
     STEPS,
-    InstallError,
     describe,
     from_env,
 )
@@ -681,12 +680,3 @@ def test_install_sets_its_own_umask(tmp_path: Path) -> None:
     finally:
         os.umask(old)
     assert (tmp_path / "prefix/etc/claude-code").stat().st_mode & 0o777 == 0o755
-
-
-@pytest.mark.parametrize("impl", ["bash", "other"])
-def test_the_bash_implementation_is_refused(tmp_path: Path, impl: str) -> None:
-    with pytest.raises(InstallError, match="5.0 is Python-only") as caught:
-        from_env(REPO, environment(tmp_path, {"CLAUDE_SANDBOX_IMPL": impl}))
-    assert caught.value.code == 2
-    # A postCreate that still opts in to Python is fine.
-    from_env(REPO, environment(tmp_path, {"CLAUDE_SANDBOX_IMPL": "python"}))

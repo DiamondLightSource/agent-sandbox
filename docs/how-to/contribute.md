@@ -214,13 +214,11 @@ does.
 the wheel bundles under `claude_sandbox/tree/`, as root. It is only a
 bootstrap:
 
-1. It refuses `CLAUDE_SANDBOX_IMPL=bash` (and any value but `python`): 5.0
-   is Python-only.
-2. It fetches uv at the version pinned in `provision.py` (`UV_VERSION`) into
+1. It fetches uv at the version pinned in `provision.py` (`UV_VERSION`) into
    `/usr/libexec/claude-sandbox/uv`, checked against the pinned SHA-256,
    unless a root-owned copy of that version is already there. It installs
    `curl` with apt first if the container has none.
-3. It has uv install the pinned CPython (`PYTHON_VERSION`) under
+2. It has uv install the pinned CPython (`PYTHON_VERSION`) under
    `/usr/libexec/claude-sandbox/python`, never in uv's cache, and runs
    `provision.py` with it. Provisioning builds the venv, pinned to the patch
    directory rather than uv's minor-version symlink, copies the
@@ -230,7 +228,7 @@ bootstrap:
    60 MB, byte-compiles it, makes it root-owned and not
    group- or world-writable, and checks that every module of the package
    imports under `-I`.
-4. It execs `venv/bin/python -I -m claude_sandbox.installer --source TREE`,
+3. It execs `venv/bin/python -I -m claude_sandbox.installer --source TREE`,
    with a fixed `PATH` and the `UV_*`, `PYTHON*`, `VIRTUAL_ENV` and
    `CONDA_*` variables removed.
 
