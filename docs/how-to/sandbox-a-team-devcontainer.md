@@ -13,7 +13,7 @@ Add this to `.devcontainer/postCreate.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-uvx claude-sandbox==5.0.0 install
+uvx claude-sandbox==5.1.1 install
 ```
 
 Pin the release so upgrades are reviewed with the project. Add `--minimal`

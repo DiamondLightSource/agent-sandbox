@@ -44,7 +44,7 @@ See [Upgrade](../how-to/upgrade.md).
 ## Claude-only installation
 
 `uvx claude-sandbox install --minimal` (or `CLAUDE_SANDBOX_MINIMAL=1`) installs
-the sandbox for Claude alone. The VS Code extension will install this way.
+the sandbox for Claude alone. The VS Code extension installs this way.
 It implies `WITH_CODEX=0 WITH_PI=0`, and it also leaves out:
 
 - `codex-dist/`, `codex-launch`, `pi-dist/`, `pi-run`, `pi-system.md` and

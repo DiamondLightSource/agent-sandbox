@@ -18,7 +18,7 @@ Exit active sessions before recreating, then
 [authenticate to forges](authenticate-with-forges.md) again if needed.
 
 Check the installed launcher with `claude-sandbox --version`.
-For a fixed version, install with `uv tool install claude-sandbox==5.0.0`;
+For a fixed version, install with `uv tool install claude-sandbox==5.1.1`;
 change that constraint explicitly to move to another release.
 
 If you use the one-off launcher instead of a tool install:
