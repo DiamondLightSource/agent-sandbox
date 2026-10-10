@@ -57,18 +57,21 @@ Other top-level credential directories, such as `.ssh`, `.aws`, `.kube` and
 `.gnupg`, remain behind the home mask. See the
 [exposure table](../reference/deliberately-exposed.md) for agent state and skills.
 
-## Claude's temp root
+## Agent temp roots
 
 The jail's `/tmp` is a private tmpfs, which masks the outer container's VS Code
-IPC sockets. Claude Code keeps its scratchpad and temporary files under
-`CLAUDE_CODE_TMPDIR`, so the Claude profile points that at
-`/var/tmp/claude-agent`, created 0700 in the container and bound read-write.
-Files Claude produces for the user, such as screenshots or scripts to run, are
-then visible from the outer shell and survive the session. The directory is
+IPC sockets. Files an agent writes there for the user, such as screenshots or
+scripts to run, would be invisible from the outer shell and gone when the
+session ends. So each agent profile names its own temp root,
+`/var/tmp/claude-agent`, `/var/tmp/codex-agent` or `/var/tmp/pi-agent`, created
+0700 in the container and bound read-write for that agent's sessions only.
+`TMPDIR` points at it, which covers Node's `os.tmpdir()` (Pi), Rust's
+`std::env::temp_dir()` (Codex), `mktemp` and Python's `tempfile`; Claude Code
+also reads `CLAUDE_CODE_TMPDIR`, where it keeps its scratchpad. The directory is
 container-local rather than on the shared `/cache` volume, so one project's
-sessions cannot read or plant files in another's. The path is short because
-Claude creates AF_UNIX sockets beneath it. Child processes still default to the
-private `/tmp`.
+sessions cannot read or plant files in another's. The paths are short because
+Claude creates AF_UNIX sockets beneath its root. A literal `/tmp/...` path
+still lands in the private tmpfs.
 
 ## uv bind discipline
 

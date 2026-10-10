@@ -20,7 +20,7 @@ home and runtime masks described in [Architecture](../explanations/architecture.
 | `~/.codex/` | rw | Codex's state; Codex sessions only. Its `packages` directory is masked |
 | `~/.pi/` | rw | Pi's state, including all configured provider credentials; Pi sessions only |
 | `~/.agents/skills/` | rw | Shared across agents and projects using the same terminal config; any agent can alter skills another later loads |
-| `/var/tmp/claude-agent/` | rw | Claude's temp root (`CLAUDE_CODE_TMPDIR`), including its scratchpad; Claude sessions only. Container-local, so per project and visible from the outer shell. `/tmp` itself stays a private tmpfs |
+| `/var/tmp/<agent>-agent/` | rw | The agent's temp root (`TMPDIR`; for Claude also `CLAUDE_CODE_TMPDIR`, including its scratchpad): `claude-agent`, `codex-agent` or `pi-agent`, only the running agent's. Container-local, so per project and visible from the outer shell. `/tmp` itself stays a private tmpfs |
 | `~/.cache/` | rw | Tool caches, if present |
 | `~/.config/{gh,glab-cli}/` | rw | Forge tokens; omitted with `no-forge`. Other `.config` directories remain hidden |
 | `~/.local/share/` | rw | Tool data and plugins. `applications/` and `claude/` are masked to keep Claude's runtime writes temporary |

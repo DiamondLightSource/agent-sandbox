@@ -90,8 +90,13 @@ def fx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
             PROFILES["codex"],
             real=executable(libexec / "codex-dist/bin/codex"),
             exec_via=executable(libexec / "codex-launch"),
+            tmpdir=str(tmp_path / "var/tmp/codex-agent"),
         ),
-        "pi": replace(PROFILES["pi"], real=executable(libexec / "pi-run")),
+        "pi": replace(
+            PROFILES["pi"],
+            real=executable(libexec / "pi-run"),
+            tmpdir=str(tmp_path / "var/tmp/pi-agent"),
+        ),
     }
     (tmp_path / "etc").mkdir()
     (tmp_path / "etc/claude-sandbox.conf").write_text("egress-jail = 0\n")
@@ -499,11 +504,25 @@ def test_unshareable_skills_dir_warns_and_launches(
     assert "cannot create ~/.agents/skills" in capsys.readouterr().err
 
 
-def test_agent_tmpdir_is_created_private(fx: Fixture) -> None:
-    """Claude refuses a temp root that is not a private directory it owns."""
-    fx.run()
-    tmpdir = fx.root / "var/tmp/claude-agent"
+@pytest.mark.parametrize("agent", ["claude", "codex", "pi"])
+def test_agent_tmpdir_is_created_private(fx: Fixture, agent: str) -> None:
+    """Claude refuses a temp root that is not a private directory it owns;
+    each agent gets its own."""
+    fx.run(argv0=agent)
+    tmpdir = fx.root / f"var/tmp/{agent}-agent"
     assert tmpdir.is_dir() and tmpdir.stat().st_mode & 0o777 == 0o700
+    assert [p.name for p in (fx.root / "var/tmp").iterdir()] == [f"{agent}-agent"]
+
+
+def test_no_agent_tmpdir_creates_nothing(fx: Fixture) -> None:
+    """A profile without a temp root leaves /var/tmp alone."""
+    host = replace(
+        fx.host,
+        profiles={**fx.host.profiles, "pi": replace(fx.host.profiles["pi"], tmpdir="")},
+    )
+    fx = replace(fx, host=host)
+    fx.run(argv0="pi")
+    assert not (fx.root / "var").exists()
 
 
 def test_uncreatable_agent_tmpdir_warns_and_launches(

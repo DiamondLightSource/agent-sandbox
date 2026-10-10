@@ -43,6 +43,10 @@ The sandbox rejects overrides for its own environment and loader or shell
 startup hooks, including `PATH`, `HOME`, `IS_SANDBOX`, `LD_*` and
 `BASH_ENV`. See the [deny-list](../reference/configuration.md#pass-env-deny-list).
 
+`TMPDIR` is not on the deny-list. Forwarding it replaces the agent's own
+`/var/tmp/<agent>-agent` temp root, which stays bound; the value you forward
+must name a path the agent can write, such as the workspace.
+
 Config changes apply on the next agent launch. Devcontainer reinstalls restore
 the shipped config, so reapply custom settings in
 [postCreate](sandbox-a-team-devcontainer.md).

@@ -400,7 +400,7 @@ def prepare_home(
         prepare_shipped_skills(profile, home, term, shipped_skills_dir)
     except OSError as e:
         _refuse(f"claude-sandbox: cannot create {e.filename}: {e.strerror}")
-    # Claude requires its temp root to be a private directory it owns.
+    # Each agent's temp root is private (Claude refuses one it does not own).
     if profile.tmpdir:
         try:
             os.makedirs(profile.tmpdir, mode=0o700, exist_ok=True)

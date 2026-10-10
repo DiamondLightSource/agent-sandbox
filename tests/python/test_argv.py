@@ -526,33 +526,66 @@ def test_a_staged_resolver_is_bound_over_resolv_conf(tmp_path: Path) -> None:
     assert "/etc/resolv.conf" not in argv
 
 
-# --- Claude's temp root ------------------------------------------------------
+# --- The agent's temp root ---------------------------------------------------
 
 
-def test_tmpdir_is_bound_and_exported(tmp_path: Path) -> None:
-    """Files Claude hands the user live outside the private /tmp, in a
-    container-local dir the outer shell can see."""
-    tmpdir = str(tree(tmp_path, "claude-agent/") / "claude-agent")
-    argv = build(ROOT, tmpdir=tmpdir)
+@pytest.mark.parametrize(
+    ("agent", "names"),
+    [
+        ("claude", ["TMPDIR", "CLAUDE_CODE_TMPDIR"]),
+        ("codex", ["TMPDIR"]),
+        ("pi", ["TMPDIR"]),
+    ],
+)
+def test_tmpdir_is_bound_and_exported(
+    tmp_path: Path, agent: str, names: list[str]
+) -> None:
+    """Files an agent hands the user live outside the private /tmp, in a
+    container-local dir the outer shell can see. TMPDIR reaches every agent's
+    temp files (Node's os.tmpdir(), Rust's temp_dir(), mktemp); Claude also
+    reads its own CLAUDE_CODE_TMPDIR."""
+    tmpdir = str(tree(tmp_path, f"{agent}-agent/") / f"{agent}-agent")
+    argv = build(ROOT, agent=agent, real=PROFILES[agent].real, tmpdir=tmpdir)
     assert pair(argv, "--bind", tmpdir)
-    assert setenv(argv, "CLAUDE_CODE_TMPDIR") == [tmpdir]
+    assert setenv(argv, "TMPDIR") == [tmpdir]
+    assert setenv(argv, "CLAUDE_CODE_TMPDIR") == (
+        [tmpdir] if "CLAUDE_CODE_TMPDIR" in names else []
+    )
     # /tmp itself stays a private tmpfs.
     assert pair(argv, "--tmpfs", "/tmp")
 
 
-def test_missing_tmpdir_is_neither_bound_nor_exported(tmp_path: Path) -> None:
-    """Pointed at the read-only /var/tmp, Claude could not create its temp dir
-    at all: without the bind it keeps the private /tmp."""
-    argv = build(ROOT, tmpdir=str(tmp_path / "missing"))
+@pytest.mark.parametrize("agent", ["claude", "codex", "pi"])
+def test_missing_tmpdir_is_neither_bound_nor_exported(
+    tmp_path: Path, agent: str
+) -> None:
+    """Pointed at the read-only /var/tmp, the agent could not create its temp
+    files at all: without the bind it keeps the private /tmp."""
+    argv = build(ROOT, agent=agent, tmpdir=str(tmp_path / "missing"))
     assert str(tmp_path / "missing") not in argv
+    assert setenv(argv, "TMPDIR") == []
     assert setenv(argv, "CLAUDE_CODE_TMPDIR") == []
+
+
+def test_pass_env_tmpdir_overrides_the_temp_root(tmp_path: Path) -> None:
+    """Deliberately not on the deny-list: an operator who forwards TMPDIR
+    gets their value (bwrap's last --setenv wins), and the temp root stays
+    bound."""
+    tmpdir = str(tree(tmp_path, "pi-agent/") / "pi-agent")
+    env = {**ROOT, "CLAUDE_SANDBOX_PASS_ENV": "TMPDIR", "TMPDIR": "/scratch"}
+    argv = build(env, agent="pi", real=PI_REAL, tmpdir=tmpdir)
+    assert pair(argv, "--bind", tmpdir)
+    assert setenv(argv, "TMPDIR") == [tmpdir, "/scratch"]
 
 
 def test_tmpdir_defaults() -> None:
     """Short (Claude puts AF_UNIX sockets beneath it), container-local (not
-    the /cache volume every project container shares), and Claude only."""
+    the /cache volume every project container shares), and one per agent."""
     assert PROFILES["claude"].tmpdir == "/var/tmp/claude-agent"
-    assert PROFILES["codex"].tmpdir == PROFILES["pi"].tmpdir == ""
+    assert PROFILES["codex"].tmpdir == "/var/tmp/codex-agent"
+    assert PROFILES["pi"].tmpdir == "/var/tmp/pi-agent"
+    assert PROFILES["claude"].tmpdir_env == ("TMPDIR", "CLAUDE_CODE_TMPDIR")
+    assert PROFILES["codex"].tmpdir_env == PROFILES["pi"].tmpdir_env == ("TMPDIR",)
 
 
 # --- 14: one builder, three agents ---------------------------------------------

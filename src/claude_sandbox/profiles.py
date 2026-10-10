@@ -57,6 +57,8 @@ class AgentProfile:
     label: str  # human name for messages
     exec_via: str = ""  # launcher exec'd with ``real`` as its argument
     tmpdir: str = ""  # container-local temp root bound rw, or empty
+    # Env vars pointed at ``tmpdir`` when it is bound.
+    tmpdir_env: tuple[str, ...] = ("TMPDIR",)
 
 
 PROFILES: Mapping[str, AgentProfile] = {
@@ -85,8 +87,10 @@ PROFILES: Mapping[str, AgentProfile] = {
         # gone when the session ends. A container-local dir keeps them per
         # project (not the /cache volume every project container shares) and
         # visible outside. Short on purpose: Claude puts AF_UNIX sockets
-        # beneath it.
+        # beneath it. TMPDIR too, so the tools Claude runs (mktemp, Python's
+        # tempfile) write there as well.
         tmpdir="/var/tmp/claude-agent",
+        tmpdir_env=("TMPDIR", "CLAUDE_CODE_TMPDIR"),
     ),
     "codex": AgentProfile(
         name="codex",
@@ -120,6 +124,9 @@ PROFILES: Mapping[str, AgentProfile] = {
         setenv=(("CODEX_UPDATE_DISABLED", "1"),),
         label="Codex",
         exec_via=f"{LIBEXEC}/codex-launch",
+        # Claude's reason, through TMPDIR: Rust's std::env::temp_dir() and the
+        # tools Codex runs read it. One dir per agent, so each owns its own.
+        tmpdir="/var/tmp/codex-agent",
     ),
     "pi": AgentProfile(
         name="pi",
@@ -136,6 +143,8 @@ PROFILES: Mapping[str, AgentProfile] = {
         filter_chrome=False,
         setenv=(("PI_SKIP_VERSION_CHECK", "1"),),
         label="Pi",
+        # Claude's reason, through TMPDIR: Node's os.tmpdir() reads it.
+        tmpdir="/var/tmp/pi-agent",
     ),
 }
 
