@@ -29,6 +29,7 @@ model: https://diamondlightsource.github.io/claude-sandbox/
 | The project directory | read, write | The only workspace path bound read-write by default. Extra paths come from `allow-write` lines in `/etc/claude-sandbox.conf`, which the user edits from the outer container. |
 | `/cache` | read, write | A named volume shared by every project container on this host. Holds the uv cache and the project venv at `/cache/venv-for<project path>`. Survives `--recreate` and `clean`. The outer container sees it too. |
 | `/tmp` and `/root` | read, write | Private tmpfs for this session only. Nothing outside the jail can read them, and they are gone when the session ends. |
+| `/var/tmp/<agent>-agent` (`$TMPDIR`) | read, write | Your temp root (`claude-agent`, `codex-agent` or `pi-agent`). Container-local and visible to the user from the outer container, so put screenshots, scripts and reports meant for the user here, not under the private `/tmp`. Unset when the sandbox could not create it. |
 | `/`, `/usr`, `/etc`, `/opt` | read only | `apt-get` fails here and always will. |
 | `~/.claude`, `~/.claude.json` | read, write | Agent state and memory, shared with the host across container recreation. |
 | `~/.config/gh`, `~/.config/glab-cli` | read, write | Forge token stores, filled by the user from the outer container. |

@@ -458,10 +458,12 @@ def bwrap_build(
     # Per-agent env the sandbox sets for itself. Empty for claude.
     for name, value in profile.setenv:
         argv += ["--setenv", name, value]
-    # Only with the bind: pointed at the read-only /var/tmp, Claude could not
-    # create its temp dir at all.
+    # Only with the bind: pointed at the read-only /var/tmp, the agent could
+    # not create its temp files at all. TMPDIR for every agent, and
+    # CLAUDE_CODE_TMPDIR for Claude.
     if tmpdir:
-        argv += ["--setenv", "CLAUDE_CODE_TMPDIR", tmpdir]
+        for name in profile.tmpdir_env:
+            argv += ["--setenv", name, tmpdir]
     for name in PASS_THROUGH:
         if value := _lookup(env, name):
             argv += ["--setenv", name, value]

@@ -25,7 +25,8 @@ host = shadow.Host(
     config_path=cast(str, spec["conf"]),
     gitconfig_path=cast(str, spec["gitconfig"]),
     shipped_skills_dir=cast(str, spec["skills"]),
-    profiles={name: replace(p, real=real) for name, p in PROFILES.items()},
+    # No temp root: a test must never create the real /var/tmp/<agent>-agent.
+    profiles={name: replace(p, real=real, tmpdir="") for name, p in PROFILES.items()},
     # The fixture's fake bwrap (and a git that knows no identity) first, then
     # the real script(1).
     find_tool=lambda name: find_tool(
