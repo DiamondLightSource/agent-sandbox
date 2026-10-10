@@ -10,7 +10,7 @@ or pip installs the same `claude-sandbox` command that uvx runs. With
 Python 3.11 or later on the host, install it with pipx:
 
 ```bash
-pipx install claude-sandbox==5.0.0
+pipx install claude-sandbox==5.1.1
 cd ~/src/my-project
 claude-sandbox
 ```
@@ -19,7 +19,7 @@ Or into a venv of its own:
 
 ```bash
 python3 -m venv ~/.local/share/claude-sandbox-venv
-~/.local/share/claude-sandbox-venv/bin/pip install claude-sandbox==5.0.0
+~/.local/share/claude-sandbox-venv/bin/pip install claude-sandbox==5.1.1
 cd ~/src/my-project
 ~/.local/share/claude-sandbox-venv/bin/claude-sandbox
 ```
@@ -38,7 +38,7 @@ Inside a Debian/Ubuntu devcontainer, as root:
 
 ```bash
 CSBX_DIR="$(mktemp -d)"
-git clone --depth 1 --branch 5.0.0 https://github.com/DiamondLightSource/claude-sandbox "$CSBX_DIR"
+git clone --depth 1 --branch 5.1.1 https://github.com/DiamondLightSource/claude-sandbox "$CSBX_DIR"
 bash "$CSBX_DIR/install" --here
 claude
 ```
