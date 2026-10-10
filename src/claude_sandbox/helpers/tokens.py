@@ -210,7 +210,8 @@ def _get(url: str, token: str, timeout: float) -> tuple[int | None, Mapping[str,
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     request = urllib.request.Request(
         url,
-        headers={"Authorization": f"Basic {basic}", "User-Agent": "git/claude-sandbox"},
+        # Not git/*: api.github.com answers that User-Agent with a 403.
+        headers={"Authorization": f"Basic {basic}", "User-Agent": "claude-sandbox"},
     )
     opener = urllib.request.build_opener(_SameHostRedirects)
     try:

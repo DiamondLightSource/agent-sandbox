@@ -47,7 +47,10 @@ class FakeGitHub(BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         FakeGitHub.seen.append((path, token))
         if path == "/rate_limit":
-            if token == "bad":
+            # Like api.github.com, which refuses a git/* User-Agent with a 403.
+            if self.headers.get("User-Agent", "").startswith("git/"):
+                self._answer(403)
+            elif token == "bad":
                 self._answer(401)
             elif token == "blocked":
                 self._answer(403)
