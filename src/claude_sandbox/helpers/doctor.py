@@ -320,12 +320,16 @@ class Doctor:
             f"{self.home}/.claude/statusline-command.sh",
         )
         self.claude_settings()
-        self.file(
-            "pi footer",
-            f"{self.libexec}/pi-sandbox-tag.ts",
-            f"{self.home}/.pi/agent/extensions/claude-sandbox-tag.ts",
-            0o644,
-        )
+        if os.access(f"{self.libexec}/pi-dist/pi", os.X_OK):
+            self.file(
+                "pi footer",
+                f"{self.libexec}/pi-sandbox-tag.ts",
+                f"{self.home}/.pi/agent/extensions/claude-sandbox-tag.ts",
+                0o644,
+            )
+        else:
+            # A --minimal install (#101), or WITH_PI=0: no Pi, no footer.
+            self.report("skip", "pi footer", "Pi is not installed")
         self.prompt("zsh")
         self.prompt("bash")
         self.guards()

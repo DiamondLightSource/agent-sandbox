@@ -324,7 +324,9 @@ def test_refusals_before_launch(
 
     Path(fx.host.profiles["pi"].real).chmod(0o644)
     assert fx.refused(argv0="pi") == 1
-    assert "real Pi binary missing at" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "real Pi binary missing at" in err
+    assert "`install --minimal` leaves Pi out" in err
 
     Path(fx.host.profiles["pi"].real).write_text(shadow.SHIM)
     Path(fx.host.profiles["pi"].real).chmod(0o755)

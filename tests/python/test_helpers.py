@@ -7,6 +7,7 @@ the doctor cases here reach what it does not.
 import json
 import os
 import pty
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -173,6 +174,9 @@ def setup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     lib.mkdir()
     (lib / "statusline-command.sh").write_text("echo tag\n")
     (lib / "pi-sandbox-tag.ts").write_text("// tag\n")
+    (lib / "pi-dist").mkdir()
+    (lib / "pi-dist" / "pi").write_text("#!/bin/sh\n")
+    (lib / "pi-dist" / "pi").chmod(0o755)
     rc = tmp_path / "rc"
     rc.mkdir()
     monkeypatch.setenv("CLAUDE_SANDBOX_LIBEXEC", str(lib))
@@ -212,6 +216,18 @@ def test_doctor_skips_what_it_cannot_fix(
     out = capsys.readouterr().out
     assert "is not a JSON object; set statusLine by hand" in out
     assert "pi-sandbox-tag.ts is missing" in out
+
+
+def test_doctor_has_no_pi_footer_to_ask_for_without_pi(
+    main: Main, setup: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A --minimal install (#101) has no Pi: not a fault, nothing to fix."""
+    shutil.rmtree(setup / "libexec" / "pi-dist")
+    main("doctor", "--fix")
+    assert "  skip     pi footer              Pi is not installed" in (
+        capsys.readouterr().out
+    )
+    assert not (setup / ".pi").exists()
 
 
 def test_doctor_leaves_symlinks_alone(

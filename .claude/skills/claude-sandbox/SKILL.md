@@ -77,7 +77,11 @@ the per-agent `--setenv` list. See {ref}`ADR 18 <adr-multi-agent-shadow>`.
 - Installing the `codex` shadow *conditionally* on the codex binary
   being present. The shadow must own the name on `$PATH` before the
   vendor's installer can claim it (Invariant 1 applies identically);
-  an unbacked shadow loud-fails, an unshadowed binary escapes.
+  an unbacked shadow loud-fails, an unshadowed binary escapes. The same
+  holds for `install --minimal` (#101, `CLAUDE_SANDBOX_MINIMAL=1`): it drops
+  Codex's and Pi's downloads and other files (`steps.wants_codex` /
+  `wants_pi`) but keeps the shim under all three names, so a later
+  `npm i -g` or vendor installer cannot take `codex` or `pi` on PATH.
 - Adding an agent by touching the argv builder rather than adding a
   profile entry.
 

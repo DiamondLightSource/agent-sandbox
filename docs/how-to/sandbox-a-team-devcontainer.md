@@ -16,7 +16,9 @@ set -euo pipefail
 uvx claude-sandbox==5.0.0 install
 ```
 
-Pin the release so upgrades are reviewed with the project.
+Pin the release so upgrades are reviewed with the project. Add `--minimal`
+after `install` if the team uses only Claude: rebuilds then skip Codex and Pi
+([Claude-only installation](../reference/whats-installed.md#claude-only-installation)).
 `uvx` is appropriate here: it runs the packaged installer once. The
 installer places the agent wrappers and the `claude-sandbox` command on the
 container's PATH, with a root-owned Python interpreter of their own under

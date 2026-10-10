@@ -107,6 +107,49 @@ def test_platform_checks_and_apt(
     system.probe_userns_or_refuse(smoke, run)
 
 
+def test_minimal_apt_leaves_out_nodejs_and_what_is_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#101: a minimal install asks dpkg first, and runs no apt at all, not
+    even its update, when every package it needs and glab are installed.
+    glab is not cut: a base without it gets the same try as a full install."""
+    _, options = setup(tmp_path)
+    minimal = replace(options, minimal=True)
+    wanted = system.MINIMAL_PACKAGES
+    assert "nodejs" not in wanted and set(wanted) == set(system.APT_PACKAGES) - {
+        "nodejs"
+    }
+    ok = b"install ok installed\n"
+    run = FakeRun(**{"dpkg-query": reply(0, ok * (len(wanted) + 1))})
+    system.apt_install(minimal, run)
+    query = ["/usr/bin/dpkg-query", "-W", "-f=${Status}\\n", *wanted, "glab"]
+    assert run.calls == [query]
+    # glab alone missing (dpkg-query fails, naming the rest installed), one
+    # missing, one removed, or no dpkg-query: apt runs, glab's try included.
+    for answer in (
+        reply(1, ok * len(wanted)),
+        reply(1, ok),
+        reply(0, ok * (len(wanted) - 1) + b"deinstall ok config-files\n"),
+        reply(0, ok),
+    ):
+        run = FakeRun(**{"dpkg-query": answer})
+        system.apt_install(minimal, run)
+        assert [c[1] for c in run.calls[1:]] == ["update", "install", "install"]
+        assert run.calls[2][5:] == wanted and run.calls[3][-1] == "glab"
+
+    def no_dpkg(name: str) -> str | None:
+        return None if name == "dpkg-query" else present(name)
+
+    monkeypatch.setattr(system, "find_tool", no_dpkg)
+    run = FakeRun()
+    system.apt_install(minimal, run)
+    assert [c[1] for c in run.calls] == ["update", "install", "install"]
+    # A full install keeps nodejs, and always runs apt.
+    run = FakeRun(**{"dpkg-query": reply(0, ok * 20)})
+    system.apt_install(options, run)
+    assert run.calls[1][5:] == system.APT_PACKAGES
+
+
 def test_claude_binary_is_moved_off_path(tmp_path: Path) -> None:
     layout, options = setup(tmp_path)
     unwrapped = Path(layout.home, ".local/bin/claude")

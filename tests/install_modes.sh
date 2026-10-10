@@ -27,4 +27,38 @@ else
 fi
 assert_parse 'both modes install the same files' diff -r "$tmp/container" "$tmp/image"
 assert_parse 'both modes seed the same user settings' diff -r "$tmp/container-home" "$tmp/image-home"
+
+# --minimal (#101), through the install shim as `uvx claude-sandbox install
+# --minimal` reaches it: Claude only, and a later full install on top of it
+# leaves exactly what a full install does.
+run_minimal() (
+    export CLAUDE_SANDBOX_SMOKE=1 INSTALL_PREFIX="$tmp/minimal"
+    export INSTALL_USER_HOME="$tmp/minimal-home"
+    export HOME="$tmp/minimal-linkhome" CLAUDE_SHARED_CONFIG="$tmp/minimal-shared"
+    mkdir -p "$INSTALL_USER_HOME/.claude" "$HOME" "$CLAUDE_SHARED_CONFIG"
+    bash "$REPO_ROOT/install" "$@" > "$tmp/minimal.log" 2>&1
+)
+run_minimal --minimal
+lib="$tmp/minimal/usr/libexec/claude-sandbox"
+for name in claude codex pi; do
+    assert_parse "minimal: the $name shadow is placed" \
+        cmp "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shim" "$tmp/minimal/usr/local/bin/$name"
+done
+for gone in "$lib/codex-launch" "$lib/pi-run" "$lib/pi-sandbox-tag.ts" \
+        "$tmp/minimal/etc/codex" "$tmp/minimal-home/.codex" "$tmp/minimal-home/.pi" \
+        "$tmp/minimal-linkhome/.codex" "$tmp/minimal-linkhome/.pi"; do
+    if [ -e "$gone" ] || [ -L "$gone" ]; then
+        fail "minimal installed $gone"
+    else
+        pass
+    fi
+done
+assert_parse 'minimal: same managed settings' \
+    cmp "$tmp/container/etc/claude-code/managed-settings.json" "$tmp/minimal/etc/claude-code/managed-settings.json"
+assert_parse 'minimal: same battery' \
+    cmp "$tmp/container/usr/libexec/claude-sandbox/verify-sandbox-battery.sh" "$lib/verify-sandbox-battery.sh"
+assert_parse 'minimal: summary names it' grep -qF 'not installed (--minimal)' "$tmp/minimal.log"
+run_minimal
+assert_parse 'a full install over a minimal one ships the same files' diff -r "$tmp/container" "$tmp/minimal"
+assert_parse 'and seeds the same user settings' diff -r "$tmp/container-home" "$tmp/minimal-home"
 finish install_modes

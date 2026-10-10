@@ -41,6 +41,47 @@ agent. Use `WITH_CODEX=0` or `WITH_PI=0` at installation to skip those downloads
 `PI_VERSION` pins Pi's release. Reinstalling preserves existing agent binaries.
 See [Upgrade](../how-to/upgrade.md).
 
+## Claude-only installation
+
+`uvx claude-sandbox install --minimal` (or `CLAUDE_SANDBOX_MINIMAL=1`) installs
+the sandbox for Claude alone. The VS Code extension will install this way.
+It implies `WITH_CODEX=0 WITH_PI=0`, and it also leaves out:
+
+- `codex-dist/`, `codex-launch`, `pi-dist/`, `pi-run`, `pi-system.md` and
+  `pi-sandbox-tag.ts` under `/usr/libexec/claude-sandbox/`;
+- `/etc/codex/managed_config.toml`;
+- `~/.codex/` and `~/.pi/agent/`, and their links into the shared config;
+- Debian's `nodejs`, which no agent needs. The shipped browser-testing skill
+  does run `node` (with `npm`): install Node.js yourself if you use it;
+- apt entirely, `apt-get update` included, when every package it needs and
+  `glab` are already installed. Packages already present are then not
+  upgraded. Otherwise apt runs as in a full installation, which also tries
+  to install `glab` where the distribution has it.
+
+Claude's side is the same as a full installation's, file for file: the same
+wrappers under all three names, interpreter, managed settings, configuration and
+isolation checks. `codex` and `pi` still reach the wrapper, which reports that
+the agent is not installed. `claude-sandbox doctor` does not count the missing
+Pi footer as a problem.
+
+A later installation without `--minimal` adds Codex and Pi. A `--minimal`
+reinstallation over a full one keeps the installed agents and their files
+current; it removes nothing.
+
+Measured on a fast network (one run each, 2026-10-10; the installer's own steps
+after the interpreter is provisioned, apt downloads only):
+
+| Step | Full | `--minimal` |
+|---|---|---|
+| apt packages to fetch on a bare Ubuntu 26.04 base | 65 debs, 66 MB | 42 debs, 35 MB |
+| Claude download | 10–14 s | 10–11 s |
+| Codex download and copy | 4.5 s | skipped |
+| Pi download | 1.2–1.6 s | skipped |
+| Installer total | 18–22 s | 11.5–13.5 s |
+| Reinstall with packages present: apt | `update` and `install` (about 2 s) | skipped |
+
+The Claude download dominates what remains, and every installation needs it.
+
 ## User state
 
 Each agent sees only its own state, plus the shared skills and forge stores.

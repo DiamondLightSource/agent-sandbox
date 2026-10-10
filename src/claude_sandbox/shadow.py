@@ -251,10 +251,17 @@ def _check_real_binary(profile: AgentProfile) -> None:
     itself forever through the recursion guard: turn the hang into an error.
     """
     if not os.access(profile.real, os.X_OK):
+        # A --minimal install (#101) leaves Codex and Pi out on purpose.
+        minimal = (
+            ""
+            if profile.name == "claude"
+            else f"\n  An `install --minimal` leaves {profile.label} out; an `install`"
+            " without --minimal adds it."
+        )
         _refuse(
             f"claude-sandbox: real {profile.label} binary missing at {profile.real}.\n"
             "  Re-run `./install` from a fresh clone of claude-sandbox\n"
-            "  (it fetches and relocates every supported agent it can reach)."
+            "  (it fetches and relocates every supported agent it can reach)." + minimal
         )
     shim = SHIM.encode()
     try:
