@@ -8,7 +8,14 @@ root-owned interpreter as the shim does::
     python -I -m claude_sandbox _scope CWD -- PATH...
 
 CWD is the folder the session starts in. One JSON object per PATH, in order,
-is printed on its own line: ``{"path": PATH, "read": BOOL, "write": BOOL}``.
+is printed on its own line::
+
+    {"path": PATH, "read": BOOL, "write": BOOL, "uniform": BOOL}
+
+``uniform`` says whether everything under PATH shows as PATH does: false
+when a later mount lands inside it (``$HOME`` inside ``/``, a mask inside a
+workspace), so a caller that answers for a whole folder at once knows it
+cannot.
 
 The answer is read off the argv ``bwrap_build`` returns for a ``claude``
 launch from CWD, with the conf and the environment the shadow would use, so
@@ -77,6 +84,7 @@ class Mount:
 class View:
     read: bool
     write: bool
+    uniform: bool  # no mount inside the path changes what shows below it
 
 
 def mounts(argv: Sequence[str]) -> list[Mount]:
@@ -113,18 +121,21 @@ def view(argv: Sequence[str], path: str, probe: Probe = HOST) -> View:
     """What the jail ``argv`` builds shows at host ``path``: the host's file
     (read, and perhaps write) or not at all."""
     if not path.startswith("/"):
-        return View(False, False)
+        return View(False, False, True)
     target = _resolved(path, probe)
     last: Mount | None = None
+    uniform = True
     for m in mounts(argv):
         dest = _resolved(m.dest, probe)
         if _covers(dest, target) or _covers(m.dest, target):
-            last = m
+            last, uniform = m, True  # covers whatever was mounted inside before
+        elif _covers(target, dest) or _covers(target, os.path.normpath(m.dest)):
+            uniform = False
     if last is None or last.op not in SHOWN:
-        return View(False, False)
+        return View(False, False, uniform)
     if _resolved(last.source, probe) != _resolved(last.dest, probe):
-        return View(False, False)
-    return View(True, last.op in WRITABLE)
+        return View(False, False, uniform)
+    return View(True, last.op in WRITABLE, uniform)
 
 
 def session_argv(
@@ -154,7 +165,16 @@ def main(
         )
         for path in args[2:]:
             v = view(argv, path)
-            print(json.dumps({"path": path, "read": v.read, "write": v.write}))
+            print(
+                json.dumps(
+                    {
+                        "path": path,
+                        "read": v.read,
+                        "write": v.write,
+                        "uniform": v.uniform,
+                    }
+                )
+            )
     except (SandboxError, OSError) as e:
         sys.stderr.write(f"{e}\n")
         return 1

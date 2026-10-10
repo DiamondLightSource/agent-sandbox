@@ -46,21 +46,23 @@ class Paths(Probe):
 @pytest.mark.parametrize(
     ("path", "want"),
     [
-        ("/ws", View(True, True)),
-        ("/ws/src/a.py", View(True, True)),
-        ("/ws/claude", View(False, False)),  # /dev/null over it
-        ("/other/project", View(True, False)),  # the read-only root
-        ("/home/u", View(False, False)),  # the tmpfs over $HOME
-        ("/home/u/.ssh/id_rsa", View(False, False)),
-        ("/home/u/.cache/x", View(True, True)),  # bound back
-        ("/home/u/.netrc", View(False, False)),
-        ("/tmp/x", View(False, False)),
-        ("/dev/sda", View(False, False)),  # a fresh /dev
-        ("/etc/resolv.conf", View(False, False)),  # another file shown there
-        ("/proc/1", View(True, False)),
-        ("/link/a.py", View(True, True)),  # resolved first
-        ("/ws/../home/u/.ssh", View(False, False)),
-        ("relative/a.py", View(False, False)),
+        ("/ws", View(True, True, False)),  # /ws/claude inside
+        ("/ws/src/a.py", View(True, True, True)),
+        ("/ws/claude", View(False, False, True)),  # /dev/null over it
+        ("/other/project", View(True, False, True)),  # the read-only root
+        ("/home/u", View(False, False, False)),  # the tmpfs; .cache inside
+        ("/home/u/.ssh/id_rsa", View(False, False, True)),
+        ("/home/u/.cache/x", View(True, True, True)),  # bound back
+        ("/home/u/.netrc", View(False, False, True)),
+        ("/tmp/x", View(False, False, True)),
+        ("/dev/sda", View(False, False, True)),  # a fresh /dev
+        ("/etc/resolv.conf", View(False, False, True)),  # another file shown there
+        ("/proc/1", View(True, False, True)),
+        ("/link/a.py", View(True, True, True)),  # resolved first
+        ("/", View(True, False, False)),
+        ("/link", View(True, True, False)),
+        ("/ws/../home/u/.ssh", View(False, False, True)),
+        ("relative/a.py", View(False, False, True)),
     ],
 )
 def test_the_last_mount_over_a_path_decides(path: str, want: View) -> None:
@@ -82,7 +84,7 @@ def test_an_unknown_option_or_a_short_one_is_an_error() -> None:
 
 
 def test_no_mount_at_all_shows_nothing() -> None:
-    assert view(["bwrap", "--", "x"], "/ws", Paths()) == View(False, False)
+    assert view(["bwrap", "--", "x"], "/ws", Paths()) == View(False, False, True)
 
 
 def test_every_option_the_real_argv_uses_is_known(tmp_path: Path) -> None:
@@ -93,7 +95,7 @@ def test_every_option_the_real_argv_uses_is_known(tmp_path: Path) -> None:
     assert mounts(argv)  # no SandboxError
     assert view(argv, "/var/lib").write
     assert not view(argv, str(tmp_path / ".ssh")).read
-    assert view(argv, "/usr/bin/env") == View(True, False)
+    assert view(argv, "/usr/bin/env") == View(True, False, True)
 
 
 def test_workspace_root_widens_what_can_be_written(tmp_path: Path) -> None:
@@ -104,8 +106,8 @@ def test_workspace_root_widens_what_can_be_written(tmp_path: Path) -> None:
     wide = session_argv(
         str(tmp_path), {**env, "CLAUDE_SANDBOX_WORKSPACE_ROOT": "/usr"}, str(conf)
     )
-    assert view(narrow, "/usr/lib") == View(True, False)
-    assert view(wide, "/usr/lib") == View(True, True)
+    assert view(narrow, "/usr/lib") == View(True, False, True)
+    assert view(wide, "/usr/lib") == View(True, True, True)
 
 
 def test_main_prints_a_line_per_path(
@@ -116,9 +118,9 @@ def test_main_prints_a_line_per_path(
     assert main(["/no/ws", "--", str(tmp_path), "/usr", "x"], env, conf) == 0
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert lines == [
-        {"path": str(tmp_path), "read": False, "write": False},  # $HOME
-        {"path": "/usr", "read": True, "write": False},
-        {"path": "x", "read": False, "write": False},
+        {"path": str(tmp_path), "read": False, "write": False, "uniform": False},
+        {"path": "/usr", "read": True, "write": False, "uniform": True},
+        {"path": "x", "read": False, "write": False, "uniform": True},
     ]
 
 

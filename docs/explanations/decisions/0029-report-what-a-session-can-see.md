@@ -37,6 +37,9 @@ the conf, the environment, `$HOME`'s bind-backs and the masks, all of which
   else (a tmpfs, a fresh `/dev`, `/dev/null`, a bind from another source)
   hides it. An argv option `scope.py` does not know is an error, so a new
   kind of mount cannot be misread as showing a path.
+- Each answer also says whether the path is **uniform**: no later mount lands
+  inside it. The extension asks about whole folders at once, and treats a
+  folder with a mask inside it (`/`, which holds `$HOME`) as unreadable.
 - `scope.py` adds nothing to the argv and runs nothing.
 
 ## Consequences
