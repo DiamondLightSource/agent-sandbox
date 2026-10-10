@@ -12,7 +12,16 @@
 #                                             pointer removed
 #     goal.sh list [--all]                    every goal with its status (* = active);
 #                                             --all lists stopped goals too
+#     goal.sh touch                           set the state marker's updated= to now
+#     goal.sh now '<entry>'                   a launch: add the entry to Now, in place
+#                                             of "(nothing running)"
+#     goal.sh land <label> ['<done line>']    a return: drop the Now entry "-> <label> ->",
+#                                             "(nothing running)" when Now empties; with
+#                                             a done line (the item is finished) append
+#                                             "- YYYY-MM-DD HH:MMZ <done line>" to the end of Done;
+#                                             label - when no agent ran
 #
+# touch, now and land act on the active goal's state file and set updated=.
 # The launch directory is the current directory.
 # start and resume pause the goal that is active, if it is another one.
 # Exit 0 done, 1 refused (the message says why), 2 usage, 3 the user must
@@ -22,7 +31,7 @@ set -uo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-usage() { sed -n '5,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '5,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 die() { printf 'goal.sh: %s\n' "$*" >&2; exit 1; }
 
 dir="$(pwd -P)"
@@ -94,7 +103,88 @@ pause_goal() {
     printf 'paused:   %s\n' "$ACTIVE_SLUG"
 }
 
+# Rewrite the active goal's Now section, and append to Done, in one pass.
+# From the environment: NOW_ADD an entry to add, NOW_DROP a label whose
+# entries go, DONE_ADD a line for the end of Done. Now keeps its entries in
+# order with no blank line among them, holds "- (nothing running)" when
+# empty, and ends with one blank line; Done gains its line after its last
+# entry. Then updated= is set and the new Now printed.
+state_edit() {
+    pointer_read || die "no active goal"
+    goal_paths "$ACTIVE_SLUG"
+    [ -f "$STATE_FILE" ] || die "goal '$SLUG' has no state file"
+    grep -qx '## Now' "$STATE_FILE" || die "$STATE_FILE has no '## Now' line"
+    # The copy keeps the file's mode; awk then replaces its content.
+    cp -p "$STATE_FILE" "$STATE_FILE.tmp" || die "cannot write $STATE_FILE.tmp"
+    awk -v end="$HEAD_END" '
+        function heading(l) { return l ~ /^## / || l == end }
+        # An entry names a label as "-> <label> ->" or by starting with it.
+        function named(l, lab,   p, c) {
+            if (index(l, " -> " lab " -> ")) return 1
+            p = "- " lab; c = substr(l, length(p) + 1, 1)
+            return substr(l, 1, length(p)) == p && (c == "" || c == " " || c == ":")
+        }
+        function close_now(   i) {
+            if (ENVIRON["NOW_ADD"] != "") e[++n] = ENVIRON["NOW_ADD"]
+            if (n == 0) e[++n] = "- (nothing running)"
+            for (i = 1; i <= n; i++) print e[i]
+            print ""; innow = 0
+        }
+        function close_done() {
+            if (ENVIRON["DONE_ADD"] != "") print ENVIRON["DONE_ADD"]
+            printf "%s", blanks; blanks = ""; indone = 0; done = 1
+        }
+        innow && heading($0) { close_now() }
+        indone && heading($0) { close_done() }
+        innow {
+            if ($0 ~ /^[[:space:]]*$/ || $0 == "- (nothing running)") next
+            if (ENVIRON["NOW_DROP"] != "" && named($0, ENVIRON["NOW_DROP"])) next
+            e[++n] = $0; next
+        }
+        indone && /^[[:space:]]*$/ { blanks = blanks $0 "\n"; next }
+        indone { printf "%s", blanks; blanks = ""; print; next }
+        { print }
+        $0 == "## Now" { innow = 1 }
+        $0 == "## Done" || index($0, "## Done ") == 1 { indone = 1 }
+        END {
+            if (innow) close_now()
+            if (indone) close_done()
+            else if (!done && ENVIRON["DONE_ADD"] != "") { print "## Done"; print ENVIRON["DONE_ADD"] }
+        }' "$STATE_FILE" > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE" \
+        || { rm -f "$STATE_FILE.tmp"; die "cannot rewrite $STATE_FILE"; }
+    state_set_field "$STATE_FILE" updated "$(now_iso)"
+    sed -n '/^## Now$/,/^$/p' "$STATE_FILE"
+}
+
+# Entries in the active goal's Now, not counting the placeholder.
+now_count() {
+    pointer_read && goal_paths "$ACTIVE_SLUG" || return 0
+    sed -n '/^## Now$/,/^## /p' "$STATE_FILE" 2>/dev/null | grep '^- ' | grep -vcx -- '- (nothing running)'
+}
+
 case "$cmd" in
+touch)
+    pointer_read || die "no active goal"
+    goal_paths "$ACTIVE_SLUG"
+    [ -f "$STATE_FILE" ] || die "goal '$SLUG' has no state file"
+    state_set_field "$STATE_FILE" updated "$(now_iso)"
+    head -n 1 "$STATE_FILE"
+    ;;
+now)
+    entry="$*"; entry="${entry//$'\n'/ }"; entry="${entry#- }"
+    [ -n "$entry" ] || usage
+    NOW_ADD="- $entry" state_edit
+    ;;
+land)
+    label="${1:-}"; shift || true
+    [ -n "$label" ] || usage
+    done_line="$*"; done_line="${done_line//$'\n'/ }"
+    [ -n "$done_line" ] && done_line="- $(date -u "+%Y-%m-%d %H:%MZ") ${done_line#- }"
+    n="$(now_count)"
+    NOW_DROP="$label" DONE_ADD="$done_line" state_edit
+    [ "$label" = - ] || [ "$(now_count)" != "$n" ] \
+        || printf 'note:     no Now entry names %s; Now is unchanged\n' "$label"
+    ;;
 start)
     slug="${1:-}"; shift || true
     goal="$*"

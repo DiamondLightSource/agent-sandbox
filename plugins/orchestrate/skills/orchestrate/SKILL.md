@@ -51,17 +51,39 @@ and say once that you hold the map and the agents hold the code.
 
 ## The state file: `<goal>/state.md`
 
+`goal.sh` below is `bash <plugin>/scripts/goal.sh`; it writes the marker
+line, never you.
+
 - Write it at the end of every turn that changed anything: a launch or
   return, a ruling or reaction from the user (chat is invisible to the
   hooks), an item moving, a commit. Small Edits, never a rewrite, never
-  `sed`; refresh the marker's `updated=`. There is no flush before a
-  clear: a `/clear` at any moment must lose nothing.
+  `sed`; after an Edit run `goal.sh touch`, which sets `updated=`. There is
+  no flush before a clear: a `/clear` at any moment must lose nothing.
 - Above `<!-- end head -->` (injected on every start, ~25 lines): Goal,
-  Now, Next, Invariants. The body is read on demand. Under 150 lines; move
-  superseded detail to the log.
-- `Now` is exactly what is running. A launch writes
-  `- [<model>] <item> -> <label> -> <brief> -> <report>` in the same turn
-  as the Agent call; a return moves it to `Done` with the report pointer.
+  Now, Next, Invariants. The body is read on demand. Size is bytes, not
+  lines: the file stays under 10 KB because finished items collapse to one
+  `Done` line each.
+- `Now` is exactly what is running, one line each, no blank lines; when
+  nothing is, `- (nothing running)`. A launch runs
+  `goal.sh now '[<model>] <item> -> <label> -> <brief> -> <report>'` in the
+  same turn as the Agent call; a return runs `goal.sh land <label>`, which drops the entry naming
+  `-> <label> ->` or starting with `<label>`. Never
+  edit `Now` by hand.
+- `Done` is the last section, one line per finished *item*, not per agent
+  return or review round (those are in the log; an item in flight lives in
+  `Now` and `Next`). When an item finishes, `goal.sh land <label> '<item,
+  outcome, report pointer>'` appends `- YYYY-MM-DD HH:MMZ <text>` at its end, and in
+  the same turn you collapse the item's `Decided` and `Map` lines into that
+  line or the log (`goal.sh land - '<text>'` when no agent ran). Never
+  insert above an existing line.
+- `Decided` holds rulings only, each ending `(<who>, YYYY-MM-DD)`. Events
+  (merged, closed, opened, reviewed) go to `Done` or the log; per-item
+  plans go to `Next` or `Queue`.
+- After every return or ruling, `Read` the file down to `## Decided` and
+  fix each line in the head, `Awaiting user`, `Queue` or `Map` that it
+  falsifies. The hooks run `state-lint.sh` and name what they can see
+  (`lint: <code>: ...`): fix it or, when a finding is wrong, leave it; it
+  is reported once.
 - Branches, PRs and worktrees go in `Map` as pointers
   (`<repo> branch:<name>`, `<repo>#<n>`); check them before relying on them.
 - No agent writes the state file; nobody summarises, rewrites or derives
@@ -206,7 +228,8 @@ Design happens here, the only session that sees the editor selection:
 5. Back to step 1 if the report needs iteration.
 
 While foreground: mark the item `foreground` in its status heading and in
-`Now`; write each ruling to `Decided` the turn it is made; you are the only
+`Now` (`goal.sh now 'foreground: <item>'`, cleared by `goal.sh land
+foreground`); write each ruling to `Decided` the turn it is made; you are the only
 main-checkout writer; launch only mechanical work; an agent return updates
 state and status only, with an empty reply (needs-user goes under `▶ you`).
 

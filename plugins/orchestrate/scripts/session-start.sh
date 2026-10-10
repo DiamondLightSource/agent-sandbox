@@ -4,7 +4,8 @@
 # Only in orchestrate mode (the pointer names a goal, this session runs in
 # its launch directory and owns the goal): re-seeds a cold context with a
 # small block - the goal's paths, a crash check against the previous
-# transcript, and the state file's HEAD only. The body is read on demand.
+# transcript, the state file's lint findings, and its HEAD only. The body
+# is read on demand.
 #
 # A /clear in the owning session starts a new session id; the owner's
 # SessionEnd left session=cleared:<old id>, and this hook claims it when

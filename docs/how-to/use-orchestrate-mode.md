@@ -83,6 +83,33 @@ new session) and an agent listed under `Now` has no report yet, the
 orchestrator is told, so an agent lost to a crash is noticed rather than
 assumed to be running.
 
+## The state file
+
+The goal's `state.md` is written by the orchestrator only, in one format:
+
+- `## Now` lists what is running, one line per agent, and holds
+  `- (nothing running)` when idle.
+- `## Done` is the last section: one line per finished item, `- YYYY-MM-DD HH:MMZ <text>`,
+  appended in time order. Agent returns and review rounds go to the log.
+- `## Decided` holds rulings only, each ending `(<who>, YYYY-MM-DD)`.
+
+The orchestrator makes the most common edits with `goal.sh` rather than by
+hand: `goal.sh now '<entry>'` records a launch, `goal.sh land <label>
+['<done line>']` records a return (and, with a done line, a finished item;
+`land` drops the entry naming `-> <label> ->` or starting with `<label>`),
+and `goal.sh touch` sets the `updated=` time in the first line after any
+other edit. Nobody types that time.
+
+The Stop and SessionStart hooks run `scripts/state-lint.sh` on the file. It
+reports drift as `lint: <code>: <text>` lines: blank or empty `Now`, a `Now`
+agent whose report already exists, items still pending after they merged or
+closed, events or unattributed lines in `Decided`, `Done` out of order or
+too long, a file over 10 KB or a head over the injected cap, a stale
+`updated=`, and pending sections left unchanged while `Done` grew. The Stop
+hook passes a set of findings on once; the SessionStart block always shows
+them. You can run it yourself:
+`bash <plugin>/scripts/state-lint.sh ~/.claude/orchestrate/<slug>/state.md`.
+
 ## Where things are
 
 | Path | Holds |

@@ -10,10 +10,14 @@
 # is not a state update. A turn that only talked (a ruling given in chat)
 # is invisible to it; the skill's per-turn rule covers that case.
 #
+# It also runs the state file's lint (state-lint.sh) after any turn that
+# changed things or touched the goal folder, and passes on its findings when
+# they differ from the set it last passed on.
+#
 # Only the session that owns the goal is checked. A turn that ran
 # `goal.sh start` or `goal.sh resume` claims the goal for its session first
 # (lib.sh, Ownership) and is given the SessionStart checks it missed (crash,
-# lost agents, scratch); any other session is silent.
+# lost agents, lint, scratch); any other session is silent.
 #
 # Uses hookSpecificOutput.additionalContext: non-error feedback, the
 # conversation continues. Skipped while stop_hook_active is set, so it fires
@@ -102,10 +106,17 @@ touched="$(jq -r --arg s "$STATE_FILE" "$JQ_DEFS"'
     or any(.[]; .n == "Bash" and (segs | any(.[]; goal_sh("start|resume|touch|now|land"))))' \
     <<<"$calls" 2>/dev/null)"
 
-[ "$substantive" = "true" ] && [ "$touched" != "true" ] || exit 0
-
-msg="Orchestrate state check: this turn changed things (edits, agents or git/gh writes) without updating the state file.
-Update $STATE_FILE with a small Edit - Now/Next and anything decided - and set the marker's updated=$(now_iso).
+msg=""
+[ "$substantive" = "true" ] && [ "$touched" != "true" ] && msg="Orchestrate state check: this turn changed things (edits, agents or git/gh writes) without updating the state file.
+Record it in $STATE_FILE (goal.sh now or land for a launch or return, a small Edit for Next and anything decided), then run goal.sh touch. goal.sh is bash $PLUGIN_ROOT/scripts/goal.sh."
+lint=""
+[ "$substantive" = "true" ] || [ "$touched" = "true" ] && lint="$(state_lint_changed)"
+[ -n "$lint" ] && msg="${msg:+$msg
+}Orchestrate state lint:
+$lint
+Read the head and the sections named, fix what is wrong with small Edits, then run bash $PLUGIN_ROOT/scripts/goal.sh touch."
+[ -n "$msg" ] || exit 0
+msg="$msg
 Do not repeat your previous reply; end the turn with at most one line."
 
 jq -n --rawfile ctx /dev/stdin \
