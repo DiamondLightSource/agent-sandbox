@@ -15,16 +15,30 @@
 #     <!-- state: updated=<ISO UTC> status=active -->
 #
 # One goal is active at a time. The pointer file ~/.claude/orchestrate/active
-# names it and the directory the session was launched in:
+# names it, the directory the session was launched in, and the Claude
+# session that owns it:
 #
 #     slug=<slug>
 #     dir=<absolute launch directory>
+#     session=<session_id>             absent until the owner is known
 #
-# The hooks act only while the pointer exists and the session's cwd is that
+# The hooks act only while the pointer exists, the session's cwd is that
 # directory (or below it: Claude Code's cwd follows a `cd` inside the
-# project). Without the pointer every hook exits before reading anything,
-# so installing the plugin costs a session that never enters the mode one
-# cheap process per hook event and no tokens.
+# project) and the hook's session_id is the owner. Without the pointer
+# every hook exits before reading anything, so installing the plugin costs
+# a session that never enters the mode one cheap process per hook event
+# and no tokens.
+#
+# Ownership. goal.sh runs in the model's Bash tool and cannot see the
+# session id, so it writes the pointer without one. The Stop hook of the
+# turn that ran `goal.sh start` or `goal.sh resume` (as a command, not a
+# mention) claims the goal for its session (hook input carries session_id)
+# and gives it the checks of goal_context. Another session in the same
+# directory is silent unless it runs one of those itself, which is an
+# explicit takeover. The claim needs that tool call in the transcript when
+# Stop runs. /clear starts a new session id: the owner's SessionEnd
+# (reason=clear) leaves session=cleared:<old id>, and the SessionStart
+# (source=clear) that follows claims it. /compact and --resume keep the id.
 
 ROOT="${HOME:?}/.claude/orchestrate"
 POINTER="$ROOT/active"
@@ -53,19 +67,30 @@ goal_paths() {
     GOAL_LOG="$GOAL_DIR/log.md"
 }
 
-# Read the pointer: set ACTIVE_SLUG and LAUNCH_DIR. Fails when there is none.
+# Read the pointer: set ACTIVE_SLUG, LAUNCH_DIR and OWNER (empty while
+# unclaimed). Fails when there is none.
 pointer_read() {
     ACTIVE_SLUG=""
     LAUNCH_DIR=""
+    OWNER=""
     [ -f "$POINTER" ] || return 1
     ACTIVE_SLUG="$(sed -n 's/^slug=//p' "$POINTER" | head -1)"
     LAUNCH_DIR="$(sed -n 's/^dir=//p' "$POINTER" | head -1)"
+    OWNER="$(sed -n 's/^session=//p' "$POINTER" | head -1)"
     [ -n "$ACTIVE_SLUG" ] && [ -n "$LAUNCH_DIR" ]
 }
 
-pointer_write() { # SLUG DIR
+pointer_write() { # SLUG DIR [SESSION]
     mkdir -p "$ROOT" || return 1
-    printf 'slug=%s\ndir=%s\n' "$1" "$2" > "$POINTER.tmp" && mv -f "$POINTER.tmp" "$POINTER"
+    {
+        printf 'slug=%s\ndir=%s\n' "$1" "$2"
+        [ -z "${3:-}" ] || printf 'session=%s\n' "$3"
+    } > "$POINTER.tmp.$$" && mv -f "$POINTER.tmp.$$" "$POINTER"
+}
+
+# Record a new owner in the pointer read last (see Ownership above).
+pointer_set_owner() { # SESSION
+    pointer_write "$ACTIVE_SLUG" "$LAUNCH_DIR" "$1" && OWNER="$1"
 }
 
 # The status file the user follows, in the launch directory.
@@ -87,10 +112,11 @@ state_read_hook_input() {
                  | tostring | gsub("\n"; " ")' <<<"$raw" 2>/dev/null)
 }
 
-# For a hook: succeed only when the mode is on for this session - the
-# pointer exists, its goal has a state file, and the session's cwd is the
-# launch directory or below it. Sets the goal paths. Drains stdin first.
-hook_active() {
+# For a hook: succeed when a goal is active here - the pointer exists, its
+# goal has a state file, and the session's cwd is the launch directory or
+# below it. Says nothing about which session owns it (hook_owner). Sets the
+# goal paths. Drains stdin first.
+hook_in_scope() {
     if [ ! -f "$POINTER" ]; then cat >/dev/null; return 1; fi
     state_read_hook_input
     pointer_read || return 1
@@ -100,6 +126,12 @@ hook_active() {
     goal_paths "$ACTIVE_SLUG"
     [ -f "$STATE_FILE" ]
 }
+
+# This hook runs in the session that owns the goal.
+hook_owner() { [ -n "${HOOK_SESSION_ID:-}" ] && [ "$OWNER" = "$HOOK_SESSION_ID" ]; }
+
+# For a hook: the mode is on for this session - in scope and its owner.
+hook_active() { hook_in_scope && hook_owner; }
 
 # Value of key=... in a state file's marker line.
 state_field() {
@@ -130,6 +162,69 @@ state_head() {
     if [ "$((n - 1))" -gt "$STATE_HEAD_CAP_LINES" ]; then
         printf '\n[head truncated at %s lines - move detail below the end-of-head line]\n' "$STATE_HEAD_CAP_LINES"
     fi
+}
+
+# ---- the context block ---------------------------------------------------
+# What a session that takes the goal over is told: the goal's paths, a
+# crash check against the previous transcript, Now entries with no report,
+# the scratch report and (unless $3 is no) the state file's head. Printed
+# by SessionStart in the owner, and by Stop on the turn that claims the
+# goal. Needs the goal paths and the hook input.
+goal_context() { # WHO MODE_LINE [yes|no: include the head]
+    local scratch_mb total prev crash="" prev_m state_m lost="" line report rest brief label
+    scratch_mb="$(state_scratch_report)"
+    total="$(wc -l < "$STATE_FILE")"
+
+    # Crash check. SessionEnd does not run on a crash or container restart,
+    # so the previous transcript is found here rather than trusted to a
+    # pointer written at exit.
+    prev="$(state_prev_transcript)"
+    if [ -n "$prev" ]; then
+        prev_m="$(stat -c %Y "$prev" 2>/dev/null || echo 0)"
+        state_m="$(stat -c %Y "$STATE_FILE" 2>/dev/null || echo 0)"
+        if [ "$prev_m" -gt "$((state_m + 120))" ]; then
+            crash="Previous transcript $prev was last written $(date -u -d "@$prev_m" +%Y-%m-%dT%H:%M:%SZ),
+AFTER the state file ($(date -u -d "@$state_m" +%H:%M:%SZ)), so it may hold work the file lacks
+(a crash, or a turn that ended unflushed). Reconcile before any work and say what you found:
+ask a haiku agent a specific question of: bash $TRANSCRIPT_TEXT <transcript> --since <ISO>.
+Never /resume it."
+        fi
+    fi
+
+    # Lost-agent check. Now entries are
+    # `- [<model>] <item> -> <label> -> <brief> -> <report>`; one whose
+    # report file does not exist is still running or lost.
+    while IFS= read -r line; do
+        case "$line" in "- ["*" -> "*" -> "*" -> "*) ;; *) continue ;; esac
+        report="${line##* -> }"; rest="${line% -> *}"
+        brief="${rest##* -> }"; rest="${rest% -> *}"
+        label="${rest##* -> }"
+        report="${report/#\~/$HOME}"; brief="${brief/#\~/$HOME}"
+        # A relative path is relative to the goal folder (reports/<label>.md).
+        case "$report" in /*) ;; *) report="$GOAL_DIR/$report" ;; esac
+        [ -n "$report" ] && [ ! -e "$report" ] || continue
+        lost+="Now entry $label has no report yet: still running or lost - check before relaunching from $brief."$'\n'
+    done < <(state_head "$STATE_FILE" 2>/dev/null | sed -n '/^## Now/,/^## /p')
+
+    printf '## Orchestrate: %s\n' "$SLUG"
+    printf '(injected by %s)\n\n' "$1"
+    printf 'Goal folder: %s\n' "$GOAL_DIR"
+    if [ "${3:-yes}" = yes ]; then
+        printf 'State file:  %s (%s lines; the head is below, the body is not loaded)\n' "$STATE_FILE" "$total"
+    else
+        printf 'State file:  %s (%s lines; not loaded)\n' "$STATE_FILE" "$total"
+    fi
+    printf 'Status file: %s\n' "$(status_path "$LAUNCH_DIR")"
+    printf '%s\n' "$2"
+    [ -n "$crash" ] && printf '\n%s\n' "$crash"
+    [ -n "$lost" ] && printf '\n%s' "$lost"
+    [ -n "$scratch_mb" ] && printf '\nScratch in %s/*/scratch totals %s MB (report threshold %s MB). Offer the user a cleanup: list each scratch dir with its size and whether its goal is stopped; delete only what they name.\n' "$ROOT" "$scratch_mb" "$SCRATCH_REPORT_MB"
+    if [ "${3:-yes}" = yes ]; then
+        printf '\n--- head of %s ---\n' "$STATE_FILE"
+        state_head "$STATE_FILE"
+        printf -- '--- end head ---\n'
+    fi
+    return 0
 }
 
 # ---- log -----------------------------------------------------------------

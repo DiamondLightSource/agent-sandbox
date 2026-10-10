@@ -129,9 +129,14 @@ resume)
     goal_paths "$slug"
     [ -f "$STATE_FILE" ] || die "no goal '$slug' (goal.sh list)"
     [ "$(state_field "$STATE_FILE" status)" = "closed" ] && die "goal '$slug' is closed"
+    # Resuming the goal that is already active leaves state.md alone, so a
+    # new session's crash check still compares against the last real write.
+    pointer_read && [ "$ACTIVE_SLUG" = "$slug" ] && was_active=1 || was_active=0
     pause_other_active "$slug"
-    state_set_field "$STATE_FILE" status active
-    state_set_field "$STATE_FILE" updated "$(now_iso)"
+    if [ "$was_active" = 0 ]; then
+        state_set_field "$STATE_FILE" status active
+        state_set_field "$STATE_FILE" updated "$(now_iso)"
+    fi
     pointer_write "$slug" "$dir" || die "cannot write $POINTER"
     status_exclude "$dir"
     log_append "$GOAL_LOG" "goal:$slug resumed in $dir"
