@@ -18,6 +18,7 @@ into your own devcontainer.
 | `/usr/libexec/claude-sandbox/pi-run` | Pi launch-marker check; see [its limits](../how-to/use-pi.md#verify-the-sandbox) |
 | `/usr/libexec/claude-sandbox/pi-system.md` | System-prompt note that tells Pi about the sandbox it runs in |
 | `/usr/libexec/claude-sandbox/codex-launch` | Codex's in-jail launch wrapper |
+| `/usr/libexec/claude-sandbox/bin/gh` | The sandbox's `gh`, first on PATH inside the sandbox: runs gh with the [named GitHub token](../how-to/authenticate-with-forges.md#use-several-github-tokens) chosen for the repository |
 | `/usr/local/bin/claude-sandbox` | The `claude-sandbox` command, run by the same interpreter: `gh-auth`, `glab-auth`, `update`, `verify`, `pi-local`, `doctor`, `version` |
 | `/usr/libexec/claude-sandbox/verify-sandbox-battery.sh` | Installed isolation checks |
 | `/usr/libexec/claude-sandbox/skills/` | Shipped skills, mounted read-only into each agent's discovery directory |

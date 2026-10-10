@@ -6,7 +6,9 @@ egress jail's holder is ``python -I -m claude_sandbox _jail_holder -- COMMAND``.
 Both are dispatched here before anything outside the standard library could be
 imported, so the launch path stays stdlib-only. Anything else is the
 ``claude-sandbox`` CLI (``claude_sandbox.cli``), without the front door's
-environment or its bash default.
+environment or its bash default. So are git's GitHub credential helper
+(``_git_credential``, from the sandbox's git config) and the jail's ``gh``
+shim (``_gh -- ARG...``), both ``helpers.tokens`` (ADR 29).
 """
 
 import sys
@@ -27,6 +29,14 @@ elif len(sys.argv) > 1 and sys.argv[1] == "_shadow":
         sys.stderr.write("usage: python -I -m claude_sandbox _shadow NAME -- ARG...\n")
         sys.exit(2)
     shadow(sys.argv[2], sys.argv[4:])
+elif len(sys.argv) > 1 and sys.argv[1] == "_git_credential":
+    from .helpers.tokens import credential_main
+
+    sys.exit(credential_main(sys.argv[2:]))
+elif len(sys.argv) > 2 and sys.argv[1:3] == ["_gh", "--"]:
+    from .helpers.tokens import gh_main
+
+    sys.exit(gh_main(sys.argv[3:]))
 else:
     from .cli import main as cli
 

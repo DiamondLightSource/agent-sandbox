@@ -96,6 +96,14 @@ They prompt for a project-scoped token and store it where the jail can see
 it immediately, so you need no restart. If `gh auth status` reports no
 login, ask for that command.
 
+A repository in another organisation, or one gh's login cannot push to,
+needs a further token: ask the user for `claude-sandbox gh-auth --add NAME`.
+git then picks, per repository, the first stored token GitHub lets push,
+and `gh` in the jail makes the same choice for the repository it works on
+(push rights are what is tested, not pull-request rights). `claude-sandbox gh-auth --status` lists the choices; a wrong
+one is cleared with `claude-sandbox gh-auth --forget OWNER/REPO`. Do not set
+`GH_TOKEN` yourself or read the token files.
+
 Git inside the jail is already configured. `/etc/claude-gitconfig` sets
 the gh and glab credential helpers for HTTPS and rewrites SSH remotes to
 HTTPS. Use `gh` for GitHub operations and plain `git push` over HTTPS for

@@ -58,7 +58,7 @@ COMMANDS = {
         Command(host.pi, rest, raw=True),
         Command(host.shell, rest, raw=True),
         Command(host.clean, host.clean_arguments),
-        Command(helpers.gh_auth, raw=True),
+        Command(helpers.gh_auth, helpers.gh_auth_arguments),
         Command(helpers.glab_auth, helpers.glab_auth_arguments),
         Command(helpers.verify, helpers.verify_arguments),
         Command(helpers.pi_local, rest, raw=True),

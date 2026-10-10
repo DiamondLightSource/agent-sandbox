@@ -132,6 +132,7 @@ TREE = {
             "claude-sandbox-shim",
             "claude-shim",
             "codex-launch",
+            "gh-shim",
             "install.sh",
             "pi-run",
             "pi-sandbox-tag.ts",

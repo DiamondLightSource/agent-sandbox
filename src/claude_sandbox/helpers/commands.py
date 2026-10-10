@@ -46,10 +46,48 @@ def _cat(path: str) -> str | None:
         return None
 
 
+_FORGET_ALL = "*"
+
+
+def gh_auth_arguments(p: argparse.ArgumentParser) -> None:
+    group = p.add_mutually_exclusive_group()
+    group.add_argument(
+        "--add",
+        action="append",
+        metavar="NAME",
+        help="store a further token as NAME (repeatable); git picks per repository",
+    )
+    group.add_argument(
+        "--status",
+        action="store_true",
+        help="list the tokens and the repositories each is used for",
+    )
+    group.add_argument(
+        "--forget",
+        nargs="?",
+        const=_FORGET_ALL,
+        metavar="OWNER/REPO",
+        help="drop the cached token choice for a repository (all if none given)",
+    )
+
+
 # PATs: typed only where the agent cannot read the terminal (Invariant 2).
 @requires(CONTAINER, forward_from=HOST)
 def gh_auth(ns: argparse.Namespace) -> int:
-    """authenticate gh with a GitHub PAT (kept out of shell history)"""
+    """authenticate gh with a GitHub PAT (kept out of shell history); --add
+    NAME stores more tokens, --status lists them"""
+    home = os.environ.get("HOME", "/")
+    if ns.status:
+        return auth.gh_status(home)
+    if ns.forget is not None:
+        forget = None if ns.forget == _FORGET_ALL else str(ns.forget)
+        return auth.gh_forget(home, forget)
+    if ns.add:
+        for name in list[str](ns.add):
+            rc = auth.gh_add(name, home)
+            if rc:
+                return rc
+        return 0
     return auth.gh_auth()
 
 

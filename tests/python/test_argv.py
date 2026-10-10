@@ -19,6 +19,7 @@ import pytest
 from claude_sandbox.bwrap import (
     ENTRY_GUARD_ENV,
     ENTRY_POINTS,
+    GH_SHIM_DIR,
     GITCONFIG_PATH,
     bwrap_build,
 )
@@ -27,7 +28,9 @@ from claude_sandbox.errors import SandboxError
 from claude_sandbox.profiles import LIBEXEC, PROFILES, VERIFY_BATTERY
 
 REAL = "/test/.local/bin/claude"
-SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+BARE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# The gh shim's directory comes first unless no-forge (ADR 29).
+SYSTEM_PATH = f"{GH_SHIM_DIR}:{BARE_PATH}"
 CODEX_REAL = PROFILES["codex"].real
 PI_REAL = PROFILES["pi"].real
 
@@ -316,6 +319,17 @@ def test_no_forge_omits_the_forge_token_dirs(tmp_path: Path) -> None:
     home = tree(tmp_path, ".claude/", ".cache/", ".config/gh/", ".config/glab-cli/")
     argv = build({"HOME": str(home), "CLAUDE_SANDBOX_NO_FORGE": "1"}, str(home))
     assert binds(argv) == [f"{home}/.claude", f"{home}/.cache", str(home)]
+
+
+def test_no_forge_leaves_the_gh_shim_off_path() -> None:
+    """ADR 29: no-forge suppresses the named tokens too. The gh dir is not
+    bound, and the shim that reads it is not on PATH."""
+    argv = build({**ROOT, "CLAUDE_SANDBOX_NO_FORGE": "1"})
+    assert setenv(argv, "PATH") == [f"{BARE_PATH}:/root/.local/bin"]
+    assert GH_SHIM_DIR == "/usr/libexec/claude-sandbox/bin"
+    assert not any(".config/gh" in a for a in argv)
+    # The session environment never holds a GitHub token (battery check 04).
+    assert setenv(build(ROOT), "GH_TOKEN") == []
 
 
 # --- 10: allow-write ----------------------------------------------------------
