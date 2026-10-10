@@ -48,6 +48,9 @@ MARKETPLACE = "claude-sandbox"
 MARKETPLACE_REPO = "DiamondLightSource/claude-sandbox"
 CODEX_MARKER = "# Managed by claude-sandbox — do not edit by hand."
 USER_STATUSLINE_COMMAND = "bash $HOME/.claude/statusline-command.sh"
+# What a .claude.json this installer creates holds: Claude's own installer
+# fails on an empty one (issue #103). One that exists is never rewritten.
+EMPTY_JSON = b"{}"
 SHARED_CONFIG = "/user-terminal-config"
 # ADR 26: the installer runs as root and execs nothing found through PATH.
 GIT = "/usr/bin/git"
@@ -246,7 +249,7 @@ def plan_cred_dirs(layout: Layout, options: Options) -> list[Action]:
     actions = _makedirs(home / ".config/gh") + _makedirs(home / ".config/glab-cli")
     # A link there, even a dangling one, is left as it is.
     if not os.path.lexists(home / ".claude.json"):
-        actions.append(Touch(home / ".claude.json"))
+        actions.append(Touch(home / ".claude.json", EMPTY_JSON))
     return actions + _makedirs(home / ".codex") + _makedirs(home / ".pi/agent")
 
 
@@ -470,7 +473,7 @@ def _ensure_shared(shared: str, kind: str) -> list[Action]:
         return []
     if kind == "dir":
         return [MakeDirs(Path(shared))]
-    return _makedirs(Path(shared).parent) + [Touch(Path(shared))]
+    return _makedirs(Path(shared).parent) + [Touch(Path(shared), EMPTY_JSON)]
 
 
 def _share(target: str, shared: str, kind: str, now: time.struct_time) -> list[Action]:

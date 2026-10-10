@@ -44,9 +44,11 @@ class Write:
 
 @dataclass(frozen=True)
 class Touch:
-    """Create an empty file (the umask's mode); never through a link."""
+    """Create a new file holding ``data`` (the umask's mode); never through
+    a link, and never over anything already there."""
 
     path: Path
+    data: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -127,9 +129,10 @@ def apply(actions: Iterable[Action], err: TextIO | None = None) -> None:
             case Write(path, data, mode, owner, in_place):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 (_create if in_place else write_atomic)(path, data, mode, owner)
-            case Touch(path):
+            case Touch(path, data):
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                os.close(os.open(path, flags, 0o666))
+                with os.fdopen(os.open(path, flags, 0o666), "wb") as f:
+                    f.write(data)
             case Remove(path):
                 _remove(path)
             case Symlink(path, target):

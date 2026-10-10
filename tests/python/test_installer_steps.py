@@ -167,7 +167,15 @@ def test_links_to_a_fresh_store(tmp_path: Path) -> None:
     for name in SHARED_NAMES:
         assert link(tmp_path, f"home/{name}") == f"{{root}}/shared/{name}"
     assert (tmp_path / "shared/.claude").is_dir()
-    assert (tmp_path / "shared/.claude.json").read_text() == ""
+    # Claude's installer fails on an empty .claude.json (issue #103).
+    assert (tmp_path / "shared/.claude.json").read_text() == "{}"
+
+
+@pytest.mark.parametrize("old", ["", "token"])
+def test_an_existing_shared_claude_json_is_kept(tmp_path: Path, old: str) -> None:
+    step(tmp_path, "link_terminal_config", {"shared/.claude.json": old})
+    assert link(tmp_path, "home/.claude.json") == "{root}/shared/.claude.json"
+    assert (tmp_path / "shared/.claude.json").read_text() == old
 
 
 def test_links_in_place_stay_and_others_are_repointed(tmp_path: Path) -> None:
@@ -242,13 +250,14 @@ def test_credential_directories(tmp_path: Path) -> None:
     user = tmp_path / "user"
     for d in (".config/gh", ".config/glab-cli", ".codex", ".pi/agent"):
         assert (user / d).is_dir()
-    assert (user / ".claude.json").read_text() == ""
+    assert (user / ".claude.json").read_text() == "{}"
     assert (user / ".codex/config.toml").read_text() == "x"
 
 
-def test_an_existing_claude_json_is_kept(tmp_path: Path) -> None:
-    step(tmp_path, "ensure_cred_dirs", {"user/.claude.json": "{}"})
-    assert (tmp_path / "user/.claude.json").read_text() == "{}"
+@pytest.mark.parametrize("old", ["", "token"])
+def test_an_existing_claude_json_is_kept(tmp_path: Path, old: str) -> None:
+    step(tmp_path, "ensure_cred_dirs", {"user/.claude.json": old})
+    assert (tmp_path / "user/.claude.json").read_text() == old
 
 
 @pytest.mark.parametrize("old", [None, "old"])
