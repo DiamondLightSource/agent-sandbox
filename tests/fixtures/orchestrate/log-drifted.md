@@ -1,0 +1,6 @@
+- 2026-01-05T10:00:00Z goal:widget started in /work/widget: Work through the open issues
+- 2026-01-05T10:10:00Z impl-12: part 1 done
+- 2026-01-05T10:20:00Z review-12-r1: APPROVE
+- 2026-01-05T10:30:00Z recon-9: mapped the auth code
+- 2026-01-05T10:40:00Z impl-9: tokens stored per name
+- 2026-01-05T10:50:00Z review-9-r1: CHANGES

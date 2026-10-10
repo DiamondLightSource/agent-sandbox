@@ -4,8 +4,9 @@
 # pointer names a goal, the session runs in its launch directory and owns
 # the goal (claimed by goal.sh start/resume, handed on by /clear), the
 # right injection and nudges inside the mode, the lost-agent check, log
-# rotation and the scratch report. Hermetic: a temp HOME, throwaway git repos and synthetic
-# transcripts; no claude binary. Needs bash, git and jq.
+# rotation, the scratch report, the state lint and goal.sh touch/now/land.
+# Hermetic: a temp HOME, throwaway git repos and synthetic transcripts; no
+# claude binary. Needs bash, git and jq.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -401,5 +402,154 @@ assert_eq "resume <slug>" 0 "$RC"
 assert_eq "resume points at this directory" "dir=$PROJ" "$(sed -n 2p "$ROOT/active")"
 rm "$ROOT/active"; goal start goal 'again'
 grep -q 'archived' <<<"$OUT" && pass || fail "an archived slug was reused: $OUT"
+
+# ---- state lint (state-lint.sh) ----------------------------------------------
+LINT="$S/state-lint.sh"
+FX="$HERE/fixtures/orchestrate"
+codes() { sed -n 's/^lint: \([a-z-]*\):.*/\1/p' | sort -u | tr '\n' ' '; }
+cp "$FX/state-drifted.md" "$TMP/drifted.md"
+touch -d '2026-01-05T11:45:00Z' "$TMP/drifted.md"
+OUT="$(STATE_LINT_MAX_BYTES=500 STATE_LINT_MAX_DONE=5 bash "$LINT" "$TMP/drifted.md" "$FX/log-drifted.md" "$TMP/side")"
+assert_eq "lint: the drifted fixture yields each code" \
+    "decided-events decided-unattributed done-long done-order marker-stale now-blank now-empty pending-but-done size " \
+    "$(codes <<<"$OUT")"
+grep -qF 'now-blank: 5 blank' <<<"$OUT" && pass || fail "lint: now-blank count: $OUT"
+grep -qF 'decided-events: 4 ' <<<"$OUT" && pass || fail "lint: decided-events count: $OUT"
+grep -qF 'decided-unattributed: 4 ' <<<"$OUT" && pass || fail "lint: decided-unattributed count: $OUT"
+grep -qF 'done-order: 3 ' <<<"$OUT" && pass || fail "lint: done-order (stamps and log labels): $OUT"
+assert_eq "lint: pending-but-done names each number" "#14 #7" \
+    "$(grep -o 'names #[0-9]*' <<<"$OUT" | cut -c7- | sort -u | tr '\n' ' ' | sed 's/ $//')"
+bash "$LINT" "$TMP/drifted.md" "" "$TMP/side" >/dev/null
+for i in 1 2 3 4 5; do printf -- '- 2026-01-05 12:0%sZ item %s\n' "$i" "$i" >> "$TMP/drifted.md"; done
+OUT="$(bash "$LINT" "$TMP/drifted.md" "" "$TMP/side")"
+grep -q '^lint: section-stale: ## Next unchanged while Done grew by 5' <<<"$OUT" && pass || fail "lint: section-stale: $OUT"
+grep -q 'section-stale: ## Queue' <<<"$OUT" && pass || fail "lint: section-stale misses Queue: $OUT"
+grep -q 'done-order: 1 ' <<<"$OUT" && pass || fail "lint: appended stamps counted as inversions: $OUT"
+printf '## Now\n- (nothing running)\n\n## Done\n- 2026-01-05 17:00Z friday\n- 2026-01-08 09:00Z monday\n- 2026-01-08 23:50Z late\n- 2026-01-09 00:10Z after midnight\n' > "$TMP/days.md"
+assert_eq "lint: Done across days and midnight is in order" "" "$(bash "$LINT" "$TMP/days.md")"
+printf -- '- 2026-01-08 20:00Z inserted\n' >> "$TMP/days.md"
+grep -q '^lint: done-order: 1 ' <<<"$(bash "$LINT" "$TMP/days.md")" && pass || fail "lint: an earlier time on a later line is not an inversion"
+OUT="$(bash "$LINT" "$TMP/drifted.md" "" "$TMP/side")"
+grep -q 'section-stale: ## Next' <<<"$OUT" && fail "lint: section-stale repeats right after it was reported: $OUT" || pass
+for i in 6 7 8 9; do printf -- '- 2026-01-05 12:%s0Z item %s\n' "$i" "$i" >> "$TMP/drifted.md"; done
+grep -q 'section-stale: ## Next' <<<"$(bash "$LINT" "$TMP/drifted.md" "" "$TMP/side")" \
+    && fail "lint: section-stale back before another 5 items" || pass
+printf -- '- 2026-01-05 13:00Z item 10\n' >> "$TMP/drifted.md"
+grep -q 'section-stale: ## Next unchanged while Done grew by 5' <<<"$(bash "$LINT" "$TMP/drifted.md" "" "$TMP/side")" \
+    && pass || fail "lint: section-stale not reported again after another 5 items"
+printf '## Now\n- (nothing running)\n\n## Awaiting user\n## Queue\n- (none)\n## Map\n## Done\n' > "$TMP/empty.md"
+bash "$LINT" "$TMP/empty.md" "" "$TMP/side-empty" >/dev/null
+for i in 1 2 3 4 5 6; do printf -- '- 2026-01-05 12:0%sZ item %s\n' "$i" "$i" >> "$TMP/empty.md"; done
+assert_eq "lint: empty and placeholder sections never go stale" "" "$(bash "$LINT" "$TMP/empty.md" "" "$TMP/side-empty")"
+awk '/^## Invariants$/ { print; for (i = 0; i < 40; i++) print "- rule " i; next } 1' "$FX/state-drifted.md" > "$TMP/longhead.md"
+OUT="$(bash "$LINT" "$TMP/longhead.md")"
+grep -q '^lint: head-long: the head is 5[0-9] lines' <<<"$OUT" && pass || fail "lint: head-long: $OUT"
+printf 'x\n' | bash "$LINT" /nonexistent; assert_eq "lint: a missing file exits 0" 0 "$?"
+
+goal start lint 'Keep the state file clean'
+L="$ROOT/lint"
+assert_eq "lint: the start template is clean" "" "$(bash "$LINT" "$L/state.md" "$L/log.md" "$L/.lint")"
+
+# goal.sh touch: the marker, to the minute, by script.
+sed -i '1s/updated=[^ ]*/updated=2020-01-01T00:00:00Z/' "$L/state.md"
+goal touch
+assert_eq "touch succeeds" 0 "$RC"
+assert_eq "touch sets updated= to the clock" "$(date -u +%Y-%m-%dT%H:%M)" "$(head -1 "$L/state.md" | sed -n 's/.*updated=\([^ ]*\).*/\1/p' | cut -c1-16)"
+
+# goal.sh now / land.
+goal now '[sonnet] item a -> la -> briefs/la.md -> reports/la.md'
+assert_eq "now replaces (nothing running)" "- [sonnet] item a -> la -> briefs/la.md -> reports/la.md" \
+    "$(sed -n '/^## Now$/,/^$/p' "$L/state.md" | sed -n '2,/^$/p' | sed '/^$/d')"
+goal now '- [opus] item b -> lb -> briefs/lb.md -> reports/lb.md'
+assert_eq "now appends under the last entry" "la lb" \
+    "$(sed -n '/^## Now$/,/^## /p' "$L/state.md" | grep -o ' -> l[ab] ->' | cut -c5-6 | tr '\n' ' ' | sed 's/ $//')"
+grep -q '^## Now$' <<<"$OUT" && pass || fail "now does not print the new Now: $OUT"
+sed -i 's/^## Next$/\n\n## Next/' "$L/state.md"
+assert_eq "lint sees blank lines added by hand" "now-blank " "$(bash "$LINT" "$L/state.md" | codes)"
+mkdir -p "$L/reports" && echo r > "$L/reports/lb.md"
+grep -q '^lint: now-finished: lb has its report' <<<"$(bash "$LINT" "$L/state.md")" && pass || fail "lint: now-finished"
+goal land lb
+assert_eq "land of a return" 0 "$RC"
+assert_eq "land drops the entry and the blank lines" "## Now|- [sonnet] item a -> la -> briefs/la.md -> reports/la.md||## Next" \
+    "$(sed -n '/^## Now$/,/^## Next$/p' "$L/state.md" | tr '\n' '|' | sed 's/|$//')"
+assert_eq "land without a done line leaves Done alone" 1 "$(sed -n '/^## Done$/,$p' "$L/state.md" | grep -c '^- ')"
+goal land la 'item a shipped as PR #3 -> reports/la.md'
+grep -qx -- '- (nothing running)' "$L/state.md" && pass || fail "land did not restore (nothing running)"
+tail -n 1 "$L/state.md" | grep -Eq '^- 20[0-9]{2}-[0-9]{2}-[0-9]{2} [0-2][0-9]:[0-5][0-9]Z item a shipped as PR #3 -> reports/la.md$' \
+    && pass || fail "land did not append a stamped Done line: $(tail -n 1 "$L/state.md")"
+goal land nosuch 'item c, no agent'
+assert_eq "land of an absent label still appends" 0 "$RC"
+grep -q '^note: .*nosuch' <<<"$OUT" && pass || fail "land of an absent label gives no note: $OUT"
+goal land - 'item d, no agent'
+grep -q '^note:' <<<"$OUT" && fail "land - gives a note" || pass
+assert_eq "Done entries in call order, at the end" "item a|item c|item d" \
+    "$(sed -n '/^## Done$/,$p' "$L/state.md" | sed -n 's/^- [0-9-]* [0-9:]*Z \(item [a-d]\).*/\1/p' | tr '\n' '|' | sed 's/|$//')"
+assert_eq "one (nothing running) after repeated lands" 1 "$(grep -c '(nothing running)' "$L/state.md")"
+assert_eq "state after now/land passes the lint" "" "$(bash "$LINT" "$L/state.md" "$L/log.md")"
+goal now
+assert_eq "now with no entry is a usage error" 2 "$RC"
+goal land
+assert_eq "land with no label is a usage error" 2 "$RC"
+
+# A foreground item is named by its first word; the file keeps its mode; a
+# newline cannot split an entry.
+chmod 600 "$L/state.md"
+goal now 'foreground: design the API'
+goal land foreground
+grep -q 'foreground' "$L/state.md" && fail "land foreground left the entry: $(grep foreground "$L/state.md")" || pass
+grep -q '^note:' <<<"$OUT" && fail "land foreground gave a note: $OUT" || pass
+assert_eq "now/land keep the file's mode" 600 "$(stat -c %a "$L/state.md")"
+[ -e "$L/state.md.tmp" ] && fail "now/land left state.md.tmp" || pass
+goal now $'[haiku] two\nlines -> nl -> b -> r'
+assert_eq "a newline in an entry is folded" 1 "$(grep -c '^- \[haiku\] two lines -> nl -> b -> r$' "$L/state.md")"
+goal land nl $'done\ntoo'
+tail -n 1 "$L/state.md" | grep -q 'Z done too$' && pass || fail "a newline in a done line is not folded: $(tail -n 2 "$L/state.md")"
+
+# The hooks: Stop reports a finding set once; SessionStart always shows it.
+# Session s1 claims the lint goal first (the hooks act only in its owner),
+# and the claiming turn is shown the lint as SessionStart would show it.
+sed -i 's/^## Decided$/## Decided\n- ship it on Friday/' "$L/state.md"
+transcript "$(bash_call "bash $S/goal.sh resume lint")"; hook stop
+assert_eq "the lint goal is claimed" "s1" "$(owner)"
+ctx | grep -q '^lint: decided-unattributed: 1 ' && pass || fail "claim: lint not shown: $(ctx)"
+rm -f "$L/.lint" "$L/.lint-last"
+STOUCH='{"name":"Edit","input":{"file_path":"'"$L"'/state.md"}}'
+transcript "$STOUCH"
+hook stop
+ctx | grep -q '^lint: decided-unattributed: 1 ' && pass || fail "stop: lint not reported: $OUT"
+ctx | grep -q 'without updating' && fail "stop: nudged although the state file was edited" || pass
+ctx | grep -qF "scripts/goal.sh touch." && pass || fail "stop: lint message does not name goal.sh touch"
+hook stop
+assert_eq "stop: an unchanged finding set is not repeated" "" "$OUT"
+sed -i 's/^- ship it on Friday$/- ship it on Friday\n- and on Monday/' "$L/state.md"
+hook stop
+assert_eq "stop: a changed count alone is not repeated" "" "$OUT"
+printf -- '- 2099-01-01 00:01Z late\n- 2099-01-01 00:00Z early\n' >> "$L/state.md"
+hook stop
+ctx | grep -q '^lint: done-order' && pass || fail "stop: a new finding is not reported: $OUT"
+hook stop ',"stop_hook_active":true'
+assert_eq "stop: the lint never loops" "" "$OUT"
+sed -i '/^- 2099-01-01 00:0[01]Z /d' "$L/state.md"
+mkdir -p "$L/reports" && echo r > "$L/reports/r1.md" && echo r > "$L/reports/r2.md"
+goal now '[opus] review -> rev-47-r1 -> briefs/r1.md -> reports/r1.md'
+hook stop
+ctx | grep -q '^lint: now-finished: rev-47-r1 ' && pass || fail "stop: now-finished r1 not reported: $OUT"
+goal land rev-47-r1; goal now '[opus] review -> rev-47-r2 -> briefs/r2.md -> reports/r2.md'
+hook stop
+ctx | grep -q '^lint: now-finished: rev-47-r2 ' && pass || fail "stop: a new label masked as an old finding: $OUT"
+goal land rev-47-r2
+transcript "$READ_SRC"
+sed -i '/^- 2099-01-01 00:0[01]Z /d' "$L/state.md"
+hook stop
+assert_eq "stop: no lint after a turn that changed nothing" "" "$OUT"
+transcript "$EDIT_SRC"
+hook stop
+ctx | grep -qF "then run goal.sh touch. goal.sh is bash " && pass || fail "stop: nudge does not name goal.sh touch: $(ctx)"
+ctx | grep -q 'updated=20' && fail "stop: nudge still hands the model a time" || pass
+hook session-start ',"source":"clear"'
+ctx | grep -q '^lint: decided-unattributed: 2 ' && pass || fail "session-start: lint not shown: $(ctx)"
+sed -i '/^- ship it on Friday$/d; /^- and on Monday$/d' "$L/state.md"
+hook session-start ',"source":"clear"'
+ctx | grep -q '^lint:' && fail "session-start: lint shown for a clean file: $(ctx)" || pass
 
 finish orchestrate_plugin

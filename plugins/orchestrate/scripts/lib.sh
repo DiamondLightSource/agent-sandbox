@@ -164,14 +164,36 @@ state_head() {
     fi
 }
 
+# ---- lint ----------------------------------------------------------------
+# The state file's lint findings (scripts/state-lint.sh), one per line. The
+# lint keeps its section hashes in the goal's .lint.
+state_lint() {
+    bash "$PLUGIN_ROOT/scripts/state-lint.sh" "$STATE_FILE" "$GOAL_LOG" "$GOAL_DIR/.lint" 2>/dev/null
+}
+
+# The findings when their set differs from the set last reported, else
+# nothing; the set is kept in the goal's .lint-last. A finding is keyed by
+# its code and subject (the label, section or #<n>), not its counts or
+# times, so one already reported does not nag as its count grows.
+state_lint_changed() {
+    local found key last="$GOAL_DIR/.lint-last"
+    found="$(state_lint)"
+    key="$(sed -E '/^lint: (now-finished|pending-but-done):/b
+                   s/^(lint: section-stale: ## .*) unchanged .*/\1/; t
+                   s/^(lint: [a-z-]+):.*/\1/' <<<"$found")"
+    [ "$key" = "$(cat "$last" 2>/dev/null)" ] && return 0
+    printf '%s\n' "$key" > "$last" 2>/dev/null
+    printf '%s' "$found"
+}
+
 # ---- the context block ---------------------------------------------------
 # What a session that takes the goal over is told: the goal's paths, a
 # crash check against the previous transcript, Now entries with no report,
-# the scratch report and (unless $3 is no) the state file's head. Printed
+# the state file's lint findings, the scratch report and (unless $3 is no) the state file's head. Printed
 # by SessionStart in the owner, and by Stop on the turn that claims the
 # goal. Needs the goal paths and the hook input.
 goal_context() { # WHO MODE_LINE [yes|no: include the head]
-    local scratch_mb total prev crash="" prev_m state_m lost="" line report rest brief label
+    local scratch_mb total prev crash="" prev_m state_m lost="" lint line report rest brief label
     scratch_mb="$(state_scratch_report)"
     total="$(wc -l < "$STATE_FILE")"
 
@@ -218,6 +240,7 @@ Never /resume it."
     printf '%s\n' "$2"
     [ -n "$crash" ] && printf '\n%s\n' "$crash"
     [ -n "$lost" ] && printf '\n%s' "$lost"
+    lint="$(state_lint)" && [ -n "$lint" ] && printf '\nState file lint (fix what is wrong; a finding you judged wrong may stay):\n%s\n' "$lint"
     [ -n "$scratch_mb" ] && printf '\nScratch in %s/*/scratch totals %s MB (report threshold %s MB). Offer the user a cleanup: list each scratch dir with its size and whether its goal is stopped; delete only what they name.\n' "$ROOT" "$scratch_mb" "$SCRATCH_REPORT_MB"
     if [ "${3:-yes}" = yes ]; then
         printf '\n--- head of %s ---\n' "$STATE_FILE"

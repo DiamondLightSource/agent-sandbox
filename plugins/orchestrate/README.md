@@ -8,7 +8,8 @@ Install, usage and file layout:
 | Part | Path |
 |---|---|
 | Entry skill, its verbs and rules | `skills/orchestrate/SKILL.md`, `skills/orchestrate/references/state-file.md` |
-| Goal lifecycle (start, resume, pause, list, close) and the pointer | `scripts/goal.sh` |
+| Goal lifecycle (start, resume, pause, list, close), the pointer, and the scripted state edits (touch, now, land) | `scripts/goal.sh` |
+| State file lint, run by the Stop and SessionStart hooks | `scripts/state-lint.sh` |
 | Hooks (active only for the pointer's goal, in its launch directory, in the session that owns it) | `hooks/hooks.json`, `scripts/session-start.sh`, `scripts/stop.sh`, `scripts/session-end.sh` |
 | Shared helpers, log rotation, thresholds | `scripts/lib.sh` |
 | Transcript to text, for recovery queries | `scripts/transcript-text.sh` |

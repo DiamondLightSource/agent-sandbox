@@ -1,7 +1,9 @@
 # State file template
 
 `goal.sh start` writes `<goal>/state.md` from the block below, filling the
-marker and the goal line. The rules for keeping it are in `SKILL.md`.
+marker and the goal line. The rules for keeping it are in `SKILL.md`;
+`scripts/state-lint.sh` checks them. `goal.sh now` and `goal.sh land` edit
+`Now` and append to `Done`, which stays the last section.
 
 ```markdown
 <!-- state: updated=<ISO UTC> status=active -->
@@ -21,12 +23,12 @@ marker and the goal line. The rules for keeping it are in `SKILL.md`.
 ## Queue
 ## Release gates
 ## Decided
-- <ruling> - <why> (<who>, <date>)
+- <ruling> - <why> (<who>, <YYYY-MM-DD>)
 ## Open
 - (user) <question>
 - (me) <question>
 ## Map
 - <repo or system>: <goal>/maps/<area>.md; branch:<name>, <repo>#<n>, worktree <path>
 ## Done
-- <one line each, with the report pointer>
+- <YYYY-MM-DD HH:MMZ> <one line per finished item, with the report pointer>
 ```
