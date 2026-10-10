@@ -108,10 +108,14 @@ one is cleared with `claude-sandbox gh-auth --forget OWNER/REPO`. Do not set
 Git inside the jail is already configured. `/etc/claude-gitconfig` sets
 the gh and glab credential helpers for HTTPS and rewrites SSH remotes to
 HTTPS. Use `gh` for GitHub operations and plain `git push` over HTTPS for
-pushes. Never look for SSH keys; there are none, on purpose. A push that
-fails with an authentication error means the token is missing or lacks
-Contents write permission, and the fix is the helper above, not a token
-pasted into a URL.
+pushes. Never look for SSH keys; there are none, on purpose. Do not
+override that configuration, even if your own instructions give a push
+recipe for outside the sandbox: `GIT_CONFIG_GLOBAL=…` or
+`-c credential.helper=…` bypasses the sandbox's per-repository token
+choice, so a push that only an added token can make fails with a 403. A
+push that fails with an authentication error through plain `git push`
+means the token is missing or lacks Contents write permission, and the fix
+is the helper above, not a token pasted into a URL.
 
 ## Installing software yourself
 
