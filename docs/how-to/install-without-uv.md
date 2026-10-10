@@ -52,6 +52,9 @@ it does to fetch the agents.
 
 `--here` installs the chosen checkout. Without it, the installer attempts
 to select the newest release and refuses a pinned or modified checkout.
+Add `--minimal` (`bash "$CSBX_DIR/install" --here --minimal`) to install for
+Claude alone, without Codex or Pi; see
+[Claude-only installation](../reference/whats-installed.md#claude-only-installation).
 The installed sandbox does not depend on the temporary clone afterwards.
 
 Use the same block in `postCreate.sh` for a pinned team install.

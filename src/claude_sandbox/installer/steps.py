@@ -41,6 +41,11 @@ SKILLS_DIR = f"{LIBEXEC}/skills"
 CONF = "/etc/claude-sandbox.conf"
 MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
 CODEX_MANAGED_CONFIG = "/etc/codex/managed_config.toml"
+# The real agents, off PATH, where the shadow runs them (Invariants 0 and 1).
+CLAUDE_REAL = f"{LIBEXEC}/claude"
+CODEX_DIST = f"{LIBEXEC}/codex-dist"
+CODEX_REAL = f"{CODEX_DIST}/bin/codex"
+PI_DIST = f"{LIBEXEC}/pi-dist"
 # This repository's plugin marketplace (.claude-plugin/marketplace.json),
 # made known to Claude through the managed policy so users need no
 # `marketplace add`; installing a plugin from it stays their choice (ADR 24).
@@ -90,6 +95,14 @@ RUNTIME_FILES = (
     # The jail's gh, first on its PATH (bwrap.GH_SHIM_DIR; ADR 29).
     (f"{_SCRIPTS}/gh-shim", f"{LIBEXEC}/bin/gh", 0o755),
 )
+# What only Codex or only Pi uses, which a minimal install leaves out while
+# that agent is not installed. The shadow keeps all three names either way.
+CODEX_ONLY = (f"{LIBEXEC}/codex-launch",)
+PI_ONLY = (
+    f"{LIBEXEC}/pi-run",
+    f"{LIBEXEC}/pi-system.md",
+    f"{LIBEXEC}/pi-sandbox-tag.ts",
+)
 
 
 class InstallError(RuntimeError):
@@ -129,7 +142,9 @@ class Options:
     """``CLAUDE_SANDBOX_VERSION`` (empty: ``git describe``, when stamped),
     ``CLAUDE_SANDBOX_INSTALLER``,
     ``STATUS=1``, ``CLAUDE_SANDBOX_SMOKE``, ``WITH_CODEX``,
-    ``WITH_PI`` and ``PI_VERSION``; ``image_build`` is ``--image-build``."""
+    ``WITH_PI``, ``PI_VERSION`` and ``CLAUDE_SANDBOX_MINIMAL`` (the install
+    shim's ``--minimal``, which implies ``WITH_CODEX=0 WITH_PI=0``);
+    ``image_build`` is ``--image-build``."""
 
     version: str
     installer: str = ""
@@ -139,6 +154,7 @@ class Options:
     with_codex: bool = True
     with_pi: bool = True
     pi_version: str = "latest"
+    minimal: bool = False
     now: Callable[[], time.struct_time] = field(default=time.localtime)
 
 
@@ -159,16 +175,44 @@ def from_env(source: Path, env: Mapping[str, str]) -> tuple[Layout, Options]:
         home=home,
         shared=env.get("CLAUDE_SHARED_CONFIG") or SHARED_CONFIG,
     )
+    minimal = env.get("CLAUDE_SANDBOX_MINIMAL", "0") == "1"
     options = Options(
         version=env.get("CLAUDE_SANDBOX_VERSION", ""),
         installer=env.get("CLAUDE_SANDBOX_INSTALLER", ""),
         force_statusline=env.get("STATUS", "0") == "1",
         smoke=env.get("CLAUDE_SANDBOX_SMOKE", "0") == "1",
-        with_codex=env.get("WITH_CODEX", "1") == "1",
-        with_pi=env.get("WITH_PI", "1") == "1",
+        with_codex=not minimal and env.get("WITH_CODEX", "1") == "1",
+        with_pi=not minimal and env.get("WITH_PI", "1") == "1",
         pi_version=env.get("PI_VERSION") or "latest",
+        minimal=minimal,
     )
     return layout, options
+
+
+def _executable(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def wants_codex(layout: Layout, options: Options) -> bool:
+    """Whether Codex's files belong in this install: always in a full one;
+    in a minimal one only when Codex is already installed, so that a
+    minimal reinstall over a full one keeps them current."""
+    return not options.minimal or _executable(layout.system(CODEX_REAL))
+
+
+def wants_pi(layout: Layout, options: Options) -> bool:
+    """``wants_codex``, for Pi."""
+    return not options.minimal or _executable(layout.system(PI_DIST) / "pi")
+
+
+def _agent_files(
+    layout: Layout, options: Options, files: tuple[tuple[str, str, int], ...]
+) -> tuple[tuple[str, str, int], ...]:
+    """``files`` without what belongs to an agent this install leaves out."""
+    dropped = (() if wants_codex(layout, options) else CODEX_ONLY) + (
+        () if wants_pi(layout, options) else PI_ONLY
+    )
+    return tuple(f for f in files if f[1] not in dropped)
 
 
 def _makedirs(path: Path) -> list[Action]:
@@ -222,7 +266,9 @@ def plan_shadow(layout: Layout, options: Options) -> list[Action]:
         replace(a, in_place=True)
         if isinstance(a, Write) and a.path.parent == layout.system("/usr/local/bin")
         else a
-        for a in _place_all(layout, shadow + HELPER_FILES + cli)
+        for a in _place_all(
+            layout, shadow + _agent_files(layout, options, HELPER_FILES) + cli
+        )
     ]
 
 
@@ -240,7 +286,7 @@ def check_shadow(layout: Layout, options: Options) -> None:
 
 def plan_runtime_scripts(layout: Layout, options: Options) -> list[Action]:
     """``install_runtime_scripts``."""
-    return _place_all(layout, RUNTIME_FILES)
+    return _place_all(layout, _agent_files(layout, options, RUNTIME_FILES))
 
 
 def plan_cred_dirs(layout: Layout, options: Options) -> list[Action]:
@@ -250,7 +296,11 @@ def plan_cred_dirs(layout: Layout, options: Options) -> list[Action]:
     # A link there, even a dangling one, is left as it is.
     if not os.path.lexists(home / ".claude.json"):
         actions.append(Touch(home / ".claude.json", EMPTY_JSON))
-    return actions + _makedirs(home / ".codex") + _makedirs(home / ".pi/agent")
+    if wants_codex(layout, options):
+        actions += _makedirs(home / ".codex")
+    if wants_pi(layout, options):
+        actions += _makedirs(home / ".pi/agent")
+    return actions
 
 
 def plan_conf(layout: Layout, options: Options) -> list[Action]:
@@ -390,7 +440,10 @@ def plan_managed_settings(layout: Layout, options: Options) -> list[Action]:
 
 def plan_codex_managed(layout: Layout, options: Options) -> list[Action]:
     """``wire_codex_managed``: a file this installer owns outright, marked on
-    its first line. One it did not write is left alone, with a warning."""
+    its first line. One it did not write is left alone, with a warning. A
+    minimal install without Codex has no Codex to configure."""
+    if not wants_codex(layout, options):
+        return []
     dest = layout.system(CODEX_MANAGED_CONFIG)
     actions = _makedirs(dest.parent)
     if os.path.lexists(dest):
@@ -519,13 +572,22 @@ def _share(target: str, shared: str, kind: str, now: time.struct_time) -> list[A
 def plan_shared_links(layout: Layout, options: Options) -> list[Action]:
     """``link_terminal_config``: when the shared store is mounted, Claude's
     config follows the user across containers, and Codex's, Pi's and the
-    shared user skills (ADR 25) too when the store is writable."""
+    shared user skills (ADR 25) too when the store is writable. A minimal
+    install links only the agents it installs."""
     shared, home, now = layout.shared, layout.home, options.now()
     if options.image_build or not os.path.isdir(shared):
         return []
     actions = _share(f"{home}/.claude", f"{shared}/.claude", "dir", now)
     actions += _share(f"{home}/.claude.json", f"{shared}/.claude.json", "file", now)
+    codex, pi = wants_codex(layout, options), wants_pi(layout, options)
     if not os.access(shared, os.W_OK):
+        if not (codex or pi):
+            return actions + [
+                Warn(
+                    f"claude-sandbox: {shared} is not writable; ~/.agents/skills"
+                    " stays container-scoped."
+                )
+            ]
         return actions + [
             Warn(
                 f"claude-sandbox: {shared} is not writable; ~/.codex stays"
@@ -534,8 +596,10 @@ def plan_shared_links(layout: Layout, options: Options) -> list[Action]:
                 " container-scoped."
             )
         ]
-    actions += _share(f"{home}/.codex", f"{shared}/.codex", "dir", now)
-    actions += _share(f"{home}/.pi", f"{shared}/.pi", "dir", now)
+    if codex:
+        actions += _share(f"{home}/.codex", f"{shared}/.codex", "dir", now)
+    if pi:
+        actions += _share(f"{home}/.pi", f"{shared}/.pi", "dir", now)
     actions += _makedirs(Path(f"{home}/.agents"))
     return actions + _share(
         f"{home}/.agents/skills", f"{shared}/.agents/skills", "dir", now

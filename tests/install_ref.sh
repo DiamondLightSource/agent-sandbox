@@ -50,7 +50,7 @@ register_cleanup "$T"
 # run never dirties the tree under test.
 STUB=$(cat <<'STUBEOF'
 #!/usr/bin/env bash
-[ -n "${STUB_MARKER:-}" ] && printf 'ran\n' >> "$STUB_MARKER"
+[ -n "${STUB_MARKER:-}" ] && printf 'ran%s\n' "${CLAUDE_SANDBOX_MINIMAL:+ minimal}" >> "$STUB_MARKER"
 exit 0
 STUBEOF
 )
@@ -165,5 +165,13 @@ assert_eq "unknown argument exits 2" "2" "$?"
 if said 'Usage: install'; then pass
 else fail "$(diag 'unknown argument — expected usage text')"; fi
 assert_eq "--help exits 0" "0" "$(bash "$W/install" --help >/dev/null 2>&1; echo $?)"
+
+# --- 9. --minimal (#101) reaches the installer, across a retarget too ------
+fresh_clone "$W"
+assert_eq "--minimal with the default ref" "0|2.0.0|ran minimal" "$(try "$W" --minimal)"
+fresh_clone "$W"; git -C "$W" checkout -q 1.0.0
+assert_eq "--minimal after --here" "0|1.0.0|ran minimal" "$(try "$W" --here --minimal)"
+assert_eq "--minimal before --release REF" "0|2.0.0|ran minimal" \
+    "$(try "$W" --minimal --release 2.0.0)"
 
 finish install_ref

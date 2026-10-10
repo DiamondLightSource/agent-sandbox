@@ -16,6 +16,9 @@ register_cleanup "$TMP"
 mkdir -p "$TMP/home/.claude" "$TMP/libexec" "$TMP/terminal-config"
 cp "$REPO/.claude/statusline-command.sh" "$TMP/libexec/statusline-command.sh"
 cp "$REPO/.devcontainer/claude-sandbox/pi-sandbox-tag.ts" "$TMP/libexec/pi-sandbox-tag.ts"
+# Pi installed: the footer is checked only where Pi is.
+mkdir -p "$TMP/libexec/pi-dist" && printf '#!/bin/sh\n' > "$TMP/libexec/pi-dist/pi" \
+    && chmod 755 "$TMP/libexec/pi-dist/pi"
 echo myproj-3f2a > "$TMP/tag"
 printf '# user zshrc\n' > "$TMP/terminal-config/zshrc"
 printf '# user bashrc\n' > "$TMP/terminal-config/bashrc"
@@ -68,6 +71,13 @@ assert_eq "user zshrc kept" "# user zshrc" "$(head -1 "$TMP/terminal-config/zshr
 doctor -- --fix
 assert_eq "second fix exits 0" 0 "$RC"
 printf '%s\n' "$OUT" | grep -qE '^  (fixed|backup|todo) ' && fail "second fix did work: $OUT" || pass
+
+# --- a minimal install (#101): no Pi, so no footer to ask for --------------
+mv "$TMP/libexec/pi-dist" "$TMP/pi-dist.away"
+doctor --
+assert_eq "no Pi is not a fault" 0 "$RC"
+has "pi footer skipped" '^  skip +pi footer +Pi is not installed$'
+mv "$TMP/pi-dist.away" "$TMP/libexec/pi-dist"
 assert_eq "still one bash block" 1 "$(grep -c '^# >>> claude-sandbox prompt tag >>>$' "$TMP/terminal-config/bashrc")"
 doctor --
 assert_eq "report after fix exits 0" 0 "$RC"

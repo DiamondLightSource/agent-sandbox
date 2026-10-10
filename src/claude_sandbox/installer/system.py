@@ -21,18 +21,29 @@ from typing import TextIO
 
 from .. import config
 from ..tools import find_tool
-from .steps import CONF, LIBEXEC, SHADOW_SOURCE, InstallError, Layout, Options
+from .steps import (
+    CLAUDE_REAL,
+    CODEX_DIST,
+    CODEX_REAL,
+    CONF,
+    LIBEXEC,
+    PI_DIST,
+    SHADOW_SOURCE,
+    InstallError,
+    Layout,
+    Options,
+    wants_codex,
+)
 
 Run = Callable[..., "subprocess.CompletedProcess[bytes]"]
 
-CODEX_DIST = f"{LIBEXEC}/codex-dist"
-CODEX_REAL = f"{CODEX_DIST}/bin/codex"
-CLAUDE_REAL = f"{LIBEXEC}/claude"
-PI_DIST = f"{LIBEXEC}/pi-dist"
 APT_PACKAGES = (
     "bubblewrap jq curl ca-certificates git nodejs gh passt socat iproute2"
     " ripgrep fd-find"
 ).split()
+# No agent needs Debian's nodejs (Claude, Codex and Pi bring
+# their own runtimes), and it is the largest part of the apt step (#101).
+MINIMAL_PACKAGES = [p for p in APT_PACKAGES if p != "nodejs"]
 PI_RELEASES = "https://github.com/earendil-works/pi/releases"
 USERNS_REFUSAL = """\
 claude-sandbox: refusing — kernel unprivileged user namespaces are
@@ -71,16 +82,40 @@ def probe_or_refuse(options: Options) -> None:
         )
 
 
+def _all_installed(packages: Sequence[str], run: Run) -> bool:
+    """Whether dpkg has every one of ``packages`` installed."""
+    dpkg = find_tool("dpkg-query")
+    if dpkg is None:
+        return False
+    done = run(
+        [dpkg, "-W", "-f=${Status}\\n", *packages],
+        capture_output=True,
+        check=False,
+    )
+    states = done.stdout.decode(errors="replace").splitlines()
+    return (
+        done.returncode == 0
+        and len(states) == len(packages)
+        and all(s == "install ok installed" for s in states)
+    )
+
+
 def apt_install(options: Options, run: Run = subprocess.run) -> None:
     """``apt_install``: the sandbox's own dependencies; glab where the
-    distribution has it."""
+    distribution has it. A minimal install leaves out nodejs, and skips apt
+    altogether, ``apt-get update`` included, when every package it needs and
+    glab are already installed: without glab it tries for it as a full
+    install does."""
     if options.smoke:
+        return
+    packages = MINIMAL_PACKAGES if options.minimal else APT_PACKAGES
+    if options.minimal and _all_installed([*packages, "glab"], run):
         return
     apt = _tool("apt-get")
     env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
     _check(run, [apt, "update", "-qq"], "apt-get update", env=env)
     quiet = [apt, "install", "-y", "-qq", "--no-install-recommends"]
-    _check(run, [*quiet, *APT_PACKAGES], "apt-get install", env=env)
+    _check(run, [*quiet, *packages], "apt-get install", env=env)
     run([*quiet, "glab"], env=env, check=False, stderr=subprocess.DEVNULL)
 
 
@@ -356,7 +391,9 @@ def summary(layout: Layout, options: Options, skipped: Sequence[str], venv: str)
     p = layout.system
 
     def state(path: str, yes: str, no: str) -> str:
-        return yes if os.access(p(path), os.X_OK) else no
+        if os.access(p(path), os.X_OK):
+            return yes
+        return "not installed (--minimal)" if options.minimal else no
 
     skills = p(f"{LIBEXEC}/skills")
     listed = os.listdir(skills) if skills.is_dir() else []
@@ -399,7 +436,9 @@ def summary(layout: Layout, options: Options, skipped: Sequence[str], venv: str)
         ),
         f"  codex conf:  {p(codex_conf)} "
         + (
-            "(NOT ours — left unchanged; see the warning above)"
+            "(not written: --minimal installs no Codex)"
+            if not wants_codex(layout, options)
+            else "(NOT ours — left unchanged; see the warning above)"
             if "wire_codex_managed" in skipped
             else "(updater settings)"
         ),

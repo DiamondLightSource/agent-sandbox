@@ -19,6 +19,11 @@
 #   WITH_CODEX=0, WITH_PI=0           skip fetching OpenAI's Codex CLI or Pi;
 #                                    their shadows are installed either way
 #                                    (Invariant 1).
+#   CLAUDE_SANDBOX_MINIMAL=1          the install shim's --minimal: Claude
+#                                    only. Implies WITH_CODEX=0 WITH_PI=0,
+#                                    leaves out Codex's and Pi's other files
+#                                    while they are not installed, and nodejs,
+#                                    and skips apt when nothing is missing.
 #   PI_VERSION=0.85.1                optional Pi release pin.
 #   STATUS=1                         force-overwrite the user-scope
 #                                    statusline script.

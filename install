@@ -16,6 +16,8 @@
 #   install --here           this working tree, exactly as checked out
 #   install --release [REF]  REF, or the newest stable tag when REF is
 #                            omitted — even if the clone is pinned/dirty
+#   install --minimal        Claude only, combinable with the above: no
+#                            Codex or Pi (CLAUDE_SANDBOX_MINIMAL=1)
 #
 # The default REFUSES rather than silently retargeting a clone that is
 # pinned (detached HEAD or a non-default branch) or locally modified.
@@ -35,7 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat >&2 <<'USAGE'
-Usage: install [--here | --release [REF]]
+Usage: install [--minimal] [--here | --release [REF]]
 
   (no flag)         Install the newest stable release tag. Refuses if this
                     clone is pinned (detached HEAD / non-default branch) or
@@ -43,6 +45,10 @@ Usage: install [--here | --release [REF]]
   --here            Install this working tree, exactly as checked out.
   --release [REF]   Install REF (default: newest stable release tag),
                     retargeting the clone even if pinned or modified.
+  --minimal         Claude only: no Codex, Pi or nodejs, and no apt run at
+                    all when its packages and glab are already installed. A later
+                    install without it adds Codex and Pi. The same as
+                    CLAUDE_SANDBOX_MINIMAL=1.
 USAGE
 }
 
@@ -57,6 +63,10 @@ while [ $# -gt 0 ]; do
             # An optional bare REF may follow; anything starting with `-`
             # is the next flag, not a ref.
             if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then REF="$1"; shift; fi ;;
+        --minimal)
+            # The installer reads its settings from the environment; this
+            # survives the exec into a release checkout below.
+            export CLAUDE_SANDBOX_MINIMAL=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
         *)

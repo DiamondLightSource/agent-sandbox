@@ -689,3 +689,116 @@ def test_install_sets_its_own_umask(tmp_path: Path) -> None:
     finally:
         os.umask(old)
     assert (tmp_path / "prefix/etc/claude-code").stat().st_mode & 0o777 == 0o755
+
+
+# --- install --minimal (#101) ----------------------------------------------------
+
+MINIMAL = {"CLAUDE_SANDBOX_MINIMAL": "1"}
+AGENT_ONLY = (
+    f"{LIBEXEC}/codex-launch",
+    f"{LIBEXEC}/pi-run",
+    f"{LIBEXEC}/pi-system.md",
+    f"{LIBEXEC}/pi-sandbox-tag.ts",
+    "prefix/etc/codex",
+    "user/.codex",
+    "user/.pi",
+    "home/.codex",
+    "home/.pi",
+)
+
+
+def contents(root: Path) -> dict[str, tuple[int, bytes | str | None]]:
+    """Every node under ``root`` by its path: mode and bytes, link target,
+    or None for a directory."""
+    out: dict[str, tuple[int, bytes | str | None]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in [*dirnames, *filenames]:
+            path = Path(dirpath, name)
+            rel = str(path.relative_to(root))
+            if path.is_symlink():
+                out[rel] = (0, link(root, rel))
+            elif path.is_dir():
+                out[rel] = (mode(path), None)
+            else:
+                out[rel] = (mode(path), path.read_bytes())
+    return out
+
+
+def test_minimal_implies_no_codex_and_no_pi(tmp_path: Path) -> None:
+    env = environment(tmp_path, {**MINIMAL, "WITH_CODEX": "1", "WITH_PI": "1"})
+    _, options = from_env(REPO, env)
+    assert options.minimal and not options.with_codex and not options.with_pi
+    _, options = from_env(REPO, environment(tmp_path))
+    assert not options.minimal and options.with_codex and options.with_pi
+
+
+def test_a_minimal_install_is_claude_only(tmp_path: Path) -> None:
+    """Nothing of Codex or Pi but the shadow under their names; everything of
+    Claude's byte for byte what a full install places."""
+    out = step(tmp_path / "min", "main", {"shared": None}, MINIMAL)
+    warnings, summary = out.split("\0")
+    assert warnings == ""
+    for rel in AGENT_ONLY:
+        assert not os.path.lexists(tmp_path / "min" / rel), rel
+    assert "real codex:" in summary and "real pi:" in summary
+    assert summary.count("not installed (--minimal)") == 2
+    assert "(not written: --minimal installs no Codex)" in summary
+    assert "(updater disabled; claude-sandbox plugin marketplace known)" in summary
+    step(tmp_path / "full", "main", {"shared": None})
+    minimal, full = contents(tmp_path / "min"), contents(tmp_path / "full")
+    dropped = {
+        rel
+        for rel in full
+        if any(rel == a or rel.startswith(f"{a}/") for a in AGENT_ONLY)
+    }
+    dropped |= {"shared/.codex", "shared/.pi"}
+    assert set(minimal) == set(full) - dropped
+    for rel, value in minimal.items():
+        assert full[rel] == value, rel
+    shim = (SCRIPTS / "claude-shim").read_bytes()
+    for name in ("claude", "codex", "pi"):
+        assert (tmp_path / "min/prefix/usr/local/bin" / name).read_bytes() == shim
+
+
+def test_a_full_install_over_a_minimal_one_adds_codex_and_pi(tmp_path: Path) -> None:
+    step(tmp_path / "a", "main", {"shared": None}, MINIMAL)
+    step(tmp_path / "a", "main")
+    step(tmp_path / "b", "main", {"shared": None})
+    assert contents(tmp_path / "a") == contents(tmp_path / "b")
+
+
+def test_a_minimal_reinstall_keeps_installed_agents_current(tmp_path: Path) -> None:
+    """Over a full install whose agents are there, --minimal still updates
+    their files: a stale launcher must not outlive the package it serves."""
+    files = {
+        "shared": None,
+        f"{LIBEXEC}/codex-dist/bin/codex@0755": "#!/bin/sh\n",
+        f"{LIBEXEC}/pi-dist/pi@0755": "#!/bin/sh\n",
+    }
+    step(tmp_path, "main", files)
+    before = contents(tmp_path)
+    (tmp_path / LIBEXEC / "codex-launch").write_text("old\n")
+    (tmp_path / LIBEXEC / "pi-run").write_text("old\n")
+    out = step(tmp_path, "main", None, MINIMAL)
+    assert contents(tmp_path) == before
+    assert "not installed (--minimal)" not in out
+    assert "(updater settings)" in out
+    # Without them, a minimal reinstall leaves what a full one placed.
+    for rel in ("codex-dist", "pi-dist"):
+        shutil.rmtree(tmp_path / LIBEXEC / rel)
+    before = contents(tmp_path)
+    step(tmp_path, "main", None, MINIMAL)
+    assert contents(tmp_path) == before
+
+
+def test_a_read_only_store_under_minimal_names_no_codex(tmp_path: Path) -> None:
+    files = {"shared/.claude": None, "shared/.claude.json": "{}", "shared@0555": None}
+    try:
+        err = step(tmp_path, "link_terminal_config", files, MINIMAL)
+    finally:
+        (tmp_path / "shared").chmod(0o755)
+    assert sorted(os.listdir(tmp_path / "home")) == [".claude", ".claude.json"]
+    assert err == (
+        "claude-sandbox: {root}/shared is not writable; ~/.agents/skills stays"
+        " container-scoped.\n"
+    )

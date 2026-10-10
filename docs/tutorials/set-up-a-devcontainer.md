@@ -35,6 +35,9 @@ uvx claude-sandbox install
 claude
 ```
 
+If you only use Claude, `uvx claude-sandbox install --minimal` leaves out
+Codex and Pi and installs faster; see
+[Claude-only installation](../reference/whats-installed.md#claude-only-installation).
 For installation on every rebuild, follow
 [Sandbox a team devcontainer](../how-to/sandbox-a-team-devcontainer.md).
 Without uv, use the [clone fallback](../how-to/install-without-uv.md).
